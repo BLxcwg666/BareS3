@@ -289,8 +289,7 @@ func (s *Store) PutObject(ctx context.Context, input PutObjectInput) (ObjectInfo
 		return ObjectInfo{}, err
 	}
 
-	objectPath, metadataPath, err := s.resolveObjectPaths(input.Bucket, input.Key)
-	if err != nil {
+	if _, _, err := s.resolveObjectPaths(input.Bucket, input.Key); err != nil {
 		return ObjectInfo{}, err
 	}
 
@@ -378,40 +377,9 @@ func (s *Store) PutObject(ctx context.Context, input PutObjectInput) (ObjectInfo
 		UserMetadata:       cloneStringMap(input.UserMetadata),
 		LastModified:       time.Now().UTC(),
 	}
-	info := ObjectInfo{
-		Bucket:             meta.Bucket,
-		Key:                meta.Key,
-		Path:               objectPath,
-		MetadataPath:       metadataPath,
-		Size:               meta.Size,
-		ETag:               meta.ETag,
-		ContentType:        meta.ContentType,
-		CacheControl:       meta.CacheControl,
-		ContentDisposition: meta.ContentDisposition,
-		UserMetadata:       cloneStringMap(meta.UserMetadata),
-		LastModified:       meta.LastModified,
-	}
-
-	if err := os.MkdirAll(filepath.Dir(objectPath), 0o755); err != nil {
-		return ObjectInfo{}, fmt.Errorf("create object parent dir: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(metadataPath), 0o755); err != nil {
-		return ObjectInfo{}, fmt.Errorf("create metadata parent dir: %w", err)
-	}
-
-	stagedMetadataPath, err := writeJSONTemp(filepath.Dir(metadataPath), "meta-*", meta)
+	info, err := s.commitObjectFromStaged(input.Bucket, input.Key, stagedObjectPath, meta)
 	if err != nil {
-		return ObjectInfo{}, fmt.Errorf("stage metadata file: %w", err)
-	}
-	defer func() {
-		_ = os.Remove(stagedMetadataPath)
-	}()
-
-	if err := replaceFile(stagedObjectPath, objectPath); err != nil {
-		return ObjectInfo{}, fmt.Errorf("commit object file: %w", err)
-	}
-	if err := replaceFile(stagedMetadataPath, metadataPath); err != nil {
-		return ObjectInfo{}, fmt.Errorf("commit metadata file: %w", err)
+		return ObjectInfo{}, err
 	}
 
 	s.logger.Info(
@@ -702,6 +670,10 @@ func bucketHasObjects(root string) bool {
 		}
 		if entry.IsDir() {
 			if filepath.Base(path) == controlDirName {
+				if dirHasEntries(joinPath(path, multipartDirName)) {
+					hasObjects = true
+					return errors.New("stop")
+				}
 				return filepath.SkipDir
 			}
 			return nil
@@ -710,4 +682,12 @@ func bucketHasObjects(root string) bool {
 		return errors.New("stop")
 	})
 	return hasObjects
+}
+
+func dirHasEntries(path string) bool {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false
+	}
+	return len(entries) > 0
 }

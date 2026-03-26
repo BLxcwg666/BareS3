@@ -11,6 +11,10 @@ var (
 	ErrBucketNotFound    = errors.New("bucket not found")
 	ErrBucketNotEmpty    = errors.New("bucket not empty")
 	ErrObjectNotFound    = errors.New("object not found")
+	ErrUploadNotFound    = errors.New("multipart upload not found")
+	ErrInvalidPart       = errors.New("invalid multipart part")
+	ErrInvalidPartOrder  = errors.New("invalid multipart part order")
+	ErrInvalidPartNumber = errors.New("invalid multipart part number")
 	ErrInvalidBucketName = errors.New("invalid bucket name")
 	ErrInvalidObjectKey  = errors.New("invalid object key")
 )
@@ -64,8 +68,66 @@ type ListObjectsOptions struct {
 	Limit  int
 }
 
+type InitiateMultipartUploadInput struct {
+	Bucket             string
+	Key                string
+	ContentType        string
+	CacheControl       string
+	ContentDisposition string
+	UserMetadata       map[string]string
+}
+
+type MultipartUploadInfo struct {
+	UploadID           string            `json:"upload_id"`
+	Bucket             string            `json:"bucket"`
+	Key                string            `json:"key"`
+	ContentType        string            `json:"content_type,omitempty"`
+	CacheControl       string            `json:"cache_control,omitempty"`
+	ContentDisposition string            `json:"content_disposition,omitempty"`
+	UserMetadata       map[string]string `json:"user_metadata,omitempty"`
+	CreatedAt          time.Time         `json:"created_at"`
+}
+
+type UploadPartInput struct {
+	Bucket     string
+	Key        string
+	UploadID   string
+	PartNumber int
+	Body       io.Reader
+}
+
+type MultipartPartInfo struct {
+	PartNumber   int       `json:"part_number"`
+	ETag         string    `json:"etag"`
+	Size         int64     `json:"size"`
+	LastModified time.Time `json:"last_modified"`
+}
+
+type CompletedPart struct {
+	PartNumber int
+	ETag       string
+}
+
 type bucketMetadata struct {
 	Name           string    `json:"name"`
 	CreatedAt      time.Time `json:"created_at"`
 	MetadataLayout string    `json:"metadata_layout"`
+}
+
+type multipartUploadMetadata struct {
+	UploadID           string            `json:"upload_id"`
+	Bucket             string            `json:"bucket"`
+	Key                string            `json:"key"`
+	ContentType        string            `json:"content_type,omitempty"`
+	CacheControl       string            `json:"cache_control,omitempty"`
+	ContentDisposition string            `json:"content_disposition,omitempty"`
+	UserMetadata       map[string]string `json:"user_metadata,omitempty"`
+	CreatedAt          time.Time         `json:"created_at"`
+}
+
+type multipartPartMetadata struct {
+	PartNumber   int       `json:"part_number"`
+	ETag         string    `json:"etag"`
+	Size         int64     `json:"size"`
+	LastModified time.Time `json:"last_modified"`
 }
