@@ -1,0 +1,29 @@
+app:
+  name: BareS3
+  env: development
+
+paths:
+  data_dir: ./data
+  log_dir: ./logs
+
+listen:
+  admin: 127.0.0.1:19080
+  s3: 0.0.0.0:9000
+  file: 0.0.0.0:9001
+
+auth:
+  admin_username: admin
+  admin_password_hash: ""
+  jwt_secret: ""
+
+storage:
+  public_base_url: http://127.0.0.1:9001
+  region: home-lab-1
+  tmp_dir: ./data/.bares3/tmp
+  metadata_layout: hidden-dir
+
+logging:
+  level: info
+  format: pretty
+  rotate_size_mb: 16
+  rotate_keep: 10

@@ -2,6 +2,9 @@ node_modules/
 dist/
 .DS_Store
 *.log
+*.exe
+apps/bares3-server/data/
+apps/bares3-server/logs/
 
 ### Node template
 # Logs
@@ -169,4 +172,3 @@ node_modules
 psd
 thumb
 sketch
-
