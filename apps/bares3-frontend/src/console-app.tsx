@@ -1,5 +1,5 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import type { ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import type { ChangeEvent, ReactNode } from 'react';
 import {
   AppstoreOutlined,
   CloudServerOutlined,
@@ -15,20 +15,25 @@ import {
   UploadOutlined,
 } from '@ant-design/icons';
 import {
+  Alert,
   Breadcrumb,
   Button,
-  Checkbox,
   ConfigProvider,
   Descriptions,
   Dropdown,
+  Empty,
   Form,
   Grid,
   Input,
   Layout,
   List,
   Menu,
+  message,
   Progress,
+  Select,
+  Skeleton,
   Space,
+  Spin,
   Table,
   Tag,
   theme as antTheme,
@@ -45,25 +50,39 @@ import {
   useNavigate,
 } from 'react-router-dom';
 import {
-  activityRows,
-  browserInspector,
-  bucketRows,
+  createBucket,
+  getRuntime,
+  listBuckets,
+  listObjects,
+  login as loginRequest,
+  uploadObject,
+  type AuthSession,
+  type BucketInfo,
+  type ObjectInfo,
+  type RuntimeInfo,
+  ApiError,
+} from './api';
+import { AuthProvider, GuestRoute, ProtectedRoute, useAuth } from './auth';
+import {
   bucketTemplates,
   consoleRules,
   linkRows,
   loginNotes,
-  nodeSummary,
-  objectRows,
-  overviewMetrics,
   publishingNotes,
-  settingGroups,
-  type BucketRow,
   type LinkRow,
-  type ObjectRow,
 } from './console-data';
 
 const { Header, Sider, Content } = Layout;
 const { Text, Title } = Typography;
+
+type MetricItem = {
+  label: string;
+  value: string;
+  detail: string;
+};
+
+type BucketRow = BucketInfo;
+type ObjectRow = ObjectInfo;
 
 type ThemeMode = 'auto' | 'light' | 'dark';
 type ResolvedTheme = 'light' | 'dark';
@@ -225,16 +244,60 @@ function ConsoleApp() {
     <ThemeModeContext.Provider value={themeContextValue}>
       <ConfigProvider theme={themeConfig}>
         <HashRouter>
-          <Routes>
-            <Route path="/" element={<Navigate replace to="/login" />} />
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/overview" element={<OverviewPage />} />
-            <Route path="/buckets" element={<BucketsPage />} />
-            <Route path="/browser" element={<BrowserPage />} />
-            <Route path="/links" element={<LinksPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-            <Route path="*" element={<Navigate replace to="/login" />} />
-          </Routes>
+          <AuthProvider>
+            <Routes>
+              <Route path="/" element={<Navigate replace to="/login" />} />
+              <Route
+                path="/login"
+                element={
+                  <GuestRoute>
+                    <LoginPage />
+                  </GuestRoute>
+                }
+              />
+              <Route
+                path="/overview"
+                element={
+                  <ProtectedRoute>
+                    <OverviewPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/buckets"
+                element={
+                  <ProtectedRoute>
+                    <BucketsPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/browser"
+                element={
+                  <ProtectedRoute>
+                    <BrowserPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/links"
+                element={
+                  <ProtectedRoute>
+                    <LinksPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/settings"
+                element={
+                  <ProtectedRoute>
+                    <SettingsPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route path="*" element={<Navigate replace to="/login" />} />
+            </Routes>
+          </AuthProvider>
         </HashRouter>
       </ConfigProvider>
     </ThemeModeContext.Provider>
@@ -287,6 +350,132 @@ function ThemeModeButton() {
   );
 }
 
+function useRuntimeData() {
+  const auth = useAuth();
+  const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const refresh = useCallback(async () => {
+    if (auth.status !== 'authenticated') {
+      setRuntime(null);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      setRuntime(await getRuntime());
+    } finally {
+      setLoading(false);
+    }
+  }, [auth.status]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  return { runtime, loading, refresh };
+}
+
+function useBucketsData() {
+  const auth = useAuth();
+  const [items, setItems] = useState<BucketInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const refresh = useCallback(async () => {
+    if (auth.status !== 'authenticated') {
+      setItems([]);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      setItems(await listBuckets());
+    } finally {
+      setLoading(false);
+    }
+  }, [auth.status]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  return { items, loading, refresh };
+}
+
+function useBucketObjects(bucket: string | null) {
+  const auth = useAuth();
+  const [items, setItems] = useState<ObjectInfo[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const refresh = useCallback(async () => {
+    if (auth.status !== 'authenticated' || !bucket) {
+      setItems([]);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      setItems(await listObjects(bucket));
+    } finally {
+      setLoading(false);
+    }
+  }, [auth.status, bucket]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  return { items, loading, refresh };
+}
+
+function formatDateTime(value: string) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  return parsed.toLocaleString([], {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes < 1024) {
+    return `${bytes} B`;
+  }
+
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let index = -1;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index += 1;
+  }
+
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[index]}`;
+}
+
+function safePathLabel(value: string) {
+  return value || 'Not configured';
+}
+
+function normalizeApiError(error: unknown, fallback: string) {
+  if (error instanceof ApiError) {
+    return error.message;
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return fallback;
+}
+
 type ShellProps = {
   children: ReactNode;
   actions?: ReactNode;
@@ -294,10 +483,16 @@ type ShellProps = {
 };
 
 function ConsoleShell({ children, actions, showHeaderSearch = true }: ShellProps) {
+  const auth = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const screens = Grid.useBreakpoint();
   const meta = pageMeta[location.pathname] ?? pageMeta['/overview'];
+
+  const handleLogout = async () => {
+    await auth.logout();
+    navigate('/login');
+  };
 
   const menuItems = useMemo<MenuProps['items']>(
     () => [
@@ -334,8 +529,11 @@ function ConsoleShell({ children, actions, showHeaderSearch = true }: ShellProps
               />
 
               <div className="sider-foot">
-                <Text type="secondary">Local backend online</Text>
-                <Tag className="soft-tag">61.4% used</Tag>
+                <div className="user-foot">
+                  <Text type="secondary">Signed in as</Text>
+                  <strong>{auth.session?.username ?? 'admin'}</strong>
+                </div>
+                <Tag className="soft-tag">Session</Tag>
               </div>
             </div>
           </Sider>
@@ -361,9 +559,10 @@ function ConsoleShell({ children, actions, showHeaderSearch = true }: ShellProps
                   />
                 ) : null}
                 {actions}
+                <Tag className="user-tag">{auth.session?.username ?? 'admin'}</Tag>
                 <ThemeModeButton />
-                <Button icon={<LockOutlined />} onClick={() => navigate('/login')}>
-                  Lock
+                <Button icon={<LockOutlined />} onClick={() => void handleLogout()}>
+                  Sign out
                 </Button>
               </Space>
             </div>
@@ -448,10 +647,10 @@ function ExposureTag({ value }: { value: string }) {
   return <Tag className={`mode-tag mode-tag-${tone}`}>{value}</Tag>;
 }
 
-function metricStrip() {
+function metricStrip(items: MetricItem[]) {
   return (
     <div className="metric-strip">
-      {overviewMetrics.map((item) => (
+      {items.map((item) => (
         <div className="metric-item" key={item.label}>
           <div className="metric-label">{item.label}</div>
           <div className="metric-value">{item.value}</div>
@@ -465,60 +664,37 @@ function metricStrip() {
 function bucketColumns(compact = false): TableColumnsType<BucketRow> {
   const columns: TableColumnsType<BucketRow> = [
     {
-      dataIndex: 'key',
-      key: 'key',
+      dataIndex: 'name',
+      key: 'name',
       title: 'Bucket',
-      render: (_, row) => (
+      render: (value: string, row) => (
         <div>
-          <div className="row-title">{row.key}</div>
-          <div className="row-note">{row.purpose}</div>
+          <div className="row-title">{value}</div>
+          <div className="row-note">Created {formatDateTime(row.created_at)}</div>
         </div>
       ),
     },
     {
-      dataIndex: 'mode',
-      key: 'mode',
-      title: 'Mode',
-      render: (value: BucketRow['mode']) => <ExposureTag value={value} />,
-      width: 120,
+      dataIndex: 'path',
+      key: 'path',
+      title: 'Root',
+      render: (value: string) => <div className="row-title row-title-small">{safePathLabel(value)}</div>,
     },
     {
-      dataIndex: 'objects',
-      key: 'objects',
-      title: 'Objects',
-      width: 110,
-    },
-    {
-      dataIndex: 'size',
-      key: 'size',
-      title: 'Stored',
-      width: 120,
-    },
-    {
-      dataIndex: 'used',
-      key: 'used',
-      title: 'Used',
-      render: (value: number) => (
-        <div className="used-cell">
-          <Progress percent={value} showInfo={false} size="small" strokeColor="#5c775f" />
-          <Text type="secondary">{value}%</Text>
-        </div>
-      ),
-      width: 120,
+      dataIndex: 'metadata_layout',
+      key: 'metadata_layout',
+      title: 'Metadata',
+      render: (value: string) => <ExposureTag value={value || 'hidden-dir'} />,
+      width: 140,
     },
   ];
 
   if (!compact) {
-    columns.splice(1, 0, {
-      dataIndex: 'root',
-      key: 'root',
-      title: 'Root',
-      render: (value: string, row) => (
-        <div>
-          <div className="row-title row-title-small">{value}</div>
-          <div className="row-note">{row.policy}</div>
-        </div>
-      ),
+    columns.push({
+      dataIndex: 'metadata_path',
+      key: 'metadata_path',
+      title: 'Control file',
+      render: (value: string) => <div className="row-title row-title-small">{safePathLabel(value)}</div>,
     });
   }
 
@@ -533,28 +709,32 @@ const objectColumns: TableColumnsType<ObjectRow> = [
     ellipsis: true,
   },
   {
-    dataIndex: 'type',
-    key: 'type',
+    dataIndex: 'content_type',
+    key: 'content_type',
     title: 'Type',
-    width: 140,
+    width: 150,
+    render: (value: string) => value || 'application/octet-stream',
   },
   {
     dataIndex: 'size',
     key: 'size',
     title: 'Size',
-    width: 92,
+    width: 100,
+    render: (value: number) => formatBytes(value),
   },
   {
-    dataIndex: 'cache',
-    key: 'cache',
+    dataIndex: 'cache_control',
+    key: 'cache_control',
     title: 'Cache',
     ellipsis: true,
+    render: (value?: string) => value || 'private',
   },
   {
-    dataIndex: 'updated',
-    key: 'updated',
+    dataIndex: 'last_modified',
+    key: 'last_modified',
     title: 'Updated',
     width: 160,
+    render: (value: string) => formatDateTime(value),
   },
 ];
 
@@ -593,7 +773,26 @@ const linkColumns: TableColumnsType<LinkRow> = [
 ];
 
 function LoginPage() {
+  const auth = useAuth();
+  const location = useLocation();
   const navigate = useNavigate();
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const redirectTarget = typeof location.state?.from === 'string' ? location.state.from : '/overview';
+
+  const handleSubmit = async (values: { username: string; password: string }) => {
+    setSubmitting(true);
+    setError(null);
+    try {
+      await auth.login(values.username.trim(), values.password);
+      navigate(redirectTarget, { replace: true });
+    } catch (nextError) {
+      setError(normalizeApiError(nextError, 'Failed to sign in.'));
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <div className="login-page">
@@ -612,7 +811,7 @@ function LoginPage() {
               Keep S3 outside. Keep files readable inside.
             </Title>
             <Text className="login-note-text">
-              A practical console for image hosting, download shelves, and personal storage.
+              Sign in with the console account configured on this node, then manage buckets and file routes in one place.
             </Text>
           </div>
 
@@ -632,47 +831,30 @@ function LoginPage() {
               <Title className="section-title" level={5}>
                 Sign in
               </Title>
-              <Text type="secondary">Static page for now, ready for the real flow later.</Text>
+              <Text type="secondary">The console uses one configured admin account and a signed session cookie.</Text>
             </div>
             <ThemeModeButton />
           </div>
 
           <Form
             className="login-form"
-            initialValues={{
-              endpoint: 'https://s3.bare.local',
-              accessKey: 'bares3-admin',
-              secretKey: 'local-dev-only',
-              remember: true,
-              fileFirst: true,
-            }}
+            initialValues={{ username: 'admin', password: '' }}
             layout="vertical"
-            onFinish={() => navigate('/overview')}
+            onFinish={handleSubmit}
           >
-            <Form.Item label="Endpoint" name="endpoint">
-              <Input />
+            <Form.Item label="Username" name="username" rules={[{ required: true, message: 'Username is required' }]}>
+              <Input autoComplete="username" />
             </Form.Item>
-            <Form.Item label="Access key" name="accessKey">
-              <Input />
-            </Form.Item>
-            <Form.Item label="Secret key" name="secretKey">
-              <Input.Password />
+            <Form.Item label="Password" name="password" rules={[{ required: true, message: 'Password is required' }]}>
+              <Input.Password autoComplete="current-password" />
             </Form.Item>
 
-            <Space className="login-checks" direction="vertical" size={6}>
-              <Form.Item name="remember" noStyle valuePropName="checked">
-                <Checkbox>Remember endpoint</Checkbox>
-              </Form.Item>
-              <Form.Item name="fileFirst" noStyle valuePropName="checked">
-                <Checkbox>Prefer file-first defaults</Checkbox>
-              </Form.Item>
-            </Space>
+            {error ? <Alert className="login-alert" message={error} type="error" showIcon /> : null}
 
             <Space className="login-actions" size={8} wrap>
-              <Button htmlType="submit" type="primary">
+              <Button htmlType="submit" loading={submitting} type="primary">
                 Enter console
               </Button>
-              <Button onClick={() => navigate('/browser')}>Preview browser</Button>
             </Space>
           </Form>
         </section>
@@ -683,21 +865,53 @@ function LoginPage() {
 
 function OverviewPage() {
   const navigate = useNavigate();
+  const { runtime, loading: runtimeLoading, refresh: refreshRuntime } = useRuntimeData();
+  const { items: buckets, loading: bucketsLoading, refresh: refreshBuckets } = useBucketsData();
+
+  const handleCreateBucket = async () => {
+    const name = window.prompt('Bucket name');
+    if (!name?.trim()) {
+      return;
+    }
+
+    try {
+      await createBucket(name.trim());
+      message.success(`Bucket ${name.trim()} created`);
+      await Promise.all([refreshBuckets(), refreshRuntime()]);
+    } catch (error) {
+      message.error(normalizeApiError(error, 'Failed to create bucket'));
+    }
+  };
+
+  const metrics: MetricItem[] = [
+    {
+      label: 'Buckets',
+      value: String(runtime?.storage.bucket_count ?? buckets.length),
+      detail: 'Live count from the admin API',
+    },
+    {
+      label: 'Region',
+      value: runtime?.storage.region ?? '...',
+      detail: 'Used for S3 signing and client defaults',
+    },
+    {
+      label: 'Metadata',
+      value: runtime?.storage.metadata_layout ?? 'hidden-dir',
+      detail: 'Current on-disk sidecar strategy',
+    },
+  ];
 
   return (
     <ConsoleShell
       actions={
-        <>
-          <Button>New bucket</Button>
-          <Button icon={<UploadOutlined />} type="primary">
-            Upload
-          </Button>
-        </>
+        <Button onClick={() => void handleCreateBucket()} type="primary">
+          New bucket
+        </Button>
       }
     >
       <div className="workspace-stack">
         <Section flush title="At a glance">
-          {metricStrip()}
+          {metricStrip(metrics)}
         </Section>
 
         <div className="workspace-grid workspace-grid-main">
@@ -712,36 +926,50 @@ function OverviewPage() {
           >
             <Table
               columns={bucketColumns(true)}
-              dataSource={bucketRows}
+              dataSource={buckets}
+              loading={bucketsLoading}
+              locale={{ emptyText: <Empty description="No buckets yet" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
               pagination={false}
-              rowKey="key"
+              rowKey="name"
               scroll={{ x: 720 }}
               size="small"
             />
           </Section>
 
-          <Section title="Activity">
-            <List
-              dataSource={activityRows}
-              renderItem={(item) => (
-                <List.Item>
-                  <List.Item.Meta description={item.meta} title={item.title} />
-                  <Text type="secondary">{item.time}</Text>
-                </List.Item>
-              )}
-            />
+          <Section title="Runtime">
+            {runtimeLoading ? (
+              <Skeleton active paragraph={{ rows: 4 }} title={false} />
+            ) : (
+              <Descriptions
+                column={1}
+                items={nodeSummaryToItems([
+                  { label: 'Config file', value: safePathLabel(runtime?.config.path ?? 'defaults') },
+                  { label: 'Public file base', value: runtime?.storage.public_base_url ?? 'Not configured' },
+                  { label: 'S3 base', value: runtime?.storage.s3_base_url ?? 'Not configured' },
+                  { label: 'Temp path', value: safePathLabel(runtime?.paths.tmp_dir ?? '') },
+                ])}
+                size="small"
+              />
+            )}
           </Section>
         </div>
 
         <div className="workspace-grid workspace-grid-main">
-          <Section title="Node">
-            <Descriptions column={1} items={nodeSummaryToItems(nodeSummary)} size="small" />
-          </Section>
-
           <Section title="Rules">
             <List
               dataSource={consoleRules}
-              renderItem={(item) => (
+              renderItem={(item: string) => (
+                <List.Item>
+                  <Text>{item}</Text>
+                </List.Item>
+              )}
+            />
+          </Section>
+
+          <Section title="Bucket templates">
+            <List
+              dataSource={bucketTemplates}
+              renderItem={(item: string) => (
                 <List.Item>
                   <Text>{item}</Text>
                 </List.Item>
@@ -755,10 +983,27 @@ function OverviewPage() {
 }
 
 function BucketsPage() {
+  const { items, loading, refresh } = useBucketsData();
+
+  const handleCreateBucket = async () => {
+    const name = window.prompt('Bucket name');
+    if (!name?.trim()) {
+      return;
+    }
+
+    try {
+      await createBucket(name.trim());
+      message.success(`Bucket ${name.trim()} created`);
+      await refresh();
+    } catch (error) {
+      message.error(normalizeApiError(error, 'Failed to create bucket'));
+    }
+  };
+
   return (
     <ConsoleShell
       actions={
-        <Button type="primary">
+        <Button onClick={() => void handleCreateBucket()} type="primary">
           Create bucket
         </Button>
       }
@@ -768,10 +1013,12 @@ function BucketsPage() {
           <Section flush title="All buckets">
             <Table
               columns={bucketColumns(false)}
-              dataSource={bucketRows}
+              dataSource={items}
+              loading={loading}
+              locale={{ emptyText: <Empty description="No buckets yet" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
               pagination={false}
-              rowKey="key"
-              scroll={{ x: 860 }}
+              rowKey="name"
+              scroll={{ x: 980 }}
               size="small"
             />
           </Section>
@@ -779,7 +1026,7 @@ function BucketsPage() {
           <Section title="Templates">
             <List
               dataSource={bucketTemplates}
-              renderItem={(item) => (
+              renderItem={(item: string) => (
                 <List.Item>
                   <Text>{item}</Text>
                 </List.Item>
@@ -793,41 +1040,113 @@ function BucketsPage() {
 }
 
 function BrowserPage() {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const { items: buckets, loading: bucketsLoading } = useBucketsData();
+  const [selectedBucket, setSelectedBucket] = useState<string | null>(null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [searchValue, setSearchValue] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const { items: objects, loading: objectsLoading, refresh } = useBucketObjects(selectedBucket);
+
+  useEffect(() => {
+    if (!selectedBucket && buckets.length > 0) {
+      setSelectedBucket(buckets[0].name);
+    }
+    if (selectedBucket && !buckets.some((item) => item.name === selectedBucket)) {
+      setSelectedBucket(buckets[0]?.name ?? null);
+    }
+  }, [buckets, selectedBucket]);
 
   const filteredObjects = useMemo(() => {
     const keyword = searchValue.trim().toLowerCase();
-
     if (!keyword) {
-      return objectRows;
+      return objects;
     }
 
-    return objectRows.filter((item) =>
-      [item.key, item.type, item.cache, item.etag].some((field) =>
+    return objects.filter((item) =>
+      [item.key, item.content_type, item.cache_control ?? '', item.etag ?? ''].some((field) =>
         field.toLowerCase().includes(keyword),
       ),
     );
-  }, [searchValue]);
+  }, [objects, searchValue]);
+
+  useEffect(() => {
+    if (!selectedKey || !filteredObjects.some((item) => item.key === selectedKey)) {
+      setSelectedKey(filteredObjects[0]?.key ?? null);
+    }
+  }, [filteredObjects, selectedKey]);
+
+  const selectedObject = useMemo(
+    () => filteredObjects.find((item) => item.key === selectedKey) ?? filteredObjects[0] ?? null,
+    [filteredObjects, selectedKey],
+  );
+
+  const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
+    if (!selectedBucket) {
+      return;
+    }
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    setUploading(true);
+    try {
+      const uploaded = await uploadObject(selectedBucket, file);
+      message.success(`Uploaded ${uploaded.key}`);
+      await refresh();
+      setSelectedKey(uploaded.key);
+    } catch (error) {
+      message.error(normalizeApiError(error, 'Failed to upload object'));
+    } finally {
+      setUploading(false);
+      event.target.value = '';
+    }
+  };
+
+  const breadcrumbItems = selectedObject
+    ? selectedObject.key.split('/').map((item) => ({ title: item }))
+    : selectedBucket
+      ? [{ title: selectedBucket }]
+      : [{ title: 'No bucket selected' }];
 
   return (
     <ConsoleShell
       showHeaderSearch={false}
       actions={
-        <Button icon={<UploadOutlined />} type="primary">
-          Add object
-        </Button>
+        <>
+          <input
+            hidden
+            onChange={handleFileUpload}
+            ref={fileInputRef}
+            type="file"
+          />
+          <Button
+            disabled={!selectedBucket}
+            icon={<UploadOutlined />}
+            loading={uploading}
+            onClick={() => fileInputRef.current?.click()}
+            type="primary"
+          >
+            Add object
+          </Button>
+        </>
       }
     >
       <div className="workspace-stack">
         <div className="path-strip">
-          <Breadcrumb
-            items={[
-              { title: 'gallery' },
-              { title: 'launch' },
-              { title: 'mock-02.png' },
-            ]}
+          <Breadcrumb items={breadcrumbItems} />
+          <Select
+            className="bucket-select"
+            loading={bucketsLoading}
+            onChange={(value) => {
+              setSelectedBucket(value);
+              setSelectedKey(null);
+            }}
+            options={buckets.map((bucket) => ({ label: bucket.name, value: bucket.name }))}
+            placeholder="Select bucket"
+            value={selectedBucket ?? undefined}
           />
-          <Tag className="soft-tag">range requests on</Tag>
         </div>
 
         <div className="workspace-grid workspace-grid-main">
@@ -839,7 +1158,7 @@ function BrowserPage() {
                 allowClear
                 className="section-search"
                 onChange={(event) => setSearchValue(event.target.value)}
-                placeholder="Search current path"
+                placeholder="Search current bucket"
                 prefix={<SearchOutlined />}
                 value={searchValue}
               />
@@ -848,7 +1167,19 @@ function BrowserPage() {
             <Table
               columns={objectColumns}
               dataSource={filteredObjects}
+              loading={objectsLoading}
+              locale={{
+                emptyText: selectedBucket ? (
+                  <Empty description="No objects in this bucket yet" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                ) : (
+                  <Empty description="Create a bucket first" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                ),
+              }}
+              onRow={(record) => ({
+                onClick: () => setSelectedKey(record.key),
+              })}
               pagination={false}
+              rowClassName={(record) => (record.key === selectedObject?.key ? 'table-row-selected' : '')}
               rowKey="key"
               scroll={{ x: 880 }}
               size="small"
@@ -856,7 +1187,24 @@ function BrowserPage() {
           </Section>
 
           <Section title="Inspector">
-            <Descriptions column={1} items={nodeSummaryToItems(browserInspector)} size="small" />
+            {selectedObject ? (
+              <Descriptions
+                column={1}
+                items={nodeSummaryToItems([
+                  { label: 'Key', value: selectedObject.key },
+                  { label: 'Content-Type', value: selectedObject.content_type || 'application/octet-stream' },
+                  { label: 'Size', value: formatBytes(selectedObject.size) },
+                  { label: 'Cache-Control', value: selectedObject.cache_control || 'private' },
+                  { label: 'ETag', value: selectedObject.etag || 'Not set' },
+                  { label: 'Updated', value: formatDateTime(selectedObject.last_modified) },
+                ])}
+                size="small"
+              />
+            ) : objectsLoading ? (
+              <Spin />
+            ) : (
+              <Empty description="Select an object to inspect" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+            )}
           </Section>
         </div>
       </div>
@@ -866,13 +1214,7 @@ function BrowserPage() {
 
 function LinksPage() {
   return (
-    <ConsoleShell
-      actions={
-        <Button type="primary">
-          Create link
-        </Button>
-      }
-    >
+    <ConsoleShell>
       <div className="workspace-stack">
         <div className="workspace-grid workspace-grid-main">
           <Section flush title="Published routes">
@@ -889,7 +1231,7 @@ function LinksPage() {
           <Section title="Publishing rules">
             <List
               dataSource={publishingNotes}
-              renderItem={(item) => (
+              renderItem={(item: string) => (
                 <List.Item>
                   <Text>{item}</Text>
                 </List.Item>
@@ -903,15 +1245,64 @@ function LinksPage() {
 }
 
 function SettingsPage() {
+  const auth = useAuth();
+  const { runtime, loading } = useRuntimeData();
+
+  const groups = runtime
+    ? [
+        {
+          title: 'Console session',
+          items: [
+            { label: 'Username', value: auth.session?.username ?? 'admin' },
+            { label: 'Expires', value: auth.session ? formatDateTime(auth.session.expires_at) : 'Not available' },
+            { label: 'Config file', value: safePathLabel(runtime.config.path || 'defaults') },
+          ],
+        },
+        {
+          title: 'Storage paths',
+          items: [
+            { label: 'Data dir', value: safePathLabel(runtime.paths.data_dir) },
+            { label: 'Log dir', value: safePathLabel(runtime.paths.log_dir) },
+            { label: 'Temp dir', value: safePathLabel(runtime.paths.tmp_dir) },
+          ],
+        },
+        {
+          title: 'Endpoints',
+          items: [
+            { label: 'Admin listen', value: runtime.listen.admin },
+            { label: 'S3 listen', value: runtime.listen.s3 },
+            { label: 'File listen', value: runtime.listen.file },
+          ],
+        },
+        {
+          title: 'Storage policy',
+          items: [
+            { label: 'Region', value: runtime.storage.region },
+            { label: 'Public file base', value: runtime.storage.public_base_url },
+            { label: 'S3 base', value: runtime.storage.s3_base_url },
+            { label: 'Metadata layout', value: runtime.storage.metadata_layout },
+          ],
+        },
+      ]
+    : [];
+
   return (
     <ConsoleShell>
-      <div className="workspace-grid workspace-grid-thirds">
-        {settingGroups.map((group) => (
-          <Section key={group.title} title={group.title}>
-            <Descriptions column={1} items={nodeSummaryToItems(group.items)} size="small" />
+      {loading ? (
+        <div className="workspace-stack">
+          <Section title="Runtime">
+            <Skeleton active paragraph={{ rows: 8 }} title={false} />
           </Section>
-        ))}
-      </div>
+        </div>
+      ) : (
+        <div className="workspace-grid workspace-grid-thirds">
+          {groups.map((group) => (
+            <Section key={group.title} title={group.title}>
+              <Descriptions column={1} items={nodeSummaryToItems(group.items)} size="small" />
+            </Section>
+          ))}
+        </div>
+      )}
     </ConsoleShell>
   );
 }

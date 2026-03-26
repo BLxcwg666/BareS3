@@ -266,6 +266,17 @@ a {
   border-top: 1px solid var(--line);
 }
 
+.user-foot {
+  display: grid;
+  gap: 2px;
+}
+
+.user-foot strong {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+}
+
 .soft-tag,
 .mode-tag {
   border: 0;
@@ -342,6 +353,12 @@ a {
 .theme-button {
   min-width: 126px;
   justify-content: center;
+}
+
+.user-tag {
+  background: var(--surface-soft);
+  color: var(--ink);
+  border-color: var(--line);
 }
 
 .mobile-menu {
@@ -561,6 +578,10 @@ a {
   margin-bottom: 12px;
 }
 
+.login-alert {
+  margin-bottom: 16px;
+}
+
 .login-checks {
   margin-bottom: 16px;
 }
@@ -568,6 +589,14 @@ a {
 .login-actions {
   display: flex;
   flex-wrap: wrap;
+}
+
+.bucket-select {
+  min-width: 220px;
+}
+
+.table-row-selected > td {
+  background: var(--row-hover) !important;
 }
 
 .route-progress {
