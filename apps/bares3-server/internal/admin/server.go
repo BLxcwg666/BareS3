@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -9,12 +11,13 @@ import (
 	"bares3-server/internal/buildinfo"
 	"bares3-server/internal/config"
 	"bares3-server/internal/httpx"
+	"bares3-server/internal/storage"
 	"github.com/go-chi/chi/v5"
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 	"go.uber.org/zap"
 )
 
-func NewHandler(cfg config.Config, logger *zap.Logger) http.Handler {
+func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) http.Handler {
 	router := chi.NewRouter()
 	router.Use(chiMiddleware.RequestID)
 	router.Use(chiMiddleware.RealIP)
@@ -45,6 +48,15 @@ func NewHandler(cfg config.Config, logger *zap.Logger) http.Handler {
 		})
 
 		api.Get("/runtime", func(w http.ResponseWriter, r *http.Request) {
+			buckets, err := store.ListBuckets(r.Context())
+			if err != nil {
+				httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+					"status":  "error",
+					"message": err.Error(),
+				})
+				return
+			}
+
 			httpx.WriteJSON(w, http.StatusOK, map[string]any{
 				"app": map[string]any{
 					"name": config.ProductName,
@@ -70,8 +82,57 @@ func NewHandler(cfg config.Config, logger *zap.Logger) http.Handler {
 					"region":          cfg.Storage.Region,
 					"public_base_url": cfg.Storage.PublicBaseURL,
 					"metadata_layout": cfg.Storage.MetadataLayout,
+					"bucket_count":    len(buckets),
 				},
 			})
+		})
+
+		api.Get("/buckets", func(w http.ResponseWriter, r *http.Request) {
+			buckets, err := store.ListBuckets(r.Context())
+			if err != nil {
+				httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+					"status":  "error",
+					"message": err.Error(),
+				})
+				return
+			}
+			httpx.WriteJSON(w, http.StatusOK, map[string]any{
+				"items": buckets,
+			})
+		})
+
+		api.Post("/buckets", func(w http.ResponseWriter, r *http.Request) {
+			payload := struct {
+				Name string `json:"name"`
+			}{}
+
+			decoder := json.NewDecoder(r.Body)
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&payload); err != nil {
+				httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+					"status":  "error",
+					"message": "invalid request body",
+				})
+				return
+			}
+
+			bucket, err := store.CreateBucket(r.Context(), payload.Name)
+			if err != nil {
+				status := http.StatusInternalServerError
+				switch {
+				case errors.Is(err, storage.ErrInvalidBucketName):
+					status = http.StatusBadRequest
+				case errors.Is(err, storage.ErrBucketExists):
+					status = http.StatusConflict
+				}
+				httpx.WriteJSON(w, status, map[string]any{
+					"status":  "error",
+					"message": err.Error(),
+				})
+				return
+			}
+
+			httpx.WriteJSON(w, http.StatusCreated, bucket)
 		})
 	})
 

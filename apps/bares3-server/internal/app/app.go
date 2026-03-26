@@ -15,6 +15,7 @@ import (
 	"bares3-server/internal/fileserve"
 	"bares3-server/internal/logx"
 	"bares3-server/internal/s3api"
+	"bares3-server/internal/storage"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
@@ -22,6 +23,7 @@ import (
 type App struct {
 	cfg    config.Config
 	logger *zap.Logger
+	store  *storage.Store
 }
 
 type serverSpec struct {
@@ -32,7 +34,7 @@ type serverSpec struct {
 }
 
 func New(cfg config.Config, logger *zap.Logger) *App {
-	return &App{cfg: cfg, logger: logger}
+	return &App{cfg: cfg, logger: logger, store: storage.New(cfg, logx.MustChild(logger, "storage"))}
 }
 
 func (a *App) Run(ctx context.Context) error {
@@ -48,12 +50,13 @@ func (a *App) Run(ctx context.Context) error {
 		zap.String("data_dir", a.cfg.Paths.DataDir),
 		zap.String("log_dir", a.cfg.Paths.LogDir),
 		zap.String("tmp_dir", a.cfg.Storage.TmpDir),
+		zap.String("metadata_layout", a.cfg.Storage.MetadataLayout),
 	)
 
 	specs := []serverSpec{
-		{name: "admin", addr: a.cfg.Listen.Admin, handler: admin.NewHandler(a.cfg, logx.MustChild(a.logger, "admin")), logger: logx.MustChild(a.logger, "admin")},
+		{name: "admin", addr: a.cfg.Listen.Admin, handler: admin.NewHandler(a.cfg, a.store, logx.MustChild(a.logger, "admin")), logger: logx.MustChild(a.logger, "admin")},
 		{name: "s3", addr: a.cfg.Listen.S3, handler: s3api.NewHandler(a.cfg, logx.MustChild(a.logger, "s3")), logger: logx.MustChild(a.logger, "s3")},
-		{name: "file", addr: a.cfg.Listen.File, handler: fileserve.NewHandler(a.cfg, logx.MustChild(a.logger, "file")), logger: logx.MustChild(a.logger, "file")},
+		{name: "file", addr: a.cfg.Listen.File, handler: fileserve.NewHandler(a.cfg, a.store, logx.MustChild(a.logger, "file")), logger: logx.MustChild(a.logger, "file")},
 	}
 
 	group, groupCtx := errgroup.WithContext(ctx)

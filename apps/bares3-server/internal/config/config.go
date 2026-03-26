@@ -171,6 +171,13 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Storage.TmpDir) == "" {
 		return errors.New("storage.tmp_dir must not be empty")
 	}
+	layout := strings.ToLower(strings.TrimSpace(c.Storage.MetadataLayout))
+	if layout != "" && layout != "hidden-dir" {
+		return fmt.Errorf("storage.metadata_layout must be hidden-dir, got %q", c.Storage.MetadataLayout)
+	}
+	if dataVolume, tmpVolume := strings.ToLower(filepath.VolumeName(c.Paths.DataDir)), strings.ToLower(filepath.VolumeName(c.Storage.TmpDir)); dataVolume != "" && tmpVolume != "" && dataVolume != tmpVolume {
+		return fmt.Errorf("storage.tmp_dir must be on the same volume as paths.data_dir for atomic moves (%s != %s)", c.Paths.DataDir, c.Storage.TmpDir)
+	}
 
 	format := strings.ToLower(strings.TrimSpace(c.Logging.Format))
 	if format != "" && format != "pretty" && format != "json" {
