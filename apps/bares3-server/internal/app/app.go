@@ -55,7 +55,7 @@ func (a *App) Run(ctx context.Context) error {
 
 	specs := []serverSpec{
 		{name: "admin", addr: a.cfg.Listen.Admin, handler: admin.NewHandler(a.cfg, a.store, logx.MustChild(a.logger, "admin")), logger: logx.MustChild(a.logger, "admin")},
-		{name: "s3", addr: a.cfg.Listen.S3, handler: s3api.NewHandler(a.cfg, logx.MustChild(a.logger, "s3")), logger: logx.MustChild(a.logger, "s3")},
+		{name: "s3", addr: a.cfg.Listen.S3, handler: s3api.NewHandler(a.cfg, a.store, logx.MustChild(a.logger, "s3")), logger: logx.MustChild(a.logger, "s3")},
 		{name: "file", addr: a.cfg.Listen.File, handler: fileserve.NewHandler(a.cfg, a.store, logx.MustChild(a.logger, "file")), logger: logx.MustChild(a.logger, "file")},
 	}
 
