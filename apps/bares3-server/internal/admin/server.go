@@ -13,6 +13,7 @@ import (
 
 	"bares3-server/internal/buildinfo"
 	"bares3-server/internal/config"
+	"bares3-server/internal/consoleauth"
 	"bares3-server/internal/httpx"
 	"bares3-server/internal/sigv4"
 	"bares3-server/internal/storage"
@@ -22,6 +23,16 @@ import (
 )
 
 func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) http.Handler {
+	manager, err := consoleauth.NewManager(consoleauth.Options{
+		Username:      cfg.Auth.Console.Username,
+		PasswordHash:  cfg.Auth.Console.PasswordHash,
+		SessionSecret: cfg.Auth.Console.SessionSecret,
+		TTL:           time.Duration(cfg.Auth.Console.SessionTTLMinutes) * time.Minute,
+	})
+	if err != nil {
+		panic(fmt.Sprintf("initialize console auth manager: %v", err))
+	}
+
 	router := chi.NewRouter()
 	router.Use(chiMiddleware.RequestID)
 	router.Use(chiMiddleware.RealIP)
@@ -51,234 +62,287 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 			})
 		})
 
-		api.Get("/runtime", func(w http.ResponseWriter, r *http.Request) {
-			buckets, err := store.ListBuckets(r.Context())
-			if err != nil {
-				httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
-					"status":  "error",
-					"message": err.Error(),
-				})
-				return
-			}
+		api.Route("/auth", func(auth chi.Router) {
+			auth.Post("/login", func(w http.ResponseWriter, r *http.Request) {
+				payload := struct {
+					Username string `json:"username"`
+					Password string `json:"password"`
+				}{}
 
-			httpx.WriteJSON(w, http.StatusOK, map[string]any{
-				"app": map[string]any{
-					"name": config.ProductName,
-					"env":  cfg.App.Env,
-				},
-				"version": buildinfo.Current(),
-				"config": map[string]any{
-					"path": cfg.Runtime.ConfigPath,
-					"used": cfg.Runtime.ConfigUsed,
-					"base": cfg.Runtime.BaseDir,
-				},
-				"paths": map[string]any{
-					"data_dir": cfg.Paths.DataDir,
-					"log_dir":  cfg.Paths.LogDir,
-					"tmp_dir":  cfg.Storage.TmpDir,
-				},
-				"listen": map[string]any{
-					"admin": cfg.Listen.Admin,
-					"s3":    cfg.Listen.S3,
-					"file":  cfg.Listen.File,
-				},
-				"storage": map[string]any{
-					"region":          cfg.Storage.Region,
-					"public_base_url": cfg.Storage.PublicBaseURL,
-					"s3_base_url":     cfg.Storage.S3BaseURL,
-					"metadata_layout": cfg.Storage.MetadataLayout,
-					"bucket_count":    len(buckets),
-				},
+				decoder := json.NewDecoder(r.Body)
+				decoder.DisallowUnknownFields()
+				if err := decoder.Decode(&payload); err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "message": "invalid request body"})
+					return
+				}
+
+				session, err := manager.Authenticate(strings.TrimSpace(payload.Username), payload.Password)
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusUnauthorized, map[string]any{"status": "error", "message": "invalid credentials"})
+					return
+				}
+
+				cookie, err := manager.IssueCookie(session)
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": "failed to issue session"})
+					return
+				}
+				http.SetCookie(w, cookie)
+				httpx.WriteJSON(w, http.StatusOK, map[string]any{
+					"username":   session.Username,
+					"expires_at": session.ExpiresAt,
+				})
+			})
+
+			logoutHandler := func(w http.ResponseWriter, r *http.Request) {
+				http.SetCookie(w, manager.ClearCookie())
+				w.WriteHeader(http.StatusNoContent)
+			}
+			auth.Post("/logout", logoutHandler)
+			auth.Get("/logout", logoutHandler)
+
+			auth.Get("/me", func(w http.ResponseWriter, r *http.Request) {
+				session, err := manager.SessionFromRequest(r)
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusUnauthorized, map[string]any{"status": "error", "message": "not authenticated"})
+					return
+				}
+				httpx.WriteJSON(w, http.StatusOK, map[string]any{"username": session.Username, "expires_at": session.ExpiresAt})
 			})
 		})
 
-		api.Get("/buckets", func(w http.ResponseWriter, r *http.Request) {
-			buckets, err := store.ListBuckets(r.Context())
-			if err != nil {
-				httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
-					"status":  "error",
-					"message": err.Error(),
-				})
-				return
-			}
-			httpx.WriteJSON(w, http.StatusOK, map[string]any{
-				"items": buckets,
-			})
-		})
+		api.Group(func(protected chi.Router) {
+			protected.Use(requireSession(manager))
 
-		api.Post("/buckets", func(w http.ResponseWriter, r *http.Request) {
-			payload := struct {
-				Name string `json:"name"`
-			}{}
-
-			decoder := json.NewDecoder(r.Body)
-			decoder.DisallowUnknownFields()
-			if err := decoder.Decode(&payload); err != nil {
-				httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
-					"status":  "error",
-					"message": "invalid request body",
-				})
-				return
-			}
-
-			bucket, err := store.CreateBucket(r.Context(), payload.Name)
-			if err != nil {
-				writeStorageError(w, err)
-				return
-			}
-
-			httpx.WriteJSON(w, http.StatusCreated, bucket)
-		})
-
-		api.Delete("/buckets/{bucket}", func(w http.ResponseWriter, r *http.Request) {
-			if err := store.DeleteBucket(r.Context(), chi.URLParam(r, "bucket")); err != nil {
-				writeStorageError(w, err)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
-		})
-
-		api.Get("/buckets/{bucket}", func(w http.ResponseWriter, r *http.Request) {
-			bucket, err := store.GetBucket(r.Context(), chi.URLParam(r, "bucket"))
-			if err != nil {
-				writeStorageError(w, err)
-				return
-			}
-			httpx.WriteJSON(w, http.StatusOK, bucket)
-		})
-
-		api.Get("/buckets/{bucket}/objects", func(w http.ResponseWriter, r *http.Request) {
-			limit := 0
-			if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
-				parsed, err := strconv.Atoi(rawLimit)
-				if err != nil || parsed < 0 {
-					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+			protected.Get("/runtime", func(w http.ResponseWriter, r *http.Request) {
+				buckets, err := store.ListBuckets(r.Context())
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
 						"status":  "error",
-						"message": "limit must be a non-negative integer",
+						"message": err.Error(),
 					})
 					return
 				}
-				limit = parsed
-			}
 
-			items, err := store.ListObjects(r.Context(), chi.URLParam(r, "bucket"), storage.ListObjectsOptions{
-				Prefix: r.URL.Query().Get("prefix"),
-				Limit:  limit,
+				httpx.WriteJSON(w, http.StatusOK, map[string]any{
+					"app": map[string]any{
+						"name": config.ProductName,
+						"env":  cfg.App.Env,
+					},
+					"version": buildinfo.Current(),
+					"config": map[string]any{
+						"path": cfg.Runtime.ConfigPath,
+						"used": cfg.Runtime.ConfigUsed,
+						"base": cfg.Runtime.BaseDir,
+					},
+					"paths": map[string]any{
+						"data_dir": cfg.Paths.DataDir,
+						"log_dir":  cfg.Paths.LogDir,
+						"tmp_dir":  cfg.Storage.TmpDir,
+					},
+					"listen": map[string]any{
+						"admin": cfg.Listen.Admin,
+						"s3":    cfg.Listen.S3,
+						"file":  cfg.Listen.File,
+					},
+					"storage": map[string]any{
+						"region":          cfg.Storage.Region,
+						"public_base_url": cfg.Storage.PublicBaseURL,
+						"s3_base_url":     cfg.Storage.S3BaseURL,
+						"metadata_layout": cfg.Storage.MetadataLayout,
+						"bucket_count":    len(buckets),
+					},
+				})
 			})
-			if err != nil {
-				writeStorageError(w, err)
-				return
-			}
-			httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
-		})
 
-		api.Post("/buckets/{bucket}/objects", func(w http.ResponseWriter, r *http.Request) {
-			if err := r.ParseMultipartForm(64 << 20); err != nil {
-				httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
-					"status":  "error",
-					"message": "invalid multipart form",
+			protected.Get("/buckets", func(w http.ResponseWriter, r *http.Request) {
+				buckets, err := store.ListBuckets(r.Context())
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
+				httpx.WriteJSON(w, http.StatusOK, map[string]any{
+					"items": buckets,
 				})
-				return
-			}
-
-			file, header, err := r.FormFile("file")
-			if err != nil {
-				httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
-					"status":  "error",
-					"message": "file field is required",
-				})
-				return
-			}
-			defer func() {
-				_ = file.Close()
-			}()
-
-			key := strings.TrimSpace(r.FormValue("key"))
-			if key == "" && header != nil {
-				key = header.Filename
-			}
-
-			object, err := store.PutObject(r.Context(), storage.PutObjectInput{
-				Bucket:             chi.URLParam(r, "bucket"),
-				Key:                key,
-				Body:               file,
-				ContentType:        resolveUploadContentType(r, header),
-				CacheControl:       strings.TrimSpace(r.FormValue("cache_control")),
-				ContentDisposition: strings.TrimSpace(r.FormValue("content_disposition")),
-				UserMetadata:       collectMetadataFields(r.MultipartForm.Value),
 			})
-			if err != nil {
-				writeStorageError(w, err)
-				return
-			}
-			httpx.WriteJSON(w, http.StatusCreated, object)
-		})
 
-		api.Delete("/buckets/{bucket}/objects/*", func(w http.ResponseWriter, r *http.Request) {
-			if err := store.DeleteObject(r.Context(), chi.URLParam(r, "bucket"), chi.URLParam(r, "*")); err != nil {
-				writeStorageError(w, err)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
-		})
+			protected.Post("/buckets", func(w http.ResponseWriter, r *http.Request) {
+				payload := struct {
+					Name string `json:"name"`
+				}{}
 
-		api.Get("/buckets/{bucket}/objects/*", func(w http.ResponseWriter, r *http.Request) {
-			object, err := store.StatObject(r.Context(), chi.URLParam(r, "bucket"), chi.URLParam(r, "*"))
-			if err != nil {
-				writeStorageError(w, err)
-				return
-			}
-			httpx.WriteJSON(w, http.StatusOK, object)
-		})
+				decoder := json.NewDecoder(r.Body)
+				decoder.DisallowUnknownFields()
+				if err := decoder.Decode(&payload); err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+						"status":  "error",
+						"message": "invalid request body",
+					})
+					return
+				}
 
-		api.Post("/presign/s3", func(w http.ResponseWriter, r *http.Request) {
-			payload := struct {
-				Method         string `json:"method"`
-				Bucket         string `json:"bucket"`
-				Key            string `json:"key"`
-				ExpiresSeconds int    `json:"expires_seconds"`
-			}{}
+				bucket, err := store.CreateBucket(r.Context(), payload.Name)
+				if err != nil {
+					writeStorageError(w, err)
+					return
+				}
 
-			decoder := json.NewDecoder(r.Body)
-			decoder.DisallowUnknownFields()
-			if err := decoder.Decode(&payload); err != nil {
-				httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
-					"status":  "error",
-					"message": "invalid request body",
-				})
-				return
-			}
-
-			baseURL, err := url.Parse(cfg.Storage.S3BaseURL)
-			if err != nil {
-				httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
-					"status":  "error",
-					"message": "invalid storage.s3_base_url configuration",
-				})
-				return
-			}
-
-			requestPath := "/" + strings.TrimPrefix(strings.TrimSpace(payload.Bucket), "/")
-			if key := strings.TrimPrefix(strings.TrimSpace(payload.Key), "/"); key != "" {
-				requestPath += "/" + key
-			}
-			baseURL.Path = requestPath
-
-			verifier := sigv4.NewVerifier(cfg.Auth.S3AccessKeyID, cfg.Auth.S3SecretAccessKey, cfg.Storage.Region, "s3")
-			result, err := verifier.Presign(sigv4.PresignInput{
-				Method:  payload.Method,
-				URL:     baseURL,
-				Expires: time.Duration(payload.ExpiresSeconds) * time.Second,
+				httpx.WriteJSON(w, http.StatusCreated, bucket)
 			})
-			if err != nil {
-				httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
-					"status":  "error",
-					"message": err.Error(),
-				})
-				return
-			}
 
-			httpx.WriteJSON(w, http.StatusOK, result)
+			protected.Delete("/buckets/{bucket}", func(w http.ResponseWriter, r *http.Request) {
+				if err := store.DeleteBucket(r.Context(), chi.URLParam(r, "bucket")); err != nil {
+					writeStorageError(w, err)
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+			})
+
+			protected.Get("/buckets/{bucket}", func(w http.ResponseWriter, r *http.Request) {
+				bucket, err := store.GetBucket(r.Context(), chi.URLParam(r, "bucket"))
+				if err != nil {
+					writeStorageError(w, err)
+					return
+				}
+				httpx.WriteJSON(w, http.StatusOK, bucket)
+			})
+
+			protected.Get("/buckets/{bucket}/objects", func(w http.ResponseWriter, r *http.Request) {
+				limit := 0
+				if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+					parsed, err := strconv.Atoi(rawLimit)
+					if err != nil || parsed < 0 {
+						httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+							"status":  "error",
+							"message": "limit must be a non-negative integer",
+						})
+						return
+					}
+					limit = parsed
+				}
+
+				items, err := store.ListObjects(r.Context(), chi.URLParam(r, "bucket"), storage.ListObjectsOptions{
+					Prefix: r.URL.Query().Get("prefix"),
+					Limit:  limit,
+				})
+				if err != nil {
+					writeStorageError(w, err)
+					return
+				}
+				httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
+			})
+
+			protected.Post("/buckets/{bucket}/objects", func(w http.ResponseWriter, r *http.Request) {
+				if err := r.ParseMultipartForm(64 << 20); err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+						"status":  "error",
+						"message": "invalid multipart form",
+					})
+					return
+				}
+
+				file, header, err := r.FormFile("file")
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+						"status":  "error",
+						"message": "file field is required",
+					})
+					return
+				}
+				defer func() {
+					_ = file.Close()
+				}()
+
+				key := strings.TrimSpace(r.FormValue("key"))
+				if key == "" && header != nil {
+					key = header.Filename
+				}
+
+				object, err := store.PutObject(r.Context(), storage.PutObjectInput{
+					Bucket:             chi.URLParam(r, "bucket"),
+					Key:                key,
+					Body:               file,
+					ContentType:        resolveUploadContentType(r, header),
+					CacheControl:       strings.TrimSpace(r.FormValue("cache_control")),
+					ContentDisposition: strings.TrimSpace(r.FormValue("content_disposition")),
+					UserMetadata:       collectMetadataFields(r.MultipartForm.Value),
+				})
+				if err != nil {
+					writeStorageError(w, err)
+					return
+				}
+				httpx.WriteJSON(w, http.StatusCreated, object)
+			})
+
+			protected.Delete("/buckets/{bucket}/objects/*", func(w http.ResponseWriter, r *http.Request) {
+				if err := store.DeleteObject(r.Context(), chi.URLParam(r, "bucket"), chi.URLParam(r, "*")); err != nil {
+					writeStorageError(w, err)
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+			})
+
+			protected.Get("/buckets/{bucket}/objects/*", func(w http.ResponseWriter, r *http.Request) {
+				object, err := store.StatObject(r.Context(), chi.URLParam(r, "bucket"), chi.URLParam(r, "*"))
+				if err != nil {
+					writeStorageError(w, err)
+					return
+				}
+				httpx.WriteJSON(w, http.StatusOK, object)
+			})
+
+			protected.Post("/presign/s3", func(w http.ResponseWriter, r *http.Request) {
+				payload := struct {
+					Method         string `json:"method"`
+					Bucket         string `json:"bucket"`
+					Key            string `json:"key"`
+					ExpiresSeconds int    `json:"expires_seconds"`
+				}{}
+
+				decoder := json.NewDecoder(r.Body)
+				decoder.DisallowUnknownFields()
+				if err := decoder.Decode(&payload); err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+						"status":  "error",
+						"message": "invalid request body",
+					})
+					return
+				}
+
+				baseURL, err := url.Parse(cfg.Storage.S3BaseURL)
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": "invalid storage.s3_base_url configuration",
+					})
+					return
+				}
+
+				requestPath := "/" + strings.TrimPrefix(strings.TrimSpace(payload.Bucket), "/")
+				if key := strings.TrimPrefix(strings.TrimSpace(payload.Key), "/"); key != "" {
+					requestPath += "/" + key
+				}
+				baseURL.Path = requestPath
+
+				verifier := sigv4.NewVerifier(cfg.Auth.S3.AccessKeyID, cfg.Auth.S3.SecretAccessKey, cfg.Storage.Region, "s3")
+				result, err := verifier.Presign(sigv4.PresignInput{
+					Method:  payload.Method,
+					URL:     baseURL,
+					Expires: time.Duration(payload.ExpiresSeconds) * time.Second,
+				})
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
+
+				httpx.WriteJSON(w, http.StatusOK, result)
+			})
 		})
 	})
 
@@ -327,6 +391,18 @@ func renderIndex(cfg config.Config) string {
     </main>
   </body>
 </html>`, config.ProductName, config.ProductName, info.String(), configPath, cfg.Paths.DataDir, cfg.Paths.LogDir, cfg.Listen.Admin, cfg.Listen.S3, cfg.Listen.File)
+}
+
+func requireSession(manager *consoleauth.Manager) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if _, err := manager.SessionFromRequest(r); err != nil {
+				httpx.WriteJSON(w, http.StatusUnauthorized, map[string]any{"status": "error", "message": "not authenticated"})
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 func writeStorageError(w http.ResponseWriter, err error) {

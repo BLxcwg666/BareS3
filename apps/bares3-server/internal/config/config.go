@@ -43,11 +43,20 @@ type ListenConfig struct {
 }
 
 type AuthConfig struct {
-	AdminUsername     string `yaml:"admin_username"`
-	AdminPasswordHash string `yaml:"admin_password_hash"`
-	JWTSecret         string `yaml:"jwt_secret"`
-	S3AccessKeyID     string `yaml:"s3_access_key_id"`
-	S3SecretAccessKey string `yaml:"s3_secret_access_key"`
+	Console ConsoleAuthConfig `yaml:"console"`
+	S3      S3AuthConfig      `yaml:"s3"`
+}
+
+type ConsoleAuthConfig struct {
+	Username          string `yaml:"username"`
+	PasswordHash      string `yaml:"password_hash"`
+	SessionSecret     string `yaml:"session_secret"`
+	SessionTTLMinutes int    `yaml:"session_ttl_minutes"`
+}
+
+type S3AuthConfig struct {
+	AccessKeyID     string `yaml:"access_key_id"`
+	SecretAccessKey string `yaml:"secret_access_key"`
 }
 
 type StorageConfig struct {
@@ -86,9 +95,14 @@ func Default() Config {
 			File:  "0.0.0.0:9001",
 		},
 		Auth: AuthConfig{
-			AdminUsername:     "admin",
-			S3AccessKeyID:     "bares3-dev",
-			S3SecretAccessKey: "bares3-dev-secret",
+			Console: ConsoleAuthConfig{
+				Username:          "admin",
+				SessionTTLMinutes: 7 * 24 * 60,
+			},
+			S3: S3AuthConfig{
+				AccessKeyID:     "bares3-dev",
+				SecretAccessKey: "bares3-dev-secret",
+			},
 		},
 		Storage: StorageConfig{
 			Region:         "home-lab-1",
@@ -185,11 +199,23 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Storage.S3BaseURL) == "" {
 		return errors.New("storage.s3_base_url must not be empty")
 	}
-	if strings.TrimSpace(c.Auth.S3AccessKeyID) == "" {
-		return errors.New("auth.s3_access_key_id must not be empty")
+	if strings.TrimSpace(c.Auth.Console.Username) == "" {
+		return errors.New("auth.console.username must not be empty")
 	}
-	if strings.TrimSpace(c.Auth.S3SecretAccessKey) == "" {
-		return errors.New("auth.s3_secret_access_key must not be empty")
+	if strings.TrimSpace(c.Auth.Console.PasswordHash) == "" {
+		return errors.New("auth.console.password_hash must not be empty")
+	}
+	if strings.TrimSpace(c.Auth.Console.SessionSecret) == "" {
+		return errors.New("auth.console.session_secret must not be empty")
+	}
+	if c.Auth.Console.SessionTTLMinutes <= 0 {
+		return errors.New("auth.console.session_ttl_minutes must be greater than zero")
+	}
+	if strings.TrimSpace(c.Auth.S3.AccessKeyID) == "" {
+		return errors.New("auth.s3.access_key_id must not be empty")
+	}
+	if strings.TrimSpace(c.Auth.S3.SecretAccessKey) == "" {
+		return errors.New("auth.s3.secret_access_key must not be empty")
 	}
 	layout := strings.ToLower(strings.TrimSpace(c.Storage.MetadataLayout))
 	if layout != "" && layout != "hidden-dir" {
@@ -222,13 +248,16 @@ var executableDir = func() string {
 	return filepath.Dir(path)
 }()
 
-func lookupConfigPath(explicitPath string) (string, bool, error) {
+func resolveConfigPath(explicitPath string, allowMissingExplicit bool) (string, bool, error) {
 	if strings.TrimSpace(explicitPath) != "" {
 		resolved, err := filepath.Abs(explicitPath)
 		if err != nil {
 			return "", false, fmt.Errorf("resolve explicit config path: %w", err)
 		}
 		if _, err := os.Stat(resolved); err != nil {
+			if errors.Is(err, os.ErrNotExist) && allowMissingExplicit {
+				return resolved, false, nil
+			}
 			return "", false, fmt.Errorf("stat explicit config path: %w", err)
 		}
 		return resolved, true, nil
@@ -242,6 +271,10 @@ func lookupConfigPath(explicitPath string) (string, bool, error) {
 		return "", false, fmt.Errorf("stat implicit config path: %w", err)
 	}
 	return path, true, nil
+}
+
+func lookupConfigPath(explicitPath string) (string, bool, error) {
+	return resolveConfigPath(explicitPath, false)
 }
 
 func resolvePath(baseDir, value, fallback string) string {

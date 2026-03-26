@@ -135,7 +135,7 @@ type listResponseItem struct {
 }
 
 func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) http.Handler {
-	verifier := sigv4.NewVerifier(cfg.Auth.S3AccessKeyID, cfg.Auth.S3SecretAccessKey, cfg.Storage.Region, "s3")
+	verifier := sigv4.NewVerifier(cfg.Auth.S3.AccessKeyID, cfg.Auth.S3.SecretAccessKey, cfg.Storage.Region, "s3")
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
