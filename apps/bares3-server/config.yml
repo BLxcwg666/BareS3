@@ -19,6 +19,7 @@ auth:
 
 storage:
   public_base_url: http://127.0.0.1:9001
+  s3_base_url: http://127.0.0.1:9000
   region: home-lab-1
   tmp_dir: ./data/.bares3/tmp
   metadata_layout: hidden-dir
