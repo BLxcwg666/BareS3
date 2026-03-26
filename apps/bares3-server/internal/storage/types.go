@@ -58,6 +58,11 @@ type PutObjectInput struct {
 	UserMetadata       map[string]string
 }
 
+type ListObjectsOptions struct {
+	Prefix string
+	Limit  int
+}
+
 type bucketMetadata struct {
 	Name           string    `json:"name"`
 	CreatedAt      time.Time `json:"created_at"`

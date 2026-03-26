@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -158,6 +159,123 @@ func (s *Store) ListBuckets(ctx context.Context) ([]BucketInfo, error) {
 	})
 
 	return buckets, nil
+}
+
+func (s *Store) ListObjects(ctx context.Context, bucket string, options ListObjectsOptions) ([]ObjectInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if _, err := s.GetBucket(ctx, bucket); err != nil {
+		return nil, err
+	}
+
+	prefix := strings.TrimSpace(options.Prefix)
+	objectsByKey := make(map[string]ObjectInfo)
+
+	metadataRoot := s.bucketMetaDir(bucket)
+	if err := filepath.WalkDir(metadataRoot, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if filepath.Ext(path) != ".json" {
+			return nil
+		}
+
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		meta := objectMetadata{}
+		if err := readJSONFile(path, &meta); err != nil {
+			return err
+		}
+		if prefix != "" && !strings.HasPrefix(meta.Key, prefix) {
+			return nil
+		}
+
+		objectPath, metadataPath, err := s.resolveObjectPaths(bucket, meta.Key)
+		if err != nil {
+			return err
+		}
+		objectsByKey[meta.Key] = ObjectInfo{
+			Bucket:             meta.Bucket,
+			Key:                meta.Key,
+			Path:               objectPath,
+			MetadataPath:       metadataPath,
+			Size:               meta.Size,
+			ETag:               meta.ETag,
+			ContentType:        meta.ContentType,
+			CacheControl:       meta.CacheControl,
+			ContentDisposition: meta.ContentDisposition,
+			UserMetadata:       cloneStringMap(meta.UserMetadata),
+			LastModified:       meta.LastModified,
+		}
+		return nil
+	}); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+
+	if err := filepath.WalkDir(s.bucketRoot(bucket), func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if path != s.bucketRoot(bucket) && filepath.Base(path) == controlDirName {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		relPath, err := filepath.Rel(s.bucketRoot(bucket), path)
+		if err != nil {
+			return err
+		}
+		key := filepath.ToSlash(relPath)
+		if prefix != "" && !strings.HasPrefix(key, prefix) {
+			return nil
+		}
+		if _, ok := objectsByKey[key]; ok {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		objectsByKey[key] = ObjectInfo{
+			Bucket:       bucket,
+			Key:          key,
+			Path:         path,
+			MetadataPath: "",
+			Size:         info.Size(),
+			ContentType:  fallbackContentType(path),
+			LastModified: info.ModTime().UTC(),
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	objects := make([]ObjectInfo, 0, len(objectsByKey))
+	for _, object := range objectsByKey {
+		objects = append(objects, object)
+	}
+
+	sort.Slice(objects, func(i, j int) bool {
+		return objects[i].Key < objects[j].Key
+	})
+
+	if options.Limit > 0 && len(objects) > options.Limit {
+		objects = objects[:options.Limit]
+	}
+
+	return objects, nil
 }
 
 func (s *Store) PutObject(ctx context.Context, input PutObjectInput) (ObjectInfo, error) {
@@ -478,6 +596,11 @@ func readJSONFile(path string, value any) error {
 func fallbackContentType(path string) string {
 	if value := mime.TypeByExtension(filepath.Ext(path)); value != "" {
 		return value
+	}
+	if runtime.GOOS == "windows" {
+		if value := mime.TypeByExtension(strings.ToLower(filepath.Ext(path))); value != "" {
+			return value
+		}
 	}
 	return "application/octet-stream"
 }

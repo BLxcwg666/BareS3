@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime/multipart"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -118,21 +120,96 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 
 			bucket, err := store.CreateBucket(r.Context(), payload.Name)
 			if err != nil {
-				status := http.StatusInternalServerError
-				switch {
-				case errors.Is(err, storage.ErrInvalidBucketName):
-					status = http.StatusBadRequest
-				case errors.Is(err, storage.ErrBucketExists):
-					status = http.StatusConflict
-				}
-				httpx.WriteJSON(w, status, map[string]any{
-					"status":  "error",
-					"message": err.Error(),
-				})
+				writeStorageError(w, err)
 				return
 			}
 
 			httpx.WriteJSON(w, http.StatusCreated, bucket)
+		})
+
+		api.Get("/buckets/{bucket}", func(w http.ResponseWriter, r *http.Request) {
+			bucket, err := store.GetBucket(r.Context(), chi.URLParam(r, "bucket"))
+			if err != nil {
+				writeStorageError(w, err)
+				return
+			}
+			httpx.WriteJSON(w, http.StatusOK, bucket)
+		})
+
+		api.Get("/buckets/{bucket}/objects", func(w http.ResponseWriter, r *http.Request) {
+			limit := 0
+			if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+				parsed, err := strconv.Atoi(rawLimit)
+				if err != nil || parsed < 0 {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+						"status":  "error",
+						"message": "limit must be a non-negative integer",
+					})
+					return
+				}
+				limit = parsed
+			}
+
+			items, err := store.ListObjects(r.Context(), chi.URLParam(r, "bucket"), storage.ListObjectsOptions{
+				Prefix: r.URL.Query().Get("prefix"),
+				Limit:  limit,
+			})
+			if err != nil {
+				writeStorageError(w, err)
+				return
+			}
+			httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
+		})
+
+		api.Post("/buckets/{bucket}/objects", func(w http.ResponseWriter, r *http.Request) {
+			if err := r.ParseMultipartForm(64 << 20); err != nil {
+				httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+					"status":  "error",
+					"message": "invalid multipart form",
+				})
+				return
+			}
+
+			file, header, err := r.FormFile("file")
+			if err != nil {
+				httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+					"status":  "error",
+					"message": "file field is required",
+				})
+				return
+			}
+			defer func() {
+				_ = file.Close()
+			}()
+
+			key := strings.TrimSpace(r.FormValue("key"))
+			if key == "" && header != nil {
+				key = header.Filename
+			}
+
+			object, err := store.PutObject(r.Context(), storage.PutObjectInput{
+				Bucket:             chi.URLParam(r, "bucket"),
+				Key:                key,
+				Body:               file,
+				ContentType:        resolveUploadContentType(r, header),
+				CacheControl:       strings.TrimSpace(r.FormValue("cache_control")),
+				ContentDisposition: strings.TrimSpace(r.FormValue("content_disposition")),
+				UserMetadata:       collectMetadataFields(r.MultipartForm.Value),
+			})
+			if err != nil {
+				writeStorageError(w, err)
+				return
+			}
+			httpx.WriteJSON(w, http.StatusCreated, object)
+		})
+
+		api.Get("/buckets/{bucket}/objects/*", func(w http.ResponseWriter, r *http.Request) {
+			object, err := store.StatObject(r.Context(), chi.URLParam(r, "bucket"), chi.URLParam(r, "*"))
+			if err != nil {
+				writeStorageError(w, err)
+				return
+			}
+			httpx.WriteJSON(w, http.StatusOK, object)
 		})
 	})
 
@@ -181,4 +258,54 @@ func renderIndex(cfg config.Config) string {
     </main>
   </body>
 </html>`, config.ProductName, config.ProductName, info.String(), configPath, cfg.Paths.DataDir, cfg.Paths.LogDir, cfg.Listen.Admin, cfg.Listen.S3, cfg.Listen.File)
+}
+
+func writeStorageError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	switch {
+	case errors.Is(err, storage.ErrInvalidBucketName), errors.Is(err, storage.ErrInvalidObjectKey):
+		status = http.StatusBadRequest
+	case errors.Is(err, storage.ErrBucketExists):
+		status = http.StatusConflict
+	case errors.Is(err, storage.ErrBucketNotFound), errors.Is(err, storage.ErrObjectNotFound):
+		status = http.StatusNotFound
+	}
+
+	httpx.WriteJSON(w, status, map[string]any{
+		"status":  "error",
+		"message": err.Error(),
+	})
+}
+
+func resolveUploadContentType(r *http.Request, header *multipart.FileHeader) string {
+	if value := strings.TrimSpace(r.FormValue("content_type")); value != "" {
+		return value
+	}
+	if header == nil {
+		return ""
+	}
+	return strings.TrimSpace(header.Header.Get("Content-Type"))
+}
+
+func collectMetadataFields(values map[string][]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+
+	metadata := make(map[string]string)
+	for key, entries := range values {
+		if !strings.HasPrefix(key, "meta.") || len(entries) == 0 {
+			continue
+		}
+		name := strings.TrimSpace(strings.TrimPrefix(key, "meta."))
+		if name == "" {
+			continue
+		}
+		metadata[name] = entries[0]
+	}
+
+	if len(metadata) == 0 {
+		return nil
+	}
+	return metadata
 }
