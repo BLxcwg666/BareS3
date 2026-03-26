@@ -14,6 +14,8 @@ auth:
   admin_username: admin
   admin_password_hash: ""
   jwt_secret: ""
+  s3_access_key_id: bares3-dev
+  s3_secret_access_key: bares3-dev-secret
 
 storage:
   public_base_url: http://127.0.0.1:9001

@@ -13,6 +13,7 @@ import (
 	"bares3-server/internal/buildinfo"
 	"bares3-server/internal/config"
 	"bares3-server/internal/httpx"
+	"bares3-server/internal/sigv4"
 	"bares3-server/internal/storage"
 	"go.uber.org/zap"
 )
@@ -73,6 +74,8 @@ type listObjectEntry struct {
 }
 
 func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) http.Handler {
+	verifier := sigv4.NewVerifier(cfg.Auth.S3AccessKeyID, cfg.Auth.S3SecretAccessKey, cfg.Storage.Region, "s3")
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
@@ -85,13 +88,18 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 	})
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		handleS3Request(w, r, cfg, store)
+		handleS3Request(w, r, cfg, store, verifier)
 	})
 
 	return httpx.RequestLogger(logger, "s3")(mux)
 }
 
-func handleS3Request(w http.ResponseWriter, r *http.Request, cfg config.Config, store *storage.Store) {
+func handleS3Request(w http.ResponseWriter, r *http.Request, cfg config.Config, store *storage.Store, verifier *sigv4.Verifier) {
+	if _, err := verifier.Authenticate(r); err != nil {
+		writeAuthError(w, r, err)
+		return
+	}
+
 	if r.URL.Path == "/" || strings.TrimSpace(r.URL.Path) == "" {
 		handleServiceRoot(w, r, store)
 		return
@@ -325,6 +333,15 @@ func writeStorageAsS3Error(w http.ResponseWriter, r *http.Request, err error) {
 	default:
 		writeS3Error(w, r, http.StatusInternalServerError, "InternalError", err.Error())
 	}
+}
+
+func writeAuthError(w http.ResponseWriter, r *http.Request, err error) {
+	var authErr *sigv4.Error
+	if errors.As(err, &authErr) {
+		writeS3Error(w, r, authErr.Status, authErr.Code, authErr.Message)
+		return
+	}
+	writeS3Error(w, r, http.StatusForbidden, "AccessDenied", "request authentication failed")
 }
 
 func writeS3Error(w http.ResponseWriter, r *http.Request, status int, code, message string) {

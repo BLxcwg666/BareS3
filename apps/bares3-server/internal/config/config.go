@@ -46,6 +46,8 @@ type AuthConfig struct {
 	AdminUsername     string `yaml:"admin_username"`
 	AdminPasswordHash string `yaml:"admin_password_hash"`
 	JWTSecret         string `yaml:"jwt_secret"`
+	S3AccessKeyID     string `yaml:"s3_access_key_id"`
+	S3SecretAccessKey string `yaml:"s3_secret_access_key"`
 }
 
 type StorageConfig struct {
@@ -83,7 +85,9 @@ func Default() Config {
 			File:  "0.0.0.0:9001",
 		},
 		Auth: AuthConfig{
-			AdminUsername: "admin",
+			AdminUsername:     "admin",
+			S3AccessKeyID:     "bares3-dev",
+			S3SecretAccessKey: "bares3-dev-secret",
 		},
 		Storage: StorageConfig{
 			Region:         "home-lab-1",
@@ -170,6 +174,12 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Storage.TmpDir) == "" {
 		return errors.New("storage.tmp_dir must not be empty")
+	}
+	if strings.TrimSpace(c.Auth.S3AccessKeyID) == "" {
+		return errors.New("auth.s3_access_key_id must not be empty")
+	}
+	if strings.TrimSpace(c.Auth.S3SecretAccessKey) == "" {
+		return errors.New("auth.s3_secret_access_key must not be empty")
 	}
 	layout := strings.ToLower(strings.TrimSpace(c.Storage.MetadataLayout))
 	if layout != "" && layout != "hidden-dir" {
