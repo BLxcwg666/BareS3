@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"bares3-server/internal/buildinfo"
 	"bares3-server/internal/config"
 	"bares3-server/internal/httpx"
 	"github.com/go-chi/chi/v5"
@@ -20,13 +21,14 @@ func NewHandler(cfg config.Config, logger *zap.Logger) http.Handler {
 	router.Use(httpx.RequestLogger(logger, "file"))
 
 	router.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		httpx.WriteText(w, http.StatusOK, fmt.Sprintf("%s file service\npublic base URL: %s\n", config.ProductName, cfg.Storage.PublicBaseURL))
+		httpx.WriteText(w, http.StatusOK, fmt.Sprintf("%s file service\nversion: %s\npublic base URL: %s\n", config.ProductName, buildinfo.Current().Version, cfg.Storage.PublicBaseURL))
 	})
 
 	router.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"status":  "ok",
 			"service": "file",
+			"version": buildinfo.Current(),
 			"time":    time.Now().UTC().Format(time.RFC3339),
 		})
 	})

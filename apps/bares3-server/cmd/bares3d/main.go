@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"bares3-server/internal/app"
+	"bares3-server/internal/buildinfo"
 	"bares3-server/internal/config"
 	"bares3-server/internal/logx"
 	"go.uber.org/zap"
@@ -16,7 +17,13 @@ import (
 
 func main() {
 	configPath := flag.String("config", "", "path to config.yml")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Fprintln(os.Stdout, buildinfo.Current().String())
+		return
+	}
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -42,6 +49,8 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	logger.Info("starting BareS3", logx.StartField(), zap.String("version", buildinfo.Current().String()))
 
 	service := app.New(cfg, logger)
 	if err := service.Run(ctx); err != nil {

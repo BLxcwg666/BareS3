@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"bares3-server/internal/buildinfo"
 	"bares3-server/internal/config"
 	"bares3-server/internal/httpx"
 	"go.uber.org/zap"
@@ -26,6 +27,7 @@ func NewHandler(cfg config.Config, logger *zap.Logger) http.Handler {
 			"status":  "ok",
 			"service": "s3",
 			"region":  cfg.Storage.Region,
+			"version": buildinfo.Current(),
 			"time":    time.Now().UTC().Format(time.RFC3339),
 		})
 	})

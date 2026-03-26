@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"bares3-server/internal/buildinfo"
 	"bares3-server/internal/config"
 	"bares3-server/internal/httpx"
 	"github.com/go-chi/chi/v5"
@@ -28,6 +29,7 @@ func NewHandler(cfg config.Config, logger *zap.Logger) http.Handler {
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"status":  "ok",
 			"service": "admin",
+			"version": buildinfo.Current(),
 			"time":    time.Now().UTC().Format(time.RFC3339),
 		})
 	})
@@ -37,6 +39,7 @@ func NewHandler(cfg config.Config, logger *zap.Logger) http.Handler {
 			httpx.WriteJSON(w, http.StatusOK, map[string]any{
 				"status":  "ok",
 				"service": "admin-api",
+				"version": buildinfo.Current(),
 				"time":    time.Now().UTC().Format(time.RFC3339),
 			})
 		})
@@ -47,6 +50,7 @@ func NewHandler(cfg config.Config, logger *zap.Logger) http.Handler {
 					"name": config.ProductName,
 					"env":  cfg.App.Env,
 				},
+				"version": buildinfo.Current(),
 				"config": map[string]any{
 					"path": cfg.Runtime.ConfigPath,
 					"used": cfg.Runtime.ConfigUsed,
@@ -75,6 +79,8 @@ func NewHandler(cfg config.Config, logger *zap.Logger) http.Handler {
 }
 
 func renderIndex(cfg config.Config) string {
+	info := buildinfo.Current()
+
 	configPath := cfg.Runtime.ConfigPath
 	if strings.TrimSpace(configPath) == "" {
 		configPath = "(using built-in defaults; no config.yml found beside the executable)"
@@ -101,6 +107,7 @@ func renderIndex(cfg config.Config) string {
       <p>Backend skeleton is running. The polished frontend can be wired into this port next.</p>
       <div class="box">
         <ul>
+          <li>version: <code>%s</code></li>
           <li>config: <code>%s</code></li>
           <li>data dir: <code>%s</code></li>
           <li>log dir: <code>%s</code></li>
@@ -112,5 +119,5 @@ func renderIndex(cfg config.Config) string {
       <p>Useful endpoints: <code>/healthz</code>, <code>/api/v1/health</code>, <code>/api/v1/runtime</code></p>
     </main>
   </body>
-</html>`, config.ProductName, config.ProductName, configPath, cfg.Paths.DataDir, cfg.Paths.LogDir, cfg.Listen.Admin, cfg.Listen.S3, cfg.Listen.File)
+</html>`, config.ProductName, config.ProductName, info.String(), configPath, cfg.Paths.DataDir, cfg.Paths.LogDir, cfg.Listen.Admin, cfg.Listen.S3, cfg.Listen.File)
 }

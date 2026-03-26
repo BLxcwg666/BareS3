@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"bares3-server/internal/admin"
+	"bares3-server/internal/buildinfo"
 	"bares3-server/internal/config"
 	"bares3-server/internal/fileserve"
 	"bares3-server/internal/logx"
@@ -42,6 +43,7 @@ func (a *App) Run(ctx context.Context) error {
 	a.logger.Info(
 		"runtime prepared",
 		logx.ReadyField(),
+		zap.String("version", buildinfo.Current().Version),
 		zap.String("config_path", a.configPathForLog()),
 		zap.String("data_dir", a.cfg.Paths.DataDir),
 		zap.String("log_dir", a.cfg.Paths.LogDir),
