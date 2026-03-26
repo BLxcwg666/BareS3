@@ -64,11 +64,16 @@ import {
 } from './api';
 import { AuthProvider, GuestRoute, ProtectedRoute, useAuth } from './auth';
 import {
+  activityRows as placeholderActivityRows,
+  bucketRows as placeholderBucketRows,
   bucketTemplates,
   consoleRules,
   linkRows,
   loginNotes,
+  nodeSummary as placeholderNodeSummary,
+  overviewMetrics as placeholderOverviewMetrics,
   publishingNotes,
+  settingGroups as placeholderSettingGroups,
   type LinkRow,
 } from './console-data';
 
@@ -79,6 +84,17 @@ type MetricItem = {
   label: string;
   value: string;
   detail: string;
+};
+
+type BucketDisplayRow = {
+  name: string;
+  purpose: string;
+  root: string;
+  mode: string;
+  size: string;
+  objects: string;
+  fill: string;
+  policy: string;
 };
 
 type BucketRow = BucketInfo;
@@ -619,15 +635,17 @@ function Section({
   extra,
   children,
   flush = false,
+  className,
 }: {
   title: string;
   note?: string;
   extra?: ReactNode;
   children: ReactNode;
   flush?: boolean;
+  className?: string;
 }) {
   return (
-    <section className="workspace-section">
+    <section className={className ? `workspace-section ${className}` : 'workspace-section'}>
       <div className="section-head">
         <div>
           <Title className="section-title" level={5}>
@@ -661,8 +679,34 @@ function metricStrip(items: MetricItem[]) {
   );
 }
 
-function bucketColumns(compact = false): TableColumnsType<BucketRow> {
-  const columns: TableColumnsType<BucketRow> = [
+function buildBucketDisplayRows(buckets: BucketInfo[]): BucketDisplayRow[] {
+  if (buckets.length === 0) {
+    return placeholderBucketRows.map((bucket) => ({
+      name: bucket.key,
+      purpose: bucket.purpose,
+      root: bucket.root,
+      mode: bucket.mode,
+      size: bucket.size,
+      objects: bucket.objects,
+      fill: bucket.used ? `${bucket.used}%` : 'N/A',
+      policy: bucket.policy,
+    }));
+  }
+
+  return buckets.map((bucket) => ({
+    name: bucket.name,
+    purpose: 'N/A',
+    root: bucket.path,
+    mode: 'N/A',
+    size: 'N/A',
+    objects: 'N/A',
+    fill: 'N/A',
+    policy: bucket.metadata_layout ? `Metadata: ${bucket.metadata_layout}` : 'N/A',
+  }));
+}
+
+function bucketColumns(compact = false): TableColumnsType<BucketDisplayRow> {
+  const columns: TableColumnsType<BucketDisplayRow> = [
     {
       dataIndex: 'name',
       key: 'name',
@@ -670,31 +714,57 @@ function bucketColumns(compact = false): TableColumnsType<BucketRow> {
       render: (value: string, row) => (
         <div>
           <div className="row-title">{value}</div>
-          <div className="row-note">Created {formatDateTime(row.created_at)}</div>
+          <div className="row-note">{row.purpose}</div>
         </div>
       ),
     },
     {
-      dataIndex: 'path',
-      key: 'path',
-      title: 'Root',
-      render: (value: string) => <div className="row-title row-title-small">{safePathLabel(value)}</div>,
+      dataIndex: 'mode',
+      key: 'mode',
+      title: 'Mode',
+      render: (value: string) => <ExposureTag value={value} />,
+      width: 120,
     },
     {
-      dataIndex: 'metadata_layout',
-      key: 'metadata_layout',
-      title: 'Metadata',
-      render: (value: string) => <ExposureTag value={value || 'hidden-dir'} />,
-      width: 140,
+      dataIndex: 'objects',
+      key: 'objects',
+      title: 'Objects',
+      width: 110,
+    },
+    {
+      dataIndex: 'size',
+      key: 'size',
+      title: 'Stored',
+      width: 120,
+    },
+    {
+      dataIndex: 'fill',
+      key: 'fill',
+      title: 'Used',
+      render: (value: string) =>
+        value === 'N/A' ? (
+          <Text type="secondary">N/A</Text>
+        ) : (
+          <div className="used-cell">
+            <Progress percent={Number.parseInt(value, 10)} showInfo={false} size="small" strokeColor="#5c775f" />
+            <Text type="secondary">{value}</Text>
+          </div>
+        ),
+      width: 120,
     },
   ];
 
   if (!compact) {
-    columns.push({
-      dataIndex: 'metadata_path',
-      key: 'metadata_path',
-      title: 'Control file',
-      render: (value: string) => <div className="row-title row-title-small">{safePathLabel(value)}</div>,
+    columns.splice(1, 0, {
+      dataIndex: 'root',
+      key: 'root',
+      title: 'Root',
+      render: (value: string, row) => (
+        <div>
+          <div className="row-title row-title-small">{safePathLabel(value)}</div>
+          <div className="row-note">{row.policy}</div>
+        </div>
+      ),
     });
   }
 
@@ -883,30 +953,68 @@ function OverviewPage() {
     }
   };
 
-  const metrics: MetricItem[] = [
-    {
-      label: 'Buckets',
-      value: String(runtime?.storage.bucket_count ?? buckets.length),
-      detail: 'Live count from the admin API',
-    },
-    {
-      label: 'Region',
-      value: runtime?.storage.region ?? '...',
-      detail: 'Used for S3 signing and client defaults',
-    },
-    {
-      label: 'Metadata',
-      value: runtime?.storage.metadata_layout ?? 'hidden-dir',
-      detail: 'Current on-disk sidecar strategy',
-    },
-  ];
+  const metrics: MetricItem[] = placeholderOverviewMetrics.map((item) => ({ ...item }));
+  metrics[0] = {
+    ...metrics[0],
+    value: String(runtime?.storage.bucket_count ?? buckets.length),
+    detail: buckets.length > 0 ? `${buckets.length} bucket${buckets.length === 1 ? '' : 's'} currently configured` : 'No buckets created yet',
+  };
+  metrics[1] = {
+    ...metrics[1],
+    value: 'N/A',
+    detail: 'Disk usage summary is not wired yet',
+  };
+  metrics[2] = {
+    ...metrics[2],
+    value: 'N/A',
+    detail: 'Link analytics will appear when share management is connected',
+  };
+
+  const overviewBuckets = buildBucketDisplayRows(buckets);
+
+  const activityItems = placeholderActivityRows.map((item, index) => {
+    if (index === 0 && runtime?.storage.s3_base_url) {
+      return {
+        ...item,
+        meta: `S3 endpoint ready at ${runtime.storage.s3_base_url}`,
+        time: runtime.storage.region,
+      };
+    }
+
+    if (index === 1 && runtime?.storage.public_base_url) {
+      return {
+        ...item,
+        meta: `File endpoint ready at ${runtime.storage.public_base_url}`,
+        time: 'N/A',
+      };
+    }
+
+    if (index >= 2) {
+      return {
+        ...item,
+        meta: 'Not wired yet',
+        time: 'N/A',
+      };
+    }
+
+    return item;
+  });
+
+  const nodeItems = placeholderNodeSummary.map((item) => ({ ...item }));
+  nodeItems[0] = { label: 'Console', value: runtime?.app.name ?? 'BareS3' };
+  nodeItems[1] = { label: 'Endpoint', value: runtime?.storage.s3_base_url ?? 'N/A' };
+  nodeItems[2] = { label: 'Region', value: runtime?.storage.region ?? 'N/A' };
+  nodeItems[3] = { label: 'Write mode', value: 'temp file then atomic rename' };
 
   return (
     <ConsoleShell
       actions={
-        <Button onClick={() => void handleCreateBucket()} type="primary">
-          New bucket
-        </Button>
+        <>
+          <Button onClick={() => void handleCreateBucket()}>New bucket</Button>
+          <Button icon={<UploadOutlined />} onClick={() => navigate('/browser')} type="primary">
+            Upload
+          </Button>
+        </>
       }
     >
       <div className="workspace-stack">
@@ -926,7 +1034,7 @@ function OverviewPage() {
           >
             <Table
               columns={bucketColumns(true)}
-              dataSource={buckets}
+              dataSource={overviewBuckets}
               loading={bucketsLoading}
               locale={{ emptyText: <Empty description="No buckets yet" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
               pagination={false}
@@ -936,39 +1044,35 @@ function OverviewPage() {
             />
           </Section>
 
-          <Section title="Runtime">
+          <Section title="Activity">
             {runtimeLoading ? (
               <Skeleton active paragraph={{ rows: 4 }} title={false} />
             ) : (
-              <Descriptions
-                column={1}
-                items={nodeSummaryToItems([
-                  { label: 'Config file', value: safePathLabel(runtime?.config.path ?? 'defaults') },
-                  { label: 'Public file base', value: runtime?.storage.public_base_url ?? 'Not configured' },
-                  { label: 'S3 base', value: runtime?.storage.s3_base_url ?? 'Not configured' },
-                  { label: 'Temp path', value: safePathLabel(runtime?.paths.tmp_dir ?? '') },
-                ])}
-                size="small"
+              <List
+                dataSource={activityItems}
+                renderItem={(item) => (
+                  <List.Item>
+                    <List.Item.Meta description={item.meta} title={item.title} />
+                    <Text type="secondary">{item.time}</Text>
+                  </List.Item>
+                )}
               />
             )}
           </Section>
         </div>
 
         <div className="workspace-grid workspace-grid-main">
+          <Section title="Node">
+            {runtimeLoading ? (
+              <Skeleton active paragraph={{ rows: 4 }} title={false} />
+            ) : (
+              <Descriptions column={1} items={nodeSummaryToItems(nodeItems)} size="small" />
+            )}
+          </Section>
+
           <Section title="Rules">
             <List
               dataSource={consoleRules}
-              renderItem={(item: string) => (
-                <List.Item>
-                  <Text>{item}</Text>
-                </List.Item>
-              )}
-            />
-          </Section>
-
-          <Section title="Bucket templates">
-            <List
-              dataSource={bucketTemplates}
               renderItem={(item: string) => (
                 <List.Item>
                   <Text>{item}</Text>
@@ -984,6 +1088,7 @@ function OverviewPage() {
 
 function BucketsPage() {
   const { items, loading, refresh } = useBucketsData();
+  const displayRows = buildBucketDisplayRows(items);
 
   const handleCreateBucket = async () => {
     const name = window.prompt('Bucket name');
@@ -1013,7 +1118,7 @@ function BucketsPage() {
           <Section flush title="All buckets">
             <Table
               columns={bucketColumns(false)}
-              dataSource={items}
+              dataSource={displayRows}
               loading={loading}
               locale={{ emptyText: <Empty description="No buckets yet" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
               pagination={false}
@@ -1158,7 +1263,7 @@ function BrowserPage() {
                 allowClear
                 className="section-search"
                 onChange={(event) => setSearchValue(event.target.value)}
-                placeholder="Search current bucket"
+                placeholder="Search current path"
                 prefix={<SearchOutlined />}
                 value={searchValue}
               />
@@ -1214,7 +1319,13 @@ function BrowserPage() {
 
 function LinksPage() {
   return (
-    <ConsoleShell>
+    <ConsoleShell
+      actions={
+        <Button disabled type="primary">
+          Create link
+        </Button>
+      }
+    >
       <div className="workspace-stack">
         <div className="workspace-grid workspace-grid-main">
           <Section flush title="Published routes">
@@ -1248,43 +1359,39 @@ function SettingsPage() {
   const auth = useAuth();
   const { runtime, loading } = useRuntimeData();
 
-  const groups = runtime
-    ? [
-        {
-          title: 'Console session',
-          items: [
-            { label: 'Username', value: auth.session?.username ?? 'admin' },
-            { label: 'Expires', value: auth.session ? formatDateTime(auth.session.expires_at) : 'Not available' },
-            { label: 'Config file', value: safePathLabel(runtime.config.path || 'defaults') },
-          ],
-        },
-        {
-          title: 'Storage paths',
-          items: [
-            { label: 'Data dir', value: safePathLabel(runtime.paths.data_dir) },
-            { label: 'Log dir', value: safePathLabel(runtime.paths.log_dir) },
-            { label: 'Temp dir', value: safePathLabel(runtime.paths.tmp_dir) },
-          ],
-        },
-        {
-          title: 'Endpoints',
-          items: [
-            { label: 'Admin listen', value: runtime.listen.admin },
-            { label: 'S3 listen', value: runtime.listen.s3 },
-            { label: 'File listen', value: runtime.listen.file },
-          ],
-        },
-        {
-          title: 'Storage policy',
-          items: [
-            { label: 'Region', value: runtime.storage.region },
-            { label: 'Public file base', value: runtime.storage.public_base_url },
-            { label: 'S3 base', value: runtime.storage.s3_base_url },
-            { label: 'Metadata layout', value: runtime.storage.metadata_layout },
-          ],
-        },
-      ]
-    : [];
+  const groups = placeholderSettingGroups.map((group) => ({
+    title: group.title,
+    items: group.items.map((item) => ({ ...item })),
+  }));
+
+  if (runtime) {
+    groups[0] = {
+      title: 'Endpoint identity',
+      items: [
+        { label: 'Console name', value: runtime.app.name },
+        { label: 'S3 endpoint', value: runtime.storage.s3_base_url },
+        { label: 'Region label', value: runtime.storage.region },
+      ],
+    };
+
+    groups[1] = {
+      title: 'Storage defaults',
+      items: [
+        { label: 'Bucket mapping', value: 'One bucket = one top-level folder' },
+        { label: 'Metadata mode', value: runtime.storage.metadata_layout },
+        { label: 'Upload safety', value: 'Temp write then atomic rename' },
+      ],
+    };
+
+    groups[2] = {
+      title: 'Delivery rules',
+      items: [
+        { label: 'Range requests', value: 'Enabled' },
+        { label: 'Public links', value: 'Not wired yet' },
+        { label: 'Default cache', value: 'Private unless published' },
+      ],
+    };
+  }
 
   return (
     <ConsoleShell>
@@ -1301,6 +1408,23 @@ function SettingsPage() {
               <Descriptions column={1} items={nodeSummaryToItems(group.items)} size="small" />
             </Section>
           ))}
+
+          <Section note={auth.session ? `Signed in as ${auth.session.username}` : undefined} title="Guidance" className="section-span-full">
+            <div className="rule-grid">
+              <article>
+                <h3>Plain naming first</h3>
+                <p>Favor bucket and route names that still make sense when read directly on disk.</p>
+              </article>
+              <article>
+                <h3>Metadata stays nearby</h3>
+                <p>Expose sidecar behavior so users understand what the server adds around each file.</p>
+              </article>
+              <article>
+                <h3>Every public path is intentional</h3>
+                <p>Make visibility a deliberate action, not a hidden side effect of upload flow.</p>
+              </article>
+            </div>
+          </Section>
         </div>
       )}
     </ConsoleShell>

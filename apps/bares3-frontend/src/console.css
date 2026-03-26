@@ -383,6 +383,10 @@ a {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.section-span-full {
+  grid-column: 1 / -1;
+}
+
 .workspace-section {
   overflow: hidden;
   border: 1px solid var(--line);
@@ -421,6 +425,31 @@ a {
 
 .section-body-flush {
   padding: 0 14px 2px;
+}
+
+.rule-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.rule-grid article {
+  display: grid;
+  gap: 4px;
+}
+
+.rule-grid h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.rule-grid p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 .metric-strip {
@@ -651,7 +680,8 @@ a {
   .workspace-grid-main,
   .workspace-grid-thirds,
   .login-frame,
-  .metric-strip {
+  .metric-strip,
+  .rule-grid {
     grid-template-columns: 1fr;
   }
 
