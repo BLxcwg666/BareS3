@@ -20,7 +20,7 @@ func NewHandler(cfg config.Config, logger *zap.Logger) http.Handler {
 	router.Use(httpx.RequestLogger(logger, "file"))
 
 	router.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		httpx.WriteText(w, http.StatusOK, fmt.Sprintf("%s file service\npublic base URL: %s\n", cfg.App.Name, cfg.Storage.PublicBaseURL))
+		httpx.WriteText(w, http.StatusOK, fmt.Sprintf("%s file service\npublic base URL: %s\n", config.ProductName, cfg.Storage.PublicBaseURL))
 	})
 
 	router.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {

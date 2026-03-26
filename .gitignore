@@ -4,6 +4,7 @@ dist/
 *.log
 *.exe
 apps/bares3-server/data/
+apps/bares3-server/bin/
 apps/bares3-server/logs/
 
 ### Node template

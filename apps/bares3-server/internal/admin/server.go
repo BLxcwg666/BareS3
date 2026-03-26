@@ -44,7 +44,7 @@ func NewHandler(cfg config.Config, logger *zap.Logger) http.Handler {
 		api.Get("/runtime", func(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteJSON(w, http.StatusOK, map[string]any{
 				"app": map[string]any{
-					"name": cfg.App.Name,
+					"name": config.ProductName,
 					"env":  cfg.App.Env,
 				},
 				"config": map[string]any{
@@ -112,5 +112,5 @@ func renderIndex(cfg config.Config) string {
       <p>Useful endpoints: <code>/healthz</code>, <code>/api/v1/health</code>, <code>/api/v1/runtime</code></p>
     </main>
   </body>
-</html>`, cfg.App.Name, cfg.App.Name, configPath, cfg.Paths.DataDir, cfg.Paths.LogDir, cfg.Listen.Admin, cfg.Listen.S3, cfg.Listen.File)
+</html>`, config.ProductName, config.ProductName, configPath, cfg.Paths.DataDir, cfg.Paths.LogDir, cfg.Listen.Admin, cfg.Listen.S3, cfg.Listen.File)
 }

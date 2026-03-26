@@ -1,5 +1,4 @@
 app:
-  name: BareS3
   env: development
 
 paths:

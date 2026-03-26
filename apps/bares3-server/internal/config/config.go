@@ -12,7 +12,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const defaultConfigFilename = "config.yml"
+const (
+	ProductName           = "BareS3"
+	defaultConfigFilename = "config.yml"
+)
 
 type Config struct {
 	App     AppConfig     `yaml:"app"`
@@ -25,8 +28,7 @@ type Config struct {
 }
 
 type AppConfig struct {
-	Name string `yaml:"name"`
-	Env  string `yaml:"env"`
+	Env string `yaml:"env"`
 }
 
 type PathsConfig struct {
@@ -69,8 +71,7 @@ type RuntimeConfig struct {
 func Default() Config {
 	return Config{
 		App: AppConfig{
-			Name: "BareS3",
-			Env:  "development",
+			Env: "development",
 		},
 		Paths: PathsConfig{
 			DataDir: "./data",
@@ -144,10 +145,6 @@ func Load(explicitPath string) (Config, error) {
 }
 
 func (c Config) Validate() error {
-	if strings.TrimSpace(c.App.Name) == "" {
-		return errors.New("app.name must not be empty")
-	}
-
 	addresses := map[string]string{
 		"listen.admin": c.Listen.Admin,
 		"listen.s3":    c.Listen.S3,
