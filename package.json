@@ -1,0 +1,9 @@
+{
+  "name": "bares3",
+  "private": true,
+  "packageManager": "pnpm@10.10.0",
+  "scripts": {
+    "dev:frontend": "pnpm --filter @bares3/frontend dev",
+    "build:frontend": "pnpm --filter @bares3/frontend build"
+  }
+}
