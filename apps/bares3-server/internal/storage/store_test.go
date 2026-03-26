@@ -1,0 +1,250 @@
+package storage
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"bares3-server/internal/config"
+	"go.uber.org/zap"
+)
+
+func TestCreateBucketAndList(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+
+	created, err := store.CreateBucket(context.Background(), "gallery")
+	if err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	if created.Name != "gallery" {
+		t.Fatalf("unexpected bucket name: %s", created.Name)
+	}
+
+	buckets, err := store.ListBuckets(context.Background())
+	if err != nil {
+		t.Fatalf("ListBuckets failed: %v", err)
+	}
+	if len(buckets) != 1 || buckets[0].Name != "gallery" {
+		t.Fatalf("unexpected buckets: %+v", buckets)
+	}
+}
+
+func TestPutObjectWritesDataAndMetadata(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	if _, err := store.CreateBucket(context.Background(), "gallery"); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	object, err := store.PutObject(context.Background(), PutObjectInput{
+		Bucket:       "gallery",
+		Key:          "2026/launch/mock-02.png",
+		Body:         bytes.NewBufferString("hello world"),
+		CacheControl: "public, max-age=3600",
+	})
+	if err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	content, err := os.ReadFile(object.Path)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if string(content) != "hello world" {
+		t.Fatalf("unexpected object content: %q", string(content))
+	}
+
+	var storedMeta ObjectInfo
+	metaContent, err := os.ReadFile(object.MetadataPath)
+	if err != nil {
+		t.Fatalf("Read metadata failed: %v", err)
+	}
+	if err := json.Unmarshal(metaContent, &storedMeta); err != nil {
+		t.Fatalf("Unmarshal metadata failed: %v", err)
+	}
+	if storedMeta.Key != object.Key || storedMeta.Bucket != object.Bucket {
+		t.Fatalf("unexpected stored metadata: %+v", storedMeta)
+	}
+	if storedMeta.ETag == "" {
+		t.Fatalf("expected non-empty etag")
+	}
+	if storedMeta.CacheControl != "public, max-age=3600" {
+		t.Fatalf("unexpected cache control: %q", storedMeta.CacheControl)
+	}
+
+	stated, err := store.StatObject(context.Background(), "gallery", "2026/launch/mock-02.png")
+	if err != nil {
+		t.Fatalf("StatObject failed: %v", err)
+	}
+	if stated.Size != int64(len("hello world")) {
+		t.Fatalf("unexpected object size: %d", stated.Size)
+	}
+	if stated.ETag != storedMeta.ETag {
+		t.Fatalf("etag mismatch: %s != %s", stated.ETag, storedMeta.ETag)
+	}
+}
+
+func TestPutObjectReplacesExistingFile(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	if _, err := store.CreateBucket(context.Background(), "gallery"); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	if _, err := store.PutObject(context.Background(), PutObjectInput{
+		Bucket: "gallery",
+		Key:    "notes/keep.txt",
+		Body:   bytes.NewBufferString("first"),
+	}); err != nil {
+		t.Fatalf("initial PutObject failed: %v", err)
+	}
+
+	updated, err := store.PutObject(context.Background(), PutObjectInput{
+		Bucket: "gallery",
+		Key:    "notes/keep.txt",
+		Body:   bytes.NewBufferString("second version"),
+	})
+	if err != nil {
+		t.Fatalf("second PutObject failed: %v", err)
+	}
+
+	content, err := os.ReadFile(updated.Path)
+	if err != nil {
+		t.Fatalf("Read updated object failed: %v", err)
+	}
+	if string(content) != "second version" {
+		t.Fatalf("unexpected updated content: %q", string(content))
+	}
+	if updated.Size != int64(len("second version")) {
+		t.Fatalf("unexpected updated size: %d", updated.Size)
+	}
+}
+
+func TestListObjectsSupportsPrefixAndLimit(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	if _, err := store.CreateBucket(context.Background(), "gallery"); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	fixtures := []string{
+		"2026/launch/mock-01.png",
+		"2026/launch/mock-02.png",
+		"notes/readme.txt",
+	}
+	for _, key := range fixtures {
+		if _, err := store.PutObject(context.Background(), PutObjectInput{
+			Bucket: "gallery",
+			Key:    key,
+			Body:   bytes.NewBufferString(key),
+		}); err != nil {
+			t.Fatalf("PutObject(%s) failed: %v", key, err)
+		}
+	}
+
+	items, err := store.ListObjects(context.Background(), "gallery", ListObjectsOptions{
+		Prefix: "2026/launch/",
+		Limit:  1,
+	})
+	if err != nil {
+		t.Fatalf("ListObjects failed: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].Key != "2026/launch/mock-01.png" {
+		t.Fatalf("unexpected first key: %s", items[0].Key)
+	}
+
+	allItems, err := store.ListObjects(context.Background(), "gallery", ListObjectsOptions{})
+	if err != nil {
+		t.Fatalf("ListObjects(all) failed: %v", err)
+	}
+	if len(allItems) != len(fixtures) {
+		t.Fatalf("expected %d items, got %d", len(fixtures), len(allItems))
+	}
+}
+
+func TestDeleteObjectRemovesDataAndMetadata(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	if _, err := store.CreateBucket(context.Background(), "gallery"); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	object, err := store.PutObject(context.Background(), PutObjectInput{
+		Bucket: "gallery",
+		Key:    "notes/remove.txt",
+		Body:   bytes.NewBufferString("bye"),
+	})
+	if err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	if err := store.DeleteObject(context.Background(), "gallery", "notes/remove.txt"); err != nil {
+		t.Fatalf("DeleteObject failed: %v", err)
+	}
+	if _, err := os.Stat(object.Path); !os.IsNotExist(err) {
+		t.Fatalf("expected object file to be removed, got %v", err)
+	}
+	if _, err := os.Stat(object.MetadataPath); !os.IsNotExist(err) {
+		t.Fatalf("expected metadata file to be removed, got %v", err)
+	}
+}
+
+func TestDeleteBucketRequiresEmptyBucket(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	if _, err := store.CreateBucket(context.Background(), "gallery"); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	if _, err := store.PutObject(context.Background(), PutObjectInput{
+		Bucket: "gallery",
+		Key:    "notes/file.txt",
+		Body:   bytes.NewBufferString("data"),
+	}); err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	if err := store.DeleteBucket(context.Background(), "gallery"); !errors.Is(err, ErrBucketNotEmpty) {
+		t.Fatalf("expected ErrBucketNotEmpty, got %v", err)
+	}
+	if err := store.DeleteObject(context.Background(), "gallery", "notes/file.txt"); err != nil {
+		t.Fatalf("DeleteObject failed: %v", err)
+	}
+	if err := store.DeleteBucket(context.Background(), "gallery"); err != nil {
+		t.Fatalf("DeleteBucket failed: %v", err)
+	}
+	if _, err := store.GetBucket(context.Background(), "gallery"); !errors.Is(err, ErrBucketNotFound) {
+		t.Fatalf("expected ErrBucketNotFound after delete, got %v", err)
+	}
+}
+
+func newTestStore(t *testing.T) *Store {
+	t.Helper()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+
+	for _, dir := range []string{cfg.Paths.DataDir, cfg.Paths.LogDir, cfg.Storage.TmpDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%s) failed: %v", dir, err)
+		}
+	}
+
+	return New(cfg, zap.NewNop())
+}
