@@ -9,6 +9,7 @@ import (
 var (
 	ErrBucketExists      = errors.New("bucket already exists")
 	ErrBucketNotFound    = errors.New("bucket not found")
+	ErrBucketNotEmpty    = errors.New("bucket not empty")
 	ErrObjectNotFound    = errors.New("object not found")
 	ErrInvalidBucketName = errors.New("invalid bucket name")
 	ErrInvalidObjectKey  = errors.New("invalid object key")

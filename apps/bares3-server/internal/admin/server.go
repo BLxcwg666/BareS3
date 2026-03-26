@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"bares3-server/internal/buildinfo"
 	"bares3-server/internal/config"
 	"bares3-server/internal/httpx"
+	"bares3-server/internal/sigv4"
 	"bares3-server/internal/storage"
 	"github.com/go-chi/chi/v5"
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
@@ -83,6 +85,7 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 				"storage": map[string]any{
 					"region":          cfg.Storage.Region,
 					"public_base_url": cfg.Storage.PublicBaseURL,
+					"s3_base_url":     cfg.Storage.S3BaseURL,
 					"metadata_layout": cfg.Storage.MetadataLayout,
 					"bucket_count":    len(buckets),
 				},
@@ -125,6 +128,14 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 			}
 
 			httpx.WriteJSON(w, http.StatusCreated, bucket)
+		})
+
+		api.Delete("/buckets/{bucket}", func(w http.ResponseWriter, r *http.Request) {
+			if err := store.DeleteBucket(r.Context(), chi.URLParam(r, "bucket")); err != nil {
+				writeStorageError(w, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 		})
 
 		api.Get("/buckets/{bucket}", func(w http.ResponseWriter, r *http.Request) {
@@ -203,6 +214,14 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 			httpx.WriteJSON(w, http.StatusCreated, object)
 		})
 
+		api.Delete("/buckets/{bucket}/objects/*", func(w http.ResponseWriter, r *http.Request) {
+			if err := store.DeleteObject(r.Context(), chi.URLParam(r, "bucket"), chi.URLParam(r, "*")); err != nil {
+				writeStorageError(w, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})
+
 		api.Get("/buckets/{bucket}/objects/*", func(w http.ResponseWriter, r *http.Request) {
 			object, err := store.StatObject(r.Context(), chi.URLParam(r, "bucket"), chi.URLParam(r, "*"))
 			if err != nil {
@@ -210,6 +229,56 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 				return
 			}
 			httpx.WriteJSON(w, http.StatusOK, object)
+		})
+
+		api.Post("/presign/s3", func(w http.ResponseWriter, r *http.Request) {
+			payload := struct {
+				Method         string `json:"method"`
+				Bucket         string `json:"bucket"`
+				Key            string `json:"key"`
+				ExpiresSeconds int    `json:"expires_seconds"`
+			}{}
+
+			decoder := json.NewDecoder(r.Body)
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&payload); err != nil {
+				httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+					"status":  "error",
+					"message": "invalid request body",
+				})
+				return
+			}
+
+			baseURL, err := url.Parse(cfg.Storage.S3BaseURL)
+			if err != nil {
+				httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+					"status":  "error",
+					"message": "invalid storage.s3_base_url configuration",
+				})
+				return
+			}
+
+			requestPath := "/" + strings.TrimPrefix(strings.TrimSpace(payload.Bucket), "/")
+			if key := strings.TrimPrefix(strings.TrimSpace(payload.Key), "/"); key != "" {
+				requestPath += "/" + key
+			}
+			baseURL.Path = requestPath
+
+			verifier := sigv4.NewVerifier(cfg.Auth.S3AccessKeyID, cfg.Auth.S3SecretAccessKey, cfg.Storage.Region, "s3")
+			result, err := verifier.Presign(sigv4.PresignInput{
+				Method:  payload.Method,
+				URL:     baseURL,
+				Expires: time.Duration(payload.ExpiresSeconds) * time.Second,
+			})
+			if err != nil {
+				httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+					"status":  "error",
+					"message": err.Error(),
+				})
+				return
+			}
+
+			httpx.WriteJSON(w, http.StatusOK, result)
 		})
 	})
 
@@ -266,6 +335,8 @@ func writeStorageError(w http.ResponseWriter, err error) {
 	case errors.Is(err, storage.ErrInvalidBucketName), errors.Is(err, storage.ErrInvalidObjectKey):
 		status = http.StatusBadRequest
 	case errors.Is(err, storage.ErrBucketExists):
+		status = http.StatusConflict
+	case errors.Is(err, storage.ErrBucketNotEmpty):
 		status = http.StatusConflict
 	case errors.Is(err, storage.ErrBucketNotFound), errors.Is(err, storage.ErrObjectNotFound):
 		status = http.StatusNotFound

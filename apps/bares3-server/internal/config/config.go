@@ -52,6 +52,7 @@ type AuthConfig struct {
 
 type StorageConfig struct {
 	PublicBaseURL  string `yaml:"public_base_url"`
+	S3BaseURL      string `yaml:"s3_base_url"`
 	Region         string `yaml:"region"`
 	TmpDir         string `yaml:"tmp_dir"`
 	MetadataLayout string `yaml:"metadata_layout"`
@@ -140,6 +141,9 @@ func Load(explicitPath string) (Config, error) {
 	if strings.TrimSpace(cfg.Storage.PublicBaseURL) == "" {
 		cfg.Storage.PublicBaseURL = derivePublicBaseURL(cfg.Listen.File)
 	}
+	if strings.TrimSpace(cfg.Storage.S3BaseURL) == "" {
+		cfg.Storage.S3BaseURL = derivePublicBaseURL(cfg.Listen.S3)
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -174,6 +178,12 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Storage.TmpDir) == "" {
 		return errors.New("storage.tmp_dir must not be empty")
+	}
+	if strings.TrimSpace(c.Storage.PublicBaseURL) == "" {
+		return errors.New("storage.public_base_url must not be empty")
+	}
+	if strings.TrimSpace(c.Storage.S3BaseURL) == "" {
+		return errors.New("storage.s3_base_url must not be empty")
 	}
 	if strings.TrimSpace(c.Auth.S3AccessKeyID) == "" {
 		return errors.New("auth.s3_access_key_id must not be empty")

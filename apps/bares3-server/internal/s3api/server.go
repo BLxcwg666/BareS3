@@ -172,6 +172,12 @@ func handleBucketRequest(w http.ResponseWriter, r *http.Request, store *storage.
 			return
 		}
 		writeS3Error(w, r, http.StatusNotImplemented, "NotImplemented", "only ListObjectsV2 is currently supported")
+	case http.MethodDelete:
+		if err := store.DeleteBucket(r.Context(), bucket); err != nil {
+			writeStorageAsS3Error(w, r, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	default:
 		writeS3Error(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "method is not supported for bucket requests")
 	}
@@ -254,6 +260,12 @@ func handleObjectRequest(w http.ResponseWriter, r *http.Request, store *storage.
 		}()
 		applyObjectHeaders(w, object)
 		http.ServeContent(w, r, path.Base(object.Key), object.LastModified, file)
+	case http.MethodDelete:
+		if err := store.DeleteObject(r.Context(), bucket, key); err != nil && !errors.Is(err, storage.ErrObjectNotFound) {
+			writeStorageAsS3Error(w, r, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	default:
 		writeS3Error(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "method is not supported for object requests")
 	}
@@ -330,6 +342,8 @@ func writeStorageAsS3Error(w http.ResponseWriter, r *http.Request, err error) {
 		writeS3Error(w, r, http.StatusBadRequest, "InvalidBucketName", err.Error())
 	case errors.Is(err, storage.ErrInvalidObjectKey):
 		writeS3Error(w, r, http.StatusBadRequest, "InvalidArgument", err.Error())
+	case errors.Is(err, storage.ErrBucketNotEmpty):
+		writeS3Error(w, r, http.StatusConflict, "BucketNotEmpty", err.Error())
 	default:
 		writeS3Error(w, r, http.StatusInternalServerError, "InternalError", err.Error())
 	}

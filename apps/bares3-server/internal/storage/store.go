@@ -506,6 +506,69 @@ func (s *Store) OpenObject(ctx context.Context, bucket, key string) (*os.File, O
 	return file, object, nil
 }
 
+func (s *Store) DeleteObject(ctx context.Context, bucket, key string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, err := s.GetBucket(ctx, bucket); err != nil {
+		return err
+	}
+
+	objectPath, metadataPath, err := s.resolveObjectPaths(bucket, key)
+	if err != nil {
+		return err
+	}
+
+	removedObject := false
+	if err := os.Remove(objectPath); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove object file: %w", err)
+		}
+	} else {
+		removedObject = true
+	}
+
+	removedMetadata := false
+	if err := os.Remove(metadataPath); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove metadata file: %w", err)
+		}
+	} else {
+		removedMetadata = true
+	}
+
+	if !removedObject && !removedMetadata {
+		return fmt.Errorf("%w: %s/%s", ErrObjectNotFound, bucket, key)
+	}
+
+	pruneEmptyParents(filepath.Dir(objectPath), s.bucketRoot(bucket))
+	pruneEmptyParents(filepath.Dir(metadataPath), s.bucketMetaDir(bucket))
+
+	s.logger.Info("object deleted", zap.String("bucket", bucket), zap.String("key", key))
+	return nil
+}
+
+func (s *Store) DeleteBucket(ctx context.Context, name string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, err := s.GetBucket(ctx, name); err != nil {
+		return err
+	}
+
+	root := s.bucketRoot(name)
+	if bucketHasObjects(root) {
+		return fmt.Errorf("%w: %s", ErrBucketNotEmpty, name)
+	}
+
+	if err := os.RemoveAll(root); err != nil {
+		return fmt.Errorf("remove bucket dir: %w", err)
+	}
+
+	s.logger.Info("bucket deleted", zap.String("bucket", name), zap.String("path", root))
+	return nil
+}
+
 func (s *Store) bucketRoot(name string) string {
 	return joinPath(s.dataDir, name)
 }
@@ -614,4 +677,37 @@ func cloneStringMap(input map[string]string) map[string]string {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func pruneEmptyParents(startPath, stopPath string) {
+	current := filepath.Clean(startPath)
+	stop := filepath.Clean(stopPath)
+
+	for current != stop && current != "." && current != string(filepath.Separator) {
+		if err := os.Remove(current); err != nil {
+			break
+		}
+		current = filepath.Dir(current)
+	}
+}
+
+func bucketHasObjects(root string) bool {
+	hasObjects := false
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == root {
+			return nil
+		}
+		if entry.IsDir() {
+			if filepath.Base(path) == controlDirName {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		hasObjects = true
+		return errors.New("stop")
+	})
+	return hasObjects
 }
