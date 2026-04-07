@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"bares3-server/internal/config"
 	"bares3-server/internal/consoleauth"
 	"bares3-server/internal/httpx"
+	"bares3-server/internal/sharelink"
 	"bares3-server/internal/sigv4"
 	"bares3-server/internal/storage"
 	"bares3-server/internal/webui"
@@ -39,6 +41,10 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 	auditRecorder, err := auditlog.New(cfg.Paths.LogDir)
 	if err != nil {
 		panic(fmt.Sprintf("initialize audit recorder: %v", err))
+	}
+	shareLinks, err := sharelink.New(cfg.Paths.DataDir, logger.Named("sharelink"))
+	if err != nil {
+		panic(fmt.Sprintf("initialize share link store: %v", err))
 	}
 
 	router := chi.NewRouter()
@@ -187,10 +193,16 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 				}
 
 				usedBytes := int64(0)
-				activeLinkCount := 0
 				for _, bucket := range buckets {
 					usedBytes += bucket.UsedBytes
-					activeLinkCount += bucket.ObjectCount
+				}
+				activeLinkCount, err := shareLinks.ActiveCount(r.Context())
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
 				}
 
 				httpx.WriteJSON(w, http.StatusOK, map[string]any{
@@ -475,6 +487,97 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 				httpx.WriteJSON(w, http.StatusOK, object)
 			})
 
+			protected.Get("/share-links", func(w http.ResponseWriter, r *http.Request) {
+				items, err := shareLinks.List(r.Context())
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
+
+				response := make([]shareLinkResponse, 0, len(items))
+				now := time.Now().UTC()
+				for _, item := range items {
+					response = append(response, makeShareLinkResponse(cfg.Storage.PublicBaseURL, item, now))
+				}
+
+				httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": response})
+			})
+
+			protected.Post("/share-links", func(w http.ResponseWriter, r *http.Request) {
+				payload := struct {
+					Bucket         string `json:"bucket"`
+					Key            string `json:"key"`
+					ExpiresSeconds int    `json:"expires_seconds"`
+				}{}
+
+				decoder := json.NewDecoder(r.Body)
+				decoder.DisallowUnknownFields()
+				if err := decoder.Decode(&payload); err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+						"status":  "error",
+						"message": "invalid request body",
+					})
+					return
+				}
+
+				expires := 24 * time.Hour
+				if payload.ExpiresSeconds > 0 {
+					expires = time.Duration(payload.ExpiresSeconds) * time.Second
+				}
+
+				object, err := store.StatObject(r.Context(), strings.TrimSpace(payload.Bucket), strings.TrimSpace(payload.Key))
+				if err != nil {
+					writeStorageError(w, err)
+					return
+				}
+
+				link, err := shareLinks.Create(r.Context(), sharelink.CreateInput{
+					Bucket:      object.Bucket,
+					Key:         object.Key,
+					Filename:    path.Base(object.Key),
+					ContentType: object.ContentType,
+					Size:        object.Size,
+					CreatedBy:   actorFromRequest(r),
+					Expires:     expires,
+				})
+				if err != nil {
+					writeShareLinkError(w, err)
+					return
+				}
+
+				recordAudit(logger, auditRecorder, auditlog.Entry{
+					Actor:  actorFromRequest(r),
+					Action: "sharelink.create",
+					Title:  fmt.Sprintf("Created share link for %s/%s", link.Bucket, link.Key),
+					Detail: fmt.Sprintf("Expires at %s", link.ExpiresAt.UTC().Format(time.RFC3339)),
+					Target: "/s/" + link.ID,
+					Remote: requestRemote(r),
+					Status: "success",
+				})
+				httpx.WriteJSON(w, http.StatusCreated, makeShareLinkResponse(cfg.Storage.PublicBaseURL, link, time.Now().UTC()))
+			})
+
+			protected.Delete("/share-links/{id}", func(w http.ResponseWriter, r *http.Request) {
+				link, err := shareLinks.Revoke(r.Context(), chi.URLParam(r, "id"))
+				if err != nil {
+					writeShareLinkError(w, err)
+					return
+				}
+
+				recordAudit(logger, auditRecorder, auditlog.Entry{
+					Actor:  actorFromRequest(r),
+					Action: "sharelink.revoke",
+					Title:  fmt.Sprintf("Revoked share link for %s/%s", link.Bucket, link.Key),
+					Target: "/s/" + link.ID,
+					Remote: requestRemote(r),
+					Status: "success",
+				})
+				httpx.WriteJSON(w, http.StatusOK, makeShareLinkResponse(cfg.Storage.PublicBaseURL, link, time.Now().UTC()))
+			})
+
 			protected.Post("/presign/s3", func(w http.ResponseWriter, r *http.Request) {
 				payload := struct {
 					Method         string `json:"method"`
@@ -574,6 +677,21 @@ func writeStorageError(w http.ResponseWriter, err error) {
 	})
 }
 
+func writeShareLinkError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	switch {
+	case errors.Is(err, sharelink.ErrInvalidID), errors.Is(err, sharelink.ErrInvalidExpiry):
+		status = http.StatusBadRequest
+	case errors.Is(err, sharelink.ErrNotFound):
+		status = http.StatusNotFound
+	}
+
+	httpx.WriteJSON(w, status, map[string]any{
+		"status":  "error",
+		"message": err.Error(),
+	})
+}
+
 func resolveUploadContentType(r *http.Request, header *multipart.FileHeader) string {
 	if value := strings.TrimSpace(r.FormValue("content_type")); value != "" {
 		return value
@@ -605,6 +723,41 @@ func collectMetadataFields(values map[string][]string) map[string]string {
 		return nil
 	}
 	return metadata
+}
+
+type shareLinkResponse struct {
+	ID          string     `json:"id"`
+	Bucket      string     `json:"bucket"`
+	Key         string     `json:"key"`
+	Filename    string     `json:"filename"`
+	ContentType string     `json:"content_type,omitempty"`
+	Size        int64      `json:"size"`
+	CreatedBy   string     `json:"created_by,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	ExpiresAt   time.Time  `json:"expires_at"`
+	RevokedAt   *time.Time `json:"revoked_at,omitempty"`
+	Status      string     `json:"status"`
+	URL         string     `json:"url"`
+	DownloadURL string     `json:"download_url"`
+}
+
+func makeShareLinkResponse(baseURL string, link sharelink.Link, now time.Time) shareLinkResponse {
+	trimmedBaseURL := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	return shareLinkResponse{
+		ID:          link.ID,
+		Bucket:      link.Bucket,
+		Key:         link.Key,
+		Filename:    link.Filename,
+		ContentType: link.ContentType,
+		Size:        link.Size,
+		CreatedBy:   link.CreatedBy,
+		CreatedAt:   link.CreatedAt,
+		ExpiresAt:   link.ExpiresAt,
+		RevokedAt:   link.RevokedAt,
+		Status:      link.Status(now),
+		URL:         trimmedBaseURL + "/s/" + link.ID,
+		DownloadURL: trimmedBaseURL + "/dl/" + link.ID,
+	}
 }
 
 type sessionContextKey struct{}
