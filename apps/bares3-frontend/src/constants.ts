@@ -13,6 +13,6 @@ export const pageMeta: Record<string, { title: string; note: string }> = {
   '/buckets': { title: 'Buckets', note: 'Readable roots with clear exposure rules.' },
   '/browser': { title: 'Browser', note: 'Objects, metadata, and current path context.' },
   '/audit': { title: 'Audit Logs', note: 'Recent console actions and storage changes.' },
-  '/links': { title: 'Share links', note: 'Public routes, aliases, and signed delivery.' },
+  '/links': { title: 'Share links', note: 'Public routes and presigned downloads.' },
   '/settings': { title: 'Settings', note: 'Defaults that make the storage layer predictable.' },
 };

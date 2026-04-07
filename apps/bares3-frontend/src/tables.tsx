@@ -1,7 +1,6 @@
 import { Progress, Typography } from 'antd';
 import type { TableColumnsType } from 'antd';
 import type { AuditEntry, BucketInfo, ObjectInfo } from './api';
-import type { LinkRow } from './console-data';
 import { ExposureTag } from './components/ExposureTag';
 import type { BucketDisplayRow } from './types';
 import { buildBucketDisplayRows, formatBytes, formatDateTime, safePathLabel } from './utils';
@@ -42,40 +41,6 @@ export const objectColumns: TableColumnsType<ObjectInfo> = [
     title: 'Updated',
     width: 160,
     render: (value: string) => formatDateTime(value),
-  },
-];
-
-export const linkColumns: TableColumnsType<LinkRow> = [
-  {
-    dataIndex: 'route',
-    key: 'route',
-    title: 'Route',
-    ellipsis: true,
-  },
-  {
-    dataIndex: 'target',
-    key: 'target',
-    title: 'Target',
-    ellipsis: true,
-  },
-  {
-    dataIndex: 'mode',
-    key: 'mode',
-    title: 'Mode',
-    render: (value: LinkRow['mode']) => <ExposureTag value={value} />,
-    width: 110,
-  },
-  {
-    dataIndex: 'visits',
-    key: 'visits',
-    title: 'Visits',
-    width: 90,
-  },
-  {
-    dataIndex: 'expiry',
-    key: 'expiry',
-    title: 'Expiry',
-    width: 100,
   },
 ];
 

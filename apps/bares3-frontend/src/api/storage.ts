@@ -1,5 +1,12 @@
 import { request } from './client';
 
+function encodeObjectKeyPath(key: string) {
+  return key
+    .split('/')
+    .map((part) => encodeURIComponent(part))
+    .join('/');
+}
+
 export type RuntimeInfo = {
   app: {
     name: string;
@@ -64,6 +71,12 @@ export type ObjectInfo = {
   last_modified: string;
 };
 
+export type PresignResult = {
+  url: string;
+  expires_at: string;
+  method: string;
+};
+
 export function getRuntime() {
   return request<RuntimeInfo>('/api/v1/runtime');
 }
@@ -83,6 +96,12 @@ export function createBucket(name: string, quotaBytes = 0) {
   });
 }
 
+export function deleteBucket(bucket: string) {
+  return request<void>(`/api/v1/buckets/${encodeURIComponent(bucket)}`, {
+    method: 'DELETE',
+  });
+}
+
 export function updateStorageLimit(maxBytes: number) {
   return request<{ max_bytes: number }>('/api/v1/settings/storage', {
     method: 'PUT',
@@ -93,10 +112,13 @@ export function updateStorageLimit(maxBytes: number) {
   });
 }
 
-export async function listObjects(bucket: string, prefix?: string) {
+export async function listObjects(bucket: string, prefix?: string, limit?: number) {
   const query = new URLSearchParams();
   if (prefix?.trim()) {
     query.set('prefix', prefix.trim());
+  }
+  if (typeof limit === 'number' && limit > 0) {
+    query.set('limit', String(limit));
   }
 
   const suffix = query.toString();
@@ -104,6 +126,31 @@ export async function listObjects(bucket: string, prefix?: string) {
     `/api/v1/buckets/${encodeURIComponent(bucket)}/objects${suffix ? `?${suffix}` : ''}`,
   );
   return payload.items;
+}
+
+export function getObject(bucket: string, key: string) {
+  return request<ObjectInfo>(`/api/v1/buckets/${encodeURIComponent(bucket)}/objects/${encodeObjectKeyPath(key)}`);
+}
+
+export function deleteObject(bucket: string, key: string) {
+  return request<void>(`/api/v1/buckets/${encodeURIComponent(bucket)}/objects/${encodeObjectKeyPath(key)}`, {
+    method: 'DELETE',
+  });
+}
+
+export function presignObject(bucket: string, key: string, expiresSeconds = 900, method = 'GET') {
+  return request<PresignResult>('/api/v1/presign/s3', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      method,
+      bucket,
+      key,
+      expires_seconds: expiresSeconds,
+    }),
+  });
 }
 
 export function uploadObject(bucket: string, file: File, key?: string) {

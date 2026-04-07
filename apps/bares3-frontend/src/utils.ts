@@ -133,6 +133,23 @@ export function normalizeApiError(error: unknown, fallback: string) {
   return fallback;
 }
 
+export async function copyText(value: string) {
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  const input = document.createElement('textarea');
+  input.value = value;
+  input.setAttribute('readonly', 'true');
+  input.style.position = 'absolute';
+  input.style.left = '-9999px';
+  document.body.appendChild(input);
+  input.select();
+  document.execCommand('copy');
+  document.body.removeChild(input);
+}
+
 export function buildBucketDisplayRows(buckets: BucketInfo[]): BucketDisplayRow[] {
   if (buckets.length === 0) {
     return placeholderBucketRows.map((bucket) => ({

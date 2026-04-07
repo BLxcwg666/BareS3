@@ -7,14 +7,14 @@ import {
   HistoryOutlined,
   LinkOutlined,
   LockOutlined,
-  SearchOutlined,
   SettingOutlined,
 } from '@ant-design/icons';
-import { Button, Grid, Input, Layout, Menu, Space, Tag, Typography } from 'antd';
+import { Button, Grid, Layout, Menu, Space, Tag, Typography } from 'antd';
 import type { MenuProps } from 'antd';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth';
 import { pageMeta } from '../constants';
+import { GlobalSearch } from './GlobalSearch';
 import { RouteProgressBar } from './RouteProgressBar';
 import { ThemeModeButton } from './ThemeModeButton';
 
@@ -96,14 +96,7 @@ export function ConsoleShell({ children, actions, showHeaderSearch = true }: She
               </div>
 
               <Space className="header-actions" size={8} wrap>
-                {showHeaderSearch ? (
-                  <Input
-                    allowClear
-                    className="header-search"
-                    placeholder="Search bucket or key"
-                    prefix={<SearchOutlined />}
-                  />
-                ) : null}
+                {showHeaderSearch ? <GlobalSearch /> : null}
                 {actions}
                 <ThemeModeButton />
                 <Button icon={<LockOutlined />} onClick={() => void handleLogout()}>

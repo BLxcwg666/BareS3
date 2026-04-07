@@ -39,8 +39,8 @@ export function SettingsPage() {
       title: 'Delivery rules',
       items: [
         { label: 'Range requests', value: 'Enabled' },
-        { label: 'Public links', value: 'Not wired yet' },
-        { label: 'Default cache', value: 'Private unless published' },
+        { label: 'Public routes', value: '/pub/{bucket}/{key}' },
+        { label: 'Signed downloads', value: 'Generated from Share links' },
       ],
     };
   }

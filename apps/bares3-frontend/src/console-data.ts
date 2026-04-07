@@ -30,14 +30,6 @@ export type ObjectRow = {
   etag: string;
 };
 
-export type LinkRow = {
-  route: string;
-  target: string;
-  mode: 'Public' | 'Alias' | 'Signed';
-  visits: string;
-  expiry: string;
-};
-
 export type SettingGroup = {
   title: string;
   items: Array<{
@@ -158,30 +150,6 @@ export const objectRows: ObjectRow[] = [
     cache: 'private',
     updated: '2026-03-22 11:08',
     etag: '9afcc012',
-  },
-];
-
-export const linkRows: LinkRow[] = [
-  {
-    route: '/pub/gallery/launch/mock-02.png',
-    target: 'gallery/launch/mock-02.png',
-    mode: 'Public',
-    visits: '12.4k',
-    expiry: 'Never',
-  },
-  {
-    route: '/dl/client/latest',
-    target: 'drops/win64/client.zip',
-    mode: 'Alias',
-    visits: '3.8k',
-    expiry: 'Manual',
-  },
-  {
-    route: '/s/patch-nightly',
-    target: 'patches/nightly/client-20260324.tar.gz',
-    mode: 'Signed',
-    visits: '412',
-    expiry: '31h left',
   },
 ];
 
