@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -30,6 +31,27 @@ func TestLoginAndProtectedRuntime(t *testing.T) {
 	cfg.Auth.Console.SessionSecret = "test-session-secret"
 
 	store := storage.New(cfg, zap.NewNop())
+	ctx := context.Background()
+	if _, err := store.CreateBucket(ctx, "gallery"); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	if _, err := store.PutObject(ctx, storage.PutObjectInput{
+		Bucket:      "gallery",
+		Key:         "launch/mock-02.png",
+		Body:        bytes.NewBufferString("mock-02"),
+		ContentType: "image/png",
+	}); err != nil {
+		t.Fatalf("PutObject mock-02 failed: %v", err)
+	}
+	if _, err := store.PutObject(ctx, storage.PutObjectInput{
+		Bucket:      "gallery",
+		Key:         "launch/mock-03.png",
+		Body:        bytes.NewBufferString("mock-03"),
+		ContentType: "image/png",
+	}); err != nil {
+		t.Fatalf("PutObject mock-03 failed: %v", err)
+	}
+
 	handler := NewHandler(cfg, store, zap.NewNop())
 
 	unauthorized := httptest.NewRequest(http.MethodGet, "/api/v1/runtime", nil)
@@ -57,5 +79,21 @@ func TestLoginAndProtectedRuntime(t *testing.T) {
 	handler.ServeHTTP(runtimeRecorder, runtimeRequest)
 	if runtimeRecorder.Code != http.StatusOK {
 		t.Fatalf("unexpected runtime status: %d body=%s", runtimeRecorder.Code, runtimeRecorder.Body.String())
+	}
+
+	payload := struct {
+		Storage struct {
+			BucketCount     int `json:"bucket_count"`
+			ActiveLinkCount int `json:"active_link_count"`
+		} `json:"storage"`
+	}{}
+	if err := json.Unmarshal(runtimeRecorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal runtime payload: %v", err)
+	}
+	if payload.Storage.BucketCount != 1 {
+		t.Fatalf("unexpected bucket count: %d", payload.Storage.BucketCount)
+	}
+	if payload.Storage.ActiveLinkCount != 2 {
+		t.Fatalf("unexpected active link count: %d", payload.Storage.ActiveLinkCount)
 	}
 }

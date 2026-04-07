@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -126,6 +127,15 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 					return
 				}
 
+				activeLinkCount, err := countActiveLinks(r.Context(), store, buckets)
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
+
 				httpx.WriteJSON(w, http.StatusOK, map[string]any{
 					"app": map[string]any{
 						"name": config.ProductName,
@@ -148,11 +158,12 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 						"file":  cfg.Listen.File,
 					},
 					"storage": map[string]any{
-						"region":          cfg.Storage.Region,
-						"public_base_url": cfg.Storage.PublicBaseURL,
-						"s3_base_url":     cfg.Storage.S3BaseURL,
-						"metadata_layout": cfg.Storage.MetadataLayout,
-						"bucket_count":    len(buckets),
+						"region":            cfg.Storage.Region,
+						"public_base_url":   cfg.Storage.PublicBaseURL,
+						"s3_base_url":       cfg.Storage.S3BaseURL,
+						"metadata_layout":   cfg.Storage.MetadataLayout,
+						"bucket_count":      len(buckets),
+						"active_link_count": activeLinkCount,
 					},
 				})
 			})
@@ -364,6 +375,18 @@ func requireSession(manager *consoleauth.Manager) func(http.Handler) http.Handle
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func countActiveLinks(ctx context.Context, store *storage.Store, buckets []storage.BucketInfo) (int, error) {
+	total := 0
+	for _, bucket := range buckets {
+		objects, err := store.ListObjects(ctx, bucket.Name, storage.ListObjectsOptions{})
+		if err != nil {
+			return 0, err
+		}
+		total += len(objects)
+	}
+	return total, nil
 }
 
 func writeStorageError(w http.ResponseWriter, err error) {
