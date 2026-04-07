@@ -354,8 +354,6 @@ export function BrowserPage() {
                     column={1}
                     items={nodeSummaryToItems([
                       { label: 'Key', value: inspectorObject.key },
-                      { label: 'Path', value: inspectorObject.path },
-                      { label: 'Metadata path', value: inspectorObject.metadata_path || 'None' },
                       { label: 'Content-Type', value: inspectorObject.content_type || 'application/octet-stream' },
                       { label: 'Content-Disposition', value: inspectorObject.content_disposition || 'Not set' },
                       { label: 'Size', value: formatBytes(inspectorObject.size) },
