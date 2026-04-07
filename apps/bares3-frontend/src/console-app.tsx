@@ -25,10 +25,12 @@ import {
   Form,
   Grid,
   Input,
+  InputNumber,
   Layout,
   List,
   Menu,
   message,
+  Modal,
   Progress,
   Select,
   Skeleton,
@@ -54,7 +56,7 @@ import {
   getRuntime,
   listBuckets,
   listObjects,
-  login as loginRequest,
+  updateStorageLimit,
   uploadObject,
   type AuthSession,
   type BucketInfo,
@@ -94,6 +96,7 @@ type BucketDisplayRow = {
   size: string;
   objects: string;
   fill: string;
+  fillPercent: number | null;
   policy: string;
 };
 
@@ -102,6 +105,18 @@ type ObjectRow = ObjectInfo;
 
 type ThemeMode = 'auto' | 'light' | 'dark';
 type ResolvedTheme = 'light' | 'dark';
+type SizeUnit = 'MB' | 'GB' | 'TB';
+
+type BucketCreateValues = {
+	name: string;
+	quotaValue?: number;
+	quotaUnit: SizeUnit;
+};
+
+type StorageLimitValues = {
+	maxValue?: number;
+	maxUnit: SizeUnit;
+};
 
 const themeStorageKey = 'bares3-theme-mode';
 
@@ -128,6 +143,12 @@ const themeModeMeta: Record<ThemeMode, { buttonLabel: string; menuLabel: string;
     icon: <MoonOutlined />,
   },
 };
+
+const sizeUnitOptions: Array<{ label: SizeUnit; value: SizeUnit; bytes: number }> = [
+  { label: 'MB', value: 'MB', bytes: 1024 ** 2 },
+  { label: 'GB', value: 'GB', bytes: 1024 ** 3 },
+  { label: 'TB', value: 'TB', bytes: 1024 ** 4 },
+];
 
 function readStoredThemeMode(): ThemeMode {
   if (typeof window === 'undefined') {
@@ -463,7 +484,10 @@ function formatDateTime(value: string) {
 }
 
 function formatBytes(bytes: number) {
-  if (!Number.isFinite(bytes) || bytes < 1024) {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return '0 B';
+  }
+  if (bytes < 1024) {
     return `${bytes} B`;
   }
 
@@ -476,6 +500,62 @@ function formatBytes(bytes: number) {
   }
 
   return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[index]}`;
+}
+
+function formatCount(value: number) {
+  return new Intl.NumberFormat().format(value);
+}
+
+function quotaLabel(bytes: number) {
+  return bytes > 0 ? formatBytes(bytes) : 'Unlimited';
+}
+
+function usagePercentLabel(usedBytes: number, quotaBytes: number) {
+  if (quotaBytes <= 0) {
+    return 'N/A';
+  }
+
+  const percent = (usedBytes / quotaBytes) * 100;
+  return `${percent >= 10 ? percent.toFixed(0) : percent.toFixed(1)}%`;
+}
+
+function usagePercentValue(usedBytes: number, quotaBytes: number) {
+  if (quotaBytes <= 0) {
+    return null;
+  }
+
+  return Math.max(0, Math.min(100, Math.round((usedBytes / quotaBytes) * 100)));
+}
+
+function sizeInputToBytes(value: number | null | undefined, unit: SizeUnit) {
+  if (!value || value <= 0) {
+    return 0;
+  }
+
+  const selectedUnit = sizeUnitOptions.find((option) => option.value === unit) ?? sizeUnitOptions[1];
+  return Math.round(value * selectedUnit.bytes);
+}
+
+function bytesToSizeInput(bytes: number): { value?: number; unit: SizeUnit } {
+  if (!bytes || bytes <= 0) {
+    return { unit: 'GB' };
+  }
+
+  for (let index = sizeUnitOptions.length - 1; index >= 0; index -= 1) {
+    const option = sizeUnitOptions[index];
+    const amount = bytes / option.bytes;
+    if (amount >= 1) {
+      return {
+        value: Number(amount.toFixed(amount >= 10 ? 0 : 1)),
+        unit: option.value,
+      };
+    }
+  }
+
+  return {
+    value: Number((bytes / sizeUnitOptions[0].bytes).toFixed(1)),
+    unit: 'MB',
+  };
 }
 
 function safePathLabel(value: string) {
@@ -661,7 +741,7 @@ function Section({
 }
 
 function ExposureTag({ value }: { value: string }) {
-  const tone = value.toLowerCase().replace(/\s+/g, '-');
+  const tone = value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   return <Tag className={`mode-tag mode-tag-${tone}`}>{value}</Tag>;
 }
 
@@ -689,19 +769,23 @@ function buildBucketDisplayRows(buckets: BucketInfo[]): BucketDisplayRow[] {
       size: bucket.size,
       objects: bucket.objects,
       fill: bucket.used ? `${bucket.used}%` : 'N/A',
+      fillPercent: bucket.used ?? null,
       policy: bucket.policy,
     }));
   }
 
   return buckets.map((bucket) => ({
     name: bucket.name,
-    purpose: 'N/A',
+    purpose: bucket.quota_bytes > 0 ? `Limit ${formatBytes(bucket.quota_bytes)}` : 'Unlimited bucket quota',
     root: bucket.path,
-    mode: 'N/A',
-    size: 'N/A',
-    objects: 'N/A',
-    fill: 'N/A',
-    policy: bucket.metadata_layout ? `Metadata: ${bucket.metadata_layout}` : 'N/A',
+    mode: bucket.quota_bytes > 0 ? 'Limited' : 'Unlimited',
+    size: formatBytes(bucket.used_bytes),
+    objects: formatCount(bucket.object_count),
+    fill: usagePercentLabel(bucket.used_bytes, bucket.quota_bytes),
+    fillPercent: usagePercentValue(bucket.used_bytes, bucket.quota_bytes),
+    policy: bucket.metadata_layout
+      ? `Metadata: ${bucket.metadata_layout} • Quota: ${quotaLabel(bucket.quota_bytes)}`
+      : `Quota: ${quotaLabel(bucket.quota_bytes)}`,
   }));
 }
 
@@ -741,13 +825,13 @@ function bucketColumns(compact = false): TableColumnsType<BucketDisplayRow> {
       dataIndex: 'fill',
       key: 'fill',
       title: 'Used',
-      render: (value: string) =>
-        value === 'N/A' ? (
+      render: (_value: string, row) =>
+        row.fillPercent === null ? (
           <Text type="secondary">N/A</Text>
         ) : (
           <div className="used-cell">
-            <Progress percent={Number.parseInt(value, 10)} showInfo={false} size="small" strokeColor="#5c775f" />
-            <Text type="secondary">{value}</Text>
+            <Progress percent={row.fillPercent} showInfo={false} size="small" strokeColor="#5c775f" />
+            <Text type="secondary">{row.fill}</Text>
           </div>
         ),
       width: 120,
@@ -841,6 +925,158 @@ const linkColumns: TableColumnsType<LinkRow> = [
     width: 100,
   },
 ];
+
+function BucketCreateModal({
+  open,
+  onCancel,
+  onCreated,
+}: {
+  open: boolean;
+  onCancel: () => void;
+  onCreated: () => Promise<void> | void;
+}) {
+  const [form] = Form.useForm<BucketCreateValues>();
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    form.setFieldsValue({
+      name: '',
+      quotaValue: undefined,
+      quotaUnit: 'GB',
+    });
+  }, [form, open]);
+
+  const handleSubmit = async () => {
+    const values = await form.validateFields();
+    setSubmitting(true);
+    try {
+      const bucket = await createBucket(values.name.trim(), sizeInputToBytes(values.quotaValue, values.quotaUnit));
+      message.success(`Bucket ${bucket.name} created`);
+      form.resetFields();
+      onCancel();
+      await onCreated();
+    } catch (error) {
+      message.error(normalizeApiError(error, 'Failed to create bucket'));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal
+      confirmLoading={submitting}
+      okText="Create bucket"
+      onCancel={() => {
+        if (submitting) {
+          return;
+        }
+        form.resetFields();
+        onCancel();
+      }}
+      onOk={() => void handleSubmit()}
+      open={open}
+      title="New bucket"
+    >
+      <Form form={form} initialValues={{ quotaUnit: 'GB' }} layout="vertical">
+        <Form.Item label="Bucket name" name="name" rules={[{ required: true, whitespace: true, message: 'Bucket name is required' }]}>
+          <Input placeholder="gallery" />
+        </Form.Item>
+
+        <Form.Item extra="Leave empty or 0 for unlimited." label="Bucket limit">
+          <Space.Compact block>
+            <Form.Item name="quotaValue" noStyle>
+              <InputNumber min={0} placeholder="Unlimited" precision={1} style={{ width: '100%' }} />
+            </Form.Item>
+            <Form.Item name="quotaUnit" noStyle>
+              <Select
+                options={sizeUnitOptions.map((option) => ({ label: option.label, value: option.value }))}
+                style={{ width: 96 }}
+              />
+            </Form.Item>
+          </Space.Compact>
+        </Form.Item>
+      </Form>
+    </Modal>
+  );
+}
+
+function StorageLimitModal({
+  currentMaxBytes,
+  open,
+  onCancel,
+  onSaved,
+}: {
+  currentMaxBytes: number;
+  open: boolean;
+  onCancel: () => void;
+  onSaved: () => Promise<void> | void;
+}) {
+  const [form] = Form.useForm<StorageLimitValues>();
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    const nextValue = bytesToSizeInput(currentMaxBytes);
+    form.setFieldsValue({
+      maxValue: nextValue.value,
+      maxUnit: nextValue.unit,
+    });
+  }, [currentMaxBytes, form, open]);
+
+  const handleSubmit = async () => {
+    const values = await form.validateFields();
+    setSubmitting(true);
+    try {
+      await updateStorageLimit(sizeInputToBytes(values.maxValue, values.maxUnit));
+      message.success('Storage limit updated');
+      onCancel();
+      await onSaved();
+    } catch (error) {
+      message.error(normalizeApiError(error, 'Failed to update storage limit'));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal
+      confirmLoading={submitting}
+      okText="Save limit"
+      onCancel={() => {
+        if (submitting) {
+          return;
+        }
+        onCancel();
+      }}
+      onOk={() => void handleSubmit()}
+      open={open}
+      title="Instance storage limit"
+    >
+      <Form form={form} initialValues={{ maxUnit: 'GB' }} layout="vertical">
+        <Form.Item extra="Leave empty or 0 for unlimited." label="Maximum storage">
+          <Space.Compact block>
+            <Form.Item name="maxValue" noStyle>
+              <InputNumber min={0} placeholder="Unlimited" precision={1} style={{ width: '100%' }} />
+            </Form.Item>
+            <Form.Item name="maxUnit" noStyle>
+              <Select
+                options={sizeUnitOptions.map((option) => ({ label: option.label, value: option.value }))}
+                style={{ width: 96 }}
+              />
+            </Form.Item>
+          </Space.Compact>
+        </Form.Item>
+      </Form>
+    </Modal>
+  );
+}
 
 function LoginPage() {
   const auth = useAuth();
@@ -937,21 +1173,7 @@ function OverviewPage() {
   const navigate = useNavigate();
   const { runtime, loading: runtimeLoading, refresh: refreshRuntime } = useRuntimeData();
   const { items: buckets, loading: bucketsLoading, refresh: refreshBuckets } = useBucketsData();
-
-  const handleCreateBucket = async () => {
-    const name = window.prompt('Bucket name');
-    if (!name?.trim()) {
-      return;
-    }
-
-    try {
-      await createBucket(name.trim());
-      message.success(`Bucket ${name.trim()} created`);
-      await Promise.all([refreshBuckets(), refreshRuntime()]);
-    } catch (error) {
-      message.error(normalizeApiError(error, 'Failed to create bucket'));
-    }
-  };
+  const [isBucketModalOpen, setIsBucketModalOpen] = useState(false);
 
   const metrics: MetricItem[] = placeholderOverviewMetrics.map((item) => ({ ...item }));
   metrics[0] = {
@@ -961,8 +1183,14 @@ function OverviewPage() {
   };
   metrics[1] = {
     ...metrics[1],
-    value: 'N/A',
-    detail: 'Disk usage summary is not wired yet',
+    value:
+      runtimeLoading || !runtime?.storage.max_bytes
+        ? 'N/A'
+        : usagePercentLabel(runtime.storage.used_bytes, runtime.storage.max_bytes),
+    detail:
+      runtime?.storage.max_bytes && runtime.storage.max_bytes > 0
+        ? `${formatBytes(runtime.storage.used_bytes)} of ${formatBytes(runtime.storage.max_bytes)} allocated`
+        : 'Set an instance limit in Settings',
   };
   metrics[2] = {
     ...metrics[2],
@@ -1010,7 +1238,7 @@ function OverviewPage() {
     <ConsoleShell
       actions={
         <>
-          <Button onClick={() => void handleCreateBucket()}>New bucket</Button>
+          <Button onClick={() => setIsBucketModalOpen(true)}>New bucket</Button>
           <Button icon={<UploadOutlined />} onClick={() => navigate('/browser')} type="primary">
             Upload
           </Button>
@@ -1021,6 +1249,12 @@ function OverviewPage() {
         <Section flush title="At a glance">
           {metricStrip(metrics)}
         </Section>
+
+        <BucketCreateModal
+          onCancel={() => setIsBucketModalOpen(false)}
+          onCreated={() => Promise.all([refreshBuckets(), refreshRuntime()]).then(() => undefined)}
+          open={isBucketModalOpen}
+        />
 
         <div className="workspace-grid workspace-grid-main">
           <Section
@@ -1089,31 +1323,23 @@ function OverviewPage() {
 function BucketsPage() {
   const { items, loading, refresh } = useBucketsData();
   const displayRows = buildBucketDisplayRows(items);
-
-  const handleCreateBucket = async () => {
-    const name = window.prompt('Bucket name');
-    if (!name?.trim()) {
-      return;
-    }
-
-    try {
-      await createBucket(name.trim());
-      message.success(`Bucket ${name.trim()} created`);
-      await refresh();
-    } catch (error) {
-      message.error(normalizeApiError(error, 'Failed to create bucket'));
-    }
-  };
+  const [isBucketModalOpen, setIsBucketModalOpen] = useState(false);
 
   return (
     <ConsoleShell
       actions={
-        <Button onClick={() => void handleCreateBucket()} type="primary">
+        <Button onClick={() => setIsBucketModalOpen(true)} type="primary">
           Create bucket
         </Button>
       }
     >
       <div className="workspace-stack">
+        <BucketCreateModal
+          onCancel={() => setIsBucketModalOpen(false)}
+          onCreated={() => refresh()}
+          open={isBucketModalOpen}
+        />
+
         <div className="workspace-grid workspace-grid-main">
           <Section flush title="All buckets">
             <Table
@@ -1357,7 +1583,8 @@ function LinksPage() {
 
 function SettingsPage() {
   const auth = useAuth();
-  const { runtime, loading } = useRuntimeData();
+  const { runtime, loading, refresh } = useRuntimeData();
+  const [isStorageModalOpen, setIsStorageModalOpen] = useState(false);
 
   const groups = placeholderSettingGroups.map((group) => ({
     title: group.title,
@@ -1393,6 +1620,21 @@ function SettingsPage() {
     };
   }
 
+  const maxBytes = runtime?.storage.max_bytes ?? 0;
+  const usedBytes = runtime?.storage.used_bytes ?? 0;
+  const remainingValue =
+    maxBytes > 0
+      ? usedBytes > maxBytes
+        ? `Over by ${formatBytes(usedBytes - maxBytes)}`
+        : formatBytes(maxBytes - usedBytes)
+      : 'Unlimited';
+
+  const capacityItems = [
+    { label: 'Instance limit', value: quotaLabel(maxBytes) },
+    { label: 'Used now', value: formatBytes(usedBytes) },
+    { label: 'Remaining', value: remainingValue },
+  ];
+
   return (
     <ConsoleShell>
       {loading ? (
@@ -1402,29 +1644,46 @@ function SettingsPage() {
           </Section>
         </div>
       ) : (
-        <div className="workspace-grid workspace-grid-thirds">
-          {groups.map((group) => (
-            <Section key={group.title} title={group.title}>
-              <Descriptions column={1} items={nodeSummaryToItems(group.items)} size="small" />
-            </Section>
-          ))}
+        <div className="workspace-stack">
+          <StorageLimitModal
+            currentMaxBytes={maxBytes}
+            onCancel={() => setIsStorageModalOpen(false)}
+            onSaved={() => refresh()}
+            open={isStorageModalOpen}
+          />
 
-          <Section note={auth.session ? `Signed in as ${auth.session.username}` : undefined} title="Guidance" className="section-span-full">
-            <div className="rule-grid">
-              <article>
-                <h3>Plain naming first</h3>
-                <p>Favor bucket and route names that still make sense when read directly on disk.</p>
-              </article>
-              <article>
-                <h3>Metadata stays nearby</h3>
-                <p>Expose sidecar behavior so users understand what the server adds around each file.</p>
-              </article>
-              <article>
-                <h3>Every public path is intentional</h3>
-                <p>Make visibility a deliberate action, not a hidden side effect of upload flow.</p>
-              </article>
-            </div>
+          <Section
+            title="Capacity"
+            note="Set the total space this BareS3 node is allowed to consume."
+            extra={<Button onClick={() => setIsStorageModalOpen(true)}>Edit limit</Button>}
+          >
+            <Descriptions column={1} items={nodeSummaryToItems(capacityItems)} size="small" />
           </Section>
+
+          <div className="workspace-grid workspace-grid-thirds">
+            {groups.map((group) => (
+              <Section key={group.title} title={group.title}>
+                <Descriptions column={1} items={nodeSummaryToItems(group.items)} size="small" />
+              </Section>
+            ))}
+
+            <Section note={auth.session ? `Signed in as ${auth.session.username}` : undefined} title="Guidance" className="section-span-full">
+              <div className="rule-grid">
+                <article>
+                  <h3>Plain naming first</h3>
+                  <p>Favor bucket and route names that still make sense when read directly on disk.</p>
+                </article>
+                <article>
+                  <h3>Metadata stays nearby</h3>
+                  <p>Expose sidecar behavior so users understand what the server adds around each file.</p>
+                </article>
+                <article>
+                  <h3>Every public path is intentional</h3>
+                  <p>Make visibility a deliberate action, not a hidden side effect of upload flow.</p>
+                </article>
+              </div>
+            </Section>
+          </div>
         </div>
       )}
     </ConsoleShell>

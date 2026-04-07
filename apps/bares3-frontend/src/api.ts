@@ -45,6 +45,8 @@ export type RuntimeInfo = {
     public_base_url: string;
     s3_base_url: string;
     metadata_layout: string;
+    max_bytes: number;
+    used_bytes: number;
     bucket_count: number;
     active_link_count: number;
   };
@@ -56,6 +58,9 @@ export type BucketInfo = {
   metadata_path: string;
   created_at: string;
   metadata_layout: string;
+  quota_bytes: number;
+  used_bytes: number;
+  object_count: number;
 };
 
 export type ObjectInfo = {
@@ -133,13 +138,23 @@ export async function listBuckets() {
   return payload.items;
 }
 
-export function createBucket(name: string) {
+export function createBucket(name: string, quotaBytes = 0) {
   return request<BucketInfo>('/api/v1/buckets', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, quota_bytes: quotaBytes }),
+  });
+}
+
+export function updateStorageLimit(maxBytes: number) {
+  return request<{ max_bytes: number }>('/api/v1/settings/storage', {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ max_bytes: maxBytes }),
   });
 }
 
