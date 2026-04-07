@@ -6,6 +6,7 @@ import {
   DesktopOutlined,
   DownOutlined,
   FolderOpenOutlined,
+  HistoryOutlined,
   LinkOutlined,
   LockOutlined,
   MoonOutlined,
@@ -54,10 +55,12 @@ import {
 import {
   createBucket,
   getRuntime,
+  listAuditEntries,
   listBuckets,
   listObjects,
   updateStorageLimit,
   uploadObject,
+  type AuditEntry,
   type AuthSession,
   type BucketInfo,
   type ObjectInfo,
@@ -66,15 +69,11 @@ import {
 } from './api';
 import { AuthProvider, GuestRoute, ProtectedRoute, useAuth } from './auth';
 import {
-  activityRows as placeholderActivityRows,
   bucketRows as placeholderBucketRows,
-  bucketTemplates,
-  consoleRules,
   linkRows,
   loginNotes,
   nodeSummary as placeholderNodeSummary,
   overviewMetrics as placeholderOverviewMetrics,
-  publishingNotes,
   settingGroups as placeholderSettingGroups,
   type LinkRow,
 } from './console-data';
@@ -116,6 +115,13 @@ type BucketCreateValues = {
 type StorageLimitValues = {
 	maxValue?: number;
 	maxUnit: SizeUnit;
+};
+
+type ActivityDisplayItem = {
+	key: string;
+	title: string;
+	meta: string;
+	time: string;
 };
 
 const themeStorageKey = 'bares3-theme-mode';
@@ -230,6 +236,7 @@ const pageMeta: Record<string, { title: string; note: string }> = {
   '/overview': { title: 'Overview', note: 'Buckets, routes, and current disk state.' },
   '/buckets': { title: 'Buckets', note: 'Readable roots with clear exposure rules.' },
   '/browser': { title: 'Browser', note: 'Objects, metadata, and current path context.' },
+  '/audit': { title: 'Audit Logs', note: 'Recent console actions and storage changes.' },
   '/links': { title: 'Share links', note: 'Public routes, aliases, and signed delivery.' },
   '/settings': { title: 'Settings', note: 'Defaults that make the storage layer predictable.' },
 };
@@ -313,6 +320,14 @@ function ConsoleApp() {
                 element={
                   <ProtectedRoute>
                     <BrowserPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/audit"
+                element={
+                  <ProtectedRoute>
+                    <AuditLogsPage />
                   </ProtectedRoute>
                 }
               />
@@ -441,6 +456,33 @@ function useBucketsData() {
   return { items, loading, refresh };
 }
 
+function useAuditActivity(limit = 8) {
+  const auth = useAuth();
+  const [items, setItems] = useState<AuditEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const refresh = useCallback(async () => {
+    if (auth.status !== 'authenticated') {
+      setItems([]);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      setItems(await listAuditEntries(limit));
+    } finally {
+      setLoading(false);
+    }
+  }, [auth.status, limit]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  return { items, loading, refresh };
+}
+
 function useBucketObjects(bucket: string | null) {
   const auth = useAuth();
   const [items, setItems] = useState<ObjectInfo[]>([]);
@@ -481,6 +523,31 @@ function formatDateTime(value: string) {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+function formatRelativeTime(value: string) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  const deltaMs = parsed.getTime() - Date.now();
+  const minutes = Math.round(deltaMs / 60000);
+  if (Math.abs(minutes) < 60) {
+    return new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' }).format(minutes, 'minute');
+  }
+
+  const hours = Math.round(deltaMs / 3600000);
+  if (Math.abs(hours) < 24) {
+    return new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' }).format(hours, 'hour');
+  }
+
+  const days = Math.round(deltaMs / 86400000);
+  if (Math.abs(days) < 7) {
+    return new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' }).format(days, 'day');
+  }
+
+  return formatDateTime(value);
 }
 
 function formatBytes(bytes: number) {
@@ -595,6 +662,7 @@ function ConsoleShell({ children, actions, showHeaderSearch = true }: ShellProps
       { key: '/overview', icon: <AppstoreOutlined />, label: 'Overview' },
       { key: '/buckets', icon: <CloudServerOutlined />, label: 'Buckets' },
       { key: '/browser', icon: <FolderOpenOutlined />, label: 'Browser' },
+      { key: '/audit', icon: <HistoryOutlined />, label: 'Audit logs' },
       { key: '/links', icon: <LinkOutlined />, label: 'Share links' },
       { key: '/settings', icon: <SettingOutlined />, label: 'Settings' },
     ],
@@ -646,7 +714,7 @@ function ConsoleShell({ children, actions, showHeaderSearch = true }: ShellProps
               </div>
 
               <Space className="header-actions" size={8} wrap>
-                {showHeaderSearch ? (
+               {showHeaderSearch ? (
                   <Input
                     allowClear
                     className="header-search"
@@ -655,7 +723,6 @@ function ConsoleShell({ children, actions, showHeaderSearch = true }: ShellProps
                   />
                 ) : null}
                 {actions}
-                <Tag className="user-tag">{auth.session?.username ?? 'admin'}</Tag>
                 <ThemeModeButton />
                 <Button icon={<LockOutlined />} onClick={() => void handleLogout()}>
                   Sign out
@@ -926,6 +993,48 @@ const linkColumns: TableColumnsType<LinkRow> = [
   },
 ];
 
+const auditLogColumns: TableColumnsType<AuditEntry> = [
+  {
+    dataIndex: 'title',
+    key: 'title',
+    title: 'Event',
+    render: (value: string, row) => (
+      <div>
+        <div className="row-title">{value}</div>
+        <div className="row-note">{row.detail || row.action}</div>
+      </div>
+    ),
+  },
+  {
+    dataIndex: 'actor',
+    key: 'actor',
+    title: 'Actor',
+    width: 120,
+    render: (value: string) => value || 'system',
+  },
+  {
+    dataIndex: 'target',
+    key: 'target',
+    title: 'Target',
+    ellipsis: true,
+    render: (value?: string) => value || 'N/A',
+  },
+  {
+    dataIndex: 'remote',
+    key: 'remote',
+    title: 'Remote',
+    width: 150,
+    render: (value?: string) => value || 'N/A',
+  },
+  {
+    dataIndex: 'time',
+    key: 'time',
+    title: 'Time',
+    width: 180,
+    render: (value: string) => formatDateTime(value),
+  },
+];
+
 function BucketCreateModal({
   open,
   onCancel,
@@ -1173,6 +1282,7 @@ function OverviewPage() {
   const navigate = useNavigate();
   const { runtime, loading: runtimeLoading, refresh: refreshRuntime } = useRuntimeData();
   const { items: buckets, loading: bucketsLoading, refresh: refreshBuckets } = useBucketsData();
+  const { items: auditEntries, loading: activityLoading, refresh: refreshActivity } = useAuditActivity();
   const [isBucketModalOpen, setIsBucketModalOpen] = useState(false);
 
   const metrics: MetricItem[] = placeholderOverviewMetrics.map((item) => ({ ...item }));
@@ -1199,34 +1309,12 @@ function OverviewPage() {
   };
 
   const overviewBuckets = buildBucketDisplayRows(buckets);
-
-  const activityItems = placeholderActivityRows.map((item, index) => {
-    if (index === 0 && runtime?.storage.s3_base_url) {
-      return {
-        ...item,
-        meta: `S3 endpoint ready at ${runtime.storage.s3_base_url}`,
-        time: runtime.storage.region,
-      };
-    }
-
-    if (index === 1 && runtime?.storage.public_base_url) {
-      return {
-        ...item,
-        meta: `File endpoint ready at ${runtime.storage.public_base_url}`,
-        time: 'N/A',
-      };
-    }
-
-    if (index >= 2) {
-      return {
-        ...item,
-        meta: 'Not wired yet',
-        time: 'N/A',
-      };
-    }
-
-    return item;
-  });
+  const activityItems: ActivityDisplayItem[] = auditEntries.map((entry) => ({
+    key: `${entry.time}-${entry.action}-${entry.target ?? entry.title}`,
+    title: entry.title,
+    meta: [entry.detail, entry.actor ? `by ${entry.actor}` : '', entry.remote].filter(Boolean).join(' · '),
+    time: formatRelativeTime(entry.time),
+  }));
 
   const nodeItems = placeholderNodeSummary.map((item) => ({ ...item }));
   nodeItems[0] = { label: 'Console', value: runtime?.app.name ?? 'BareS3' };
@@ -1252,7 +1340,7 @@ function OverviewPage() {
 
         <BucketCreateModal
           onCancel={() => setIsBucketModalOpen(false)}
-          onCreated={() => Promise.all([refreshBuckets(), refreshRuntime()]).then(() => undefined)}
+          onCreated={() => Promise.all([refreshBuckets(), refreshRuntime(), refreshActivity()]).then(() => undefined)}
           open={isBucketModalOpen}
         />
 
@@ -1278,15 +1366,24 @@ function OverviewPage() {
             />
           </Section>
 
-          <Section title="Activity">
-            {runtimeLoading ? (
+          <Section
+            title="Activity"
+            extra={
+              <Button onClick={() => navigate('/audit')} size="small" type="link">
+                Open
+              </Button>
+            }
+          >
+            {activityLoading ? (
               <Skeleton active paragraph={{ rows: 4 }} title={false} />
+            ) : activityItems.length === 0 ? (
+              <Empty description="No recent activity" image={Empty.PRESENTED_IMAGE_SIMPLE} />
             ) : (
               <List
                 dataSource={activityItems}
-                renderItem={(item) => (
-                  <List.Item>
-                    <List.Item.Meta description={item.meta} title={item.title} />
+                renderItem={(item: ActivityDisplayItem) => (
+                  <List.Item key={item.key}>
+                    <List.Item.Meta description={item.meta || undefined} title={item.title} />
                     <Text type="secondary">{item.time}</Text>
                   </List.Item>
                 )}
@@ -1295,26 +1392,13 @@ function OverviewPage() {
           </Section>
         </div>
 
-        <div className="workspace-grid workspace-grid-main">
-          <Section title="Node">
-            {runtimeLoading ? (
-              <Skeleton active paragraph={{ rows: 4 }} title={false} />
-            ) : (
-              <Descriptions column={1} items={nodeSummaryToItems(nodeItems)} size="small" />
-            )}
-          </Section>
-
-          <Section title="Rules">
-            <List
-              dataSource={consoleRules}
-              renderItem={(item: string) => (
-                <List.Item>
-                  <Text>{item}</Text>
-                </List.Item>
-              )}
-            />
-          </Section>
-        </div>
+        <Section title="Node">
+          {runtimeLoading ? (
+            <Skeleton active paragraph={{ rows: 4 }} title={false} />
+          ) : (
+            <Descriptions column={1} items={nodeSummaryToItems(nodeItems)} size="small" />
+          )}
+        </Section>
       </div>
     </ConsoleShell>
   );
@@ -1340,31 +1424,18 @@ function BucketsPage() {
           open={isBucketModalOpen}
         />
 
-        <div className="workspace-grid workspace-grid-main">
-          <Section flush title="All buckets">
-            <Table
-              columns={bucketColumns(false)}
-              dataSource={displayRows}
-              loading={loading}
-              locale={{ emptyText: <Empty description="No buckets yet" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
-              pagination={false}
-              rowKey="name"
-              scroll={{ x: 980 }}
-              size="small"
-            />
-          </Section>
-
-          <Section title="Templates">
-            <List
-              dataSource={bucketTemplates}
-              renderItem={(item: string) => (
-                <List.Item>
-                  <Text>{item}</Text>
-                </List.Item>
-              )}
-            />
-          </Section>
-        </div>
+        <Section flush title="All buckets">
+          <Table
+            columns={bucketColumns(false)}
+            dataSource={displayRows}
+            loading={loading}
+            locale={{ emptyText: <Empty description="No buckets yet" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+            pagination={false}
+            rowKey="name"
+            scroll={{ x: 980 }}
+            size="small"
+          />
+        </Section>
       </div>
     </ConsoleShell>
   );
@@ -1553,36 +1624,52 @@ function LinksPage() {
       }
     >
       <div className="workspace-stack">
-        <div className="workspace-grid workspace-grid-main">
-          <Section flush title="Published routes">
-            <Table
-              columns={linkColumns}
-              dataSource={linkRows}
-              pagination={false}
-              rowKey="route"
-              scroll={{ x: 860 }}
-              size="small"
-            />
-          </Section>
+        <Section flush title="Published routes">
+          <Table
+            columns={linkColumns}
+            dataSource={linkRows}
+            pagination={false}
+            rowKey="route"
+            scroll={{ x: 860 }}
+            size="small"
+          />
+        </Section>
+      </div>
+    </ConsoleShell>
+  );
+}
 
-          <Section title="Publishing rules">
-            <List
-              dataSource={publishingNotes}
-              renderItem={(item: string) => (
-                <List.Item>
-                  <Text>{item}</Text>
-                </List.Item>
-              )}
-            />
-          </Section>
-        </div>
+function AuditLogsPage() {
+  const { items, loading, refresh } = useAuditActivity(100);
+
+  return (
+    <ConsoleShell
+      showHeaderSearch={false}
+      actions={
+        <Button onClick={() => void refresh()} type="primary">
+          Refresh
+        </Button>
+      }
+    >
+      <div className="workspace-stack">
+        <Section flush title="Recent events">
+          <Table
+            columns={auditLogColumns}
+            dataSource={items}
+            loading={loading}
+            locale={{ emptyText: <Empty description="No audit events yet" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+            pagination={{ pageSize: 20, showSizeChanger: false }}
+            rowKey={(row) => `${row.time}-${row.action}-${row.target ?? row.title}`}
+            scroll={{ x: 980 }}
+            size="small"
+          />
+        </Section>
       </div>
     </ConsoleShell>
   );
 }
 
 function SettingsPage() {
-  const auth = useAuth();
   const { runtime, loading, refresh } = useRuntimeData();
   const [isStorageModalOpen, setIsStorageModalOpen] = useState(false);
 
@@ -1666,23 +1753,6 @@ function SettingsPage() {
                 <Descriptions column={1} items={nodeSummaryToItems(group.items)} size="small" />
               </Section>
             ))}
-
-            <Section note={auth.session ? `Signed in as ${auth.session.username}` : undefined} title="Guidance" className="section-span-full">
-              <div className="rule-grid">
-                <article>
-                  <h3>Plain naming first</h3>
-                  <p>Favor bucket and route names that still make sense when read directly on disk.</p>
-                </article>
-                <article>
-                  <h3>Metadata stays nearby</h3>
-                  <p>Expose sidecar behavior so users understand what the server adds around each file.</p>
-                </article>
-                <article>
-                  <h3>Every public path is intentional</h3>
-                  <p>Make visibility a deliberate action, not a hidden side effect of upload flow.</p>
-                </article>
-              </div>
-            </Section>
           </div>
         </div>
       )}

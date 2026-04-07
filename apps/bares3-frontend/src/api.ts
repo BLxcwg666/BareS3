@@ -77,6 +77,17 @@ export type ObjectInfo = {
   last_modified: string;
 };
 
+export type AuditEntry = {
+  time: string;
+  actor: string;
+  action: string;
+  title: string;
+  detail?: string;
+  target?: string;
+  remote?: string;
+  status?: string;
+};
+
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim() ?? '';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -131,6 +142,11 @@ export function logout() {
 
 export function getRuntime() {
   return request<RuntimeInfo>('/api/v1/runtime');
+}
+
+export async function listAuditEntries(limit = 10) {
+  const payload = await request<{ items: AuditEntry[] }>(`/api/v1/audit/events?limit=${limit}`);
+  return payload.items;
 }
 
 export async function listBuckets() {
