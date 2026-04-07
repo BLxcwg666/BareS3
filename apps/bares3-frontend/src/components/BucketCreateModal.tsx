@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Form, Input, InputNumber, Modal, Select, Space, message } from 'antd';
+import { App as AntApp, Form, Input, InputNumber, Modal, Select, Space } from 'antd';
 import { createBucket } from '../api';
 import { sizeUnitOptions } from '../constants';
 import type { BucketCreateValues } from '../types';
@@ -14,6 +14,7 @@ export function BucketCreateModal({
   onCancel: () => void;
   onCreated: () => Promise<void> | void;
 }) {
+  const { message } = AntApp.useApp();
   const [form] = Form.useForm<BucketCreateValues>();
   const [submitting, setSubmitting] = useState(false);
 

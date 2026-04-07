@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { SearchOutlined, UploadOutlined } from '@ant-design/icons';
-import { Breadcrumb, Button, Descriptions, Empty, Input, InputNumber, Popconfirm, Select, Space, Spin, Table, Tag, message } from 'antd';
+import { App as AntApp, Breadcrumb, Button, Descriptions, Empty, Input, InputNumber, Popconfirm, Select, Space, Spin, Table, Tag } from 'antd';
 import { createShareLink, deleteObject, listShareLinks, presignObject, removeShareLink, revokeShareLink, uploadObject, type ShareLinkInfo } from '../api';
 import { ConsoleShell } from '../components/ConsoleShell';
 import { Section } from '../components/Section';
@@ -13,6 +13,7 @@ import { copyText, formatBytes, formatDateTime, formatRelativeTime, nodeSummaryT
 import { useSearchParams } from 'react-router-dom';
 
 export function BrowserPage() {
+  const { message } = AntApp.useApp();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedBucket = searchParams.get('bucket')?.trim() ?? '';

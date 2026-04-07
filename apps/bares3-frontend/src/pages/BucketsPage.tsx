@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
-import { Button, Empty, Popconfirm, Space, Table, message } from 'antd';
+import { App as AntApp, Button, Empty, Popconfirm, Space, Table } from 'antd';
 import type { TableColumnsType } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import { deleteBucket } from '../api';
@@ -12,6 +12,7 @@ import type { BucketDisplayRow } from '../types';
 import { normalizeApiError } from '../utils';
 
 export function BucketsPage() {
+  const { message } = AntApp.useApp();
   const navigate = useNavigate();
   const { items, loading, refresh } = useBucketsData();
   const displayRows = bucketDisplayRows(items);

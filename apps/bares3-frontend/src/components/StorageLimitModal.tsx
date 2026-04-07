@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Form, InputNumber, Modal, Select, Space, message } from 'antd';
+import { App as AntApp, Form, InputNumber, Modal, Select, Space } from 'antd';
 import { updateStorageLimit } from '../api';
 import { sizeUnitOptions } from '../constants';
 import type { StorageLimitValues } from '../types';
@@ -16,6 +16,7 @@ export function StorageLimitModal({
   onCancel: () => void;
   onSaved: () => Promise<void> | void;
 }) {
+  const { message } = AntApp.useApp();
   const [form] = Form.useForm<StorageLimitValues>();
   const [submitting, setSubmitting] = useState(false);
 

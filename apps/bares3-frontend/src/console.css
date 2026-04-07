@@ -99,6 +99,18 @@ a {
   padding-inline: 0;
 }
 
+.ant-message .ant-message-notice-content {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 8px 24px oklch(0% 0 0 / 0.12);
+}
+
+.ant-message .ant-message-notice-content .ant-message-custom-content {
+  color: var(--ink);
+}
+
 .ant-dropdown .ant-dropdown-menu {
   border-radius: 8px;
 }

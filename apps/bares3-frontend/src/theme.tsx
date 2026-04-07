@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
-import { ConfigProvider, theme as antTheme } from 'antd';
+import { App as AntApp, ConfigProvider, theme as antTheme } from 'antd';
 import type { ThemeConfig } from 'antd';
 import { DesktopOutlined, MoonOutlined, SunOutlined } from '@ant-design/icons';
 import { themeStorageKey } from './constants';
@@ -153,7 +153,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   return (
     <ThemeModeContext.Provider value={themeContextValue}>
-      <ConfigProvider theme={themeConfig}>{children}</ConfigProvider>
+      <ConfigProvider theme={themeConfig}>
+        <AntApp>{children}</AntApp>
+      </ConfigProvider>
     </ThemeModeContext.Provider>
   );
 }

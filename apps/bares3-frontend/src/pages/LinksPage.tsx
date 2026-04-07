@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Button, Empty, Popconfirm, Space, Table, Tag, Typography, message } from 'antd';
+import { App as AntApp, Button, Empty, Popconfirm, Space, Table, Tag, Typography } from 'antd';
 import type { TableColumnsType } from 'antd';
 import { listShareLinks, removeShareLink, revokeShareLink, type ShareLinkInfo, type ShareLinkStatus } from '../api';
 import { ConsoleShell } from '../components/ConsoleShell';
@@ -22,6 +22,7 @@ function statusTag(status: ShareLinkStatus) {
 }
 
 export function LinksPage() {
+  const { message } = AntApp.useApp();
   const [links, setLinks] = useState<ShareLinkInfo[]>([]);
   const [linksLoading, setLinksLoading] = useState(true);
   const [revokingId, setRevokingId] = useState<string | null>(null);
