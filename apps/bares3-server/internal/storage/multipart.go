@@ -333,7 +333,7 @@ func (s *Store) CompleteMultipartUpload(ctx context.Context, bucket, key, upload
 		LastModified:       time.Now().UTC(),
 	}
 
-	object, err := s.commitObjectFromStaged(bucket, key, stagedObjectPath, objectMeta)
+	object, err := s.commitObjectWithQuota(ctx, bucket, key, stagedObjectPath, objectMeta)
 	if err != nil {
 		return ObjectInfo{}, err
 	}
@@ -411,6 +411,69 @@ func (s *Store) writeMultipartUploadMetadata(bucket, uploadID string, meta multi
 		_ = os.Remove(staged)
 	}()
 	return replaceFile(staged, path)
+}
+
+func (s *Store) commitObjectWithQuota(ctx context.Context, bucket, key, stagedObjectPath string, meta objectMetadata) (ObjectInfo, error) {
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
+
+	existingSize, err := s.currentObjectSize(bucket, key)
+	if err != nil {
+		return ObjectInfo{}, err
+	}
+
+	buckets, err := s.ListBuckets(ctx)
+	if err != nil {
+		return ObjectInfo{}, err
+	}
+
+	instanceQuota := s.InstanceQuotaBytes()
+	totalUsedBytes := int64(0)
+	bucketUsedBytes := int64(0)
+	bucketQuotaBytes := int64(0)
+	bucketFound := false
+	for _, item := range buckets {
+		totalUsedBytes += item.UsedBytes
+		if item.Name == bucket {
+			bucketFound = true
+			bucketUsedBytes = item.UsedBytes
+			bucketQuotaBytes = item.QuotaBytes
+		}
+	}
+	if !bucketFound {
+		return ObjectInfo{}, fmt.Errorf("%w: %s", ErrBucketNotFound, bucket)
+	}
+
+	nextBucketUsedBytes := bucketUsedBytes - existingSize + meta.Size
+	if bucketQuotaBytes > 0 && nextBucketUsedBytes > bucketQuotaBytes {
+		return ObjectInfo{}, fmt.Errorf("%w: %s exceeds %d bytes", ErrBucketQuotaExceeded, bucket, bucketQuotaBytes)
+	}
+
+	nextTotalUsedBytes := totalUsedBytes - existingSize + meta.Size
+	if instanceQuota > 0 && nextTotalUsedBytes > instanceQuota {
+		return ObjectInfo{}, fmt.Errorf("%w: total usage exceeds %d bytes", ErrInstanceQuotaExceeded, instanceQuota)
+	}
+
+	return s.commitObjectFromStaged(bucket, key, stagedObjectPath, meta)
+}
+
+func (s *Store) currentObjectSize(bucket, key string) (int64, error) {
+	objectPath, _, err := s.resolveObjectPaths(bucket, key)
+	if err != nil {
+		return 0, err
+	}
+
+	info, err := os.Stat(objectPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	if info.IsDir() {
+		return 0, fmt.Errorf("%w: %s/%s", ErrInvalidObjectKey, bucket, key)
+	}
+	return info.Size(), nil
 }
 
 func (s *Store) commitObjectFromStaged(bucket, key, stagedObjectPath string, meta objectMetadata) (ObjectInfo, error) {

@@ -15,6 +15,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"bares3-server/internal/config"
@@ -25,24 +27,34 @@ type Store struct {
 	dataDir        string
 	tmpDir         string
 	metadataLayout string
+	commitMu       sync.Mutex
+	instanceQuota  atomic.Int64
 	logger         *zap.Logger
 }
 
 func New(cfg config.Config, logger *zap.Logger) *Store {
-	return &Store{
+	store := &Store{
 		dataDir:        cfg.Paths.DataDir,
 		tmpDir:         cfg.Storage.TmpDir,
 		metadataLayout: cfg.Storage.MetadataLayout,
 		logger:         logger,
 	}
+	store.instanceQuota.Store(cfg.Storage.MaxBytes)
+	return store
 }
 
-func (s *Store) CreateBucket(ctx context.Context, name string) (BucketInfo, error) {
+func (s *Store) CreateBucket(ctx context.Context, name string, quotaBytes int64) (BucketInfo, error) {
 	if err := ctx.Err(); err != nil {
 		return BucketInfo{}, err
 	}
 	if err := validateBucketName(name); err != nil {
 		return BucketInfo{}, err
+	}
+	if err := validateQuotaBytes(quotaBytes); err != nil {
+		return BucketInfo{}, err
+	}
+	if instanceQuota := s.InstanceQuotaBytes(); instanceQuota > 0 && quotaBytes > instanceQuota {
+		return BucketInfo{}, fmt.Errorf("%w: bucket quota %d exceeds instance quota %d", ErrInvalidQuota, quotaBytes, instanceQuota)
 	}
 
 	root := s.bucketRoot(name)
@@ -63,6 +75,7 @@ func (s *Store) CreateBucket(ctx context.Context, name string) (BucketInfo, erro
 		Name:           name,
 		CreatedAt:      time.Now().UTC(),
 		MetadataLayout: s.metadataLayout,
+		QuotaBytes:     quotaBytes,
 	}
 
 	if err := s.writeBucketMetadata(name, meta); err != nil {
@@ -75,6 +88,7 @@ func (s *Store) CreateBucket(ctx context.Context, name string) (BucketInfo, erro
 		MetadataPath:   s.bucketMetadataPath(name),
 		CreatedAt:      meta.CreatedAt,
 		MetadataLayout: meta.MetadataLayout,
+		QuotaBytes:     meta.QuotaBytes,
 	}
 
 	s.logger.Info("bucket created", zap.String("bucket", name), zap.String("path", root))
@@ -108,9 +122,11 @@ func (s *Store) GetBucket(ctx context.Context, name string) (BucketInfo, error) 
 
 	createdAt := info.ModTime().UTC()
 	metadataLayout := s.metadataLayout
+	quotaBytes := int64(0)
 	if err == nil {
 		createdAt = meta.CreatedAt
 		metadataLayout = meta.MetadataLayout
+		quotaBytes = meta.QuotaBytes
 	}
 
 	return BucketInfo{
@@ -119,6 +135,7 @@ func (s *Store) GetBucket(ctx context.Context, name string) (BucketInfo, error) 
 		MetadataPath:   s.bucketMetadataPath(name),
 		CreatedAt:      createdAt,
 		MetadataLayout: metadataLayout,
+		QuotaBytes:     quotaBytes,
 	}, nil
 }
 
@@ -151,6 +168,12 @@ func (s *Store) ListBuckets(ctx context.Context) ([]BucketInfo, error) {
 		if err != nil {
 			return nil, err
 		}
+		usage, err := s.bucketUsage(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		bucket.UsedBytes = usage.UsedBytes
+		bucket.ObjectCount = usage.ObjectCount
 		buckets = append(buckets, bucket)
 	}
 
@@ -159,6 +182,78 @@ func (s *Store) ListBuckets(ctx context.Context) ([]BucketInfo, error) {
 	})
 
 	return buckets, nil
+}
+
+func (s *Store) InstanceQuotaBytes() int64 {
+	return s.instanceQuota.Load()
+}
+
+func (s *Store) SetInstanceQuotaBytes(value int64) error {
+	if err := validateQuotaBytes(value); err != nil {
+		return err
+	}
+	s.instanceQuota.Store(value)
+	return nil
+}
+
+func (s *Store) UsageSummary(ctx context.Context) (int64, int, error) {
+	buckets, err := s.ListBuckets(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	var usedBytes int64
+	activeLinks := 0
+	for _, bucket := range buckets {
+		usedBytes += bucket.UsedBytes
+		activeLinks += bucket.ObjectCount
+	}
+
+	return usedBytes, activeLinks, nil
+}
+
+func (s *Store) bucketUsage(ctx context.Context, bucket string) (BucketInfo, error) {
+	root := s.bucketRoot(bucket)
+	usedBytes := int64(0)
+	objectCount := 0
+
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if path != root && filepath.Base(path) == controlDirName {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		usedBytes += info.Size()
+		objectCount += 1
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return BucketInfo{}, nil
+		}
+		return BucketInfo{}, err
+	}
+
+	return BucketInfo{UsedBytes: usedBytes, ObjectCount: objectCount}, nil
+}
+
+func validateQuotaBytes(value int64) error {
+	if value < 0 {
+		return fmt.Errorf("%w: quota must not be negative", ErrInvalidQuota)
+	}
+	return nil
 }
 
 func (s *Store) ListObjects(ctx context.Context, bucket string, options ListObjectsOptions) ([]ObjectInfo, error) {
@@ -377,7 +472,7 @@ func (s *Store) PutObject(ctx context.Context, input PutObjectInput) (ObjectInfo
 		UserMetadata:       cloneStringMap(input.UserMetadata),
 		LastModified:       time.Now().UTC(),
 	}
-	info, err := s.commitObjectFromStaged(input.Bucket, input.Key, stagedObjectPath, meta)
+	info, err := s.commitObjectWithQuota(ctx, input.Bucket, input.Key, stagedObjectPath, meta)
 	if err != nil {
 		return ObjectInfo{}, err
 	}
@@ -478,6 +573,8 @@ func (s *Store) DeleteObject(ctx context.Context, bucket, key string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
 	if _, err := s.GetBucket(ctx, bucket); err != nil {
 		return err
 	}
@@ -520,6 +617,8 @@ func (s *Store) DeleteBucket(ctx context.Context, name string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
 	if _, err := s.GetBucket(ctx, name); err != nil {
 		return err
 	}

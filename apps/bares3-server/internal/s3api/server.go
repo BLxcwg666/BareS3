@@ -218,7 +218,7 @@ func handleBucketRequest(w http.ResponseWriter, r *http.Request, store *storage.
 		}
 		w.WriteHeader(http.StatusOK)
 	case http.MethodPut:
-		if _, err := store.CreateBucket(r.Context(), bucket); err != nil {
+		if _, err := store.CreateBucket(r.Context(), bucket, 0); err != nil {
 			if errors.Is(err, storage.ErrBucketExists) {
 				writeS3Error(w, r, http.StatusConflict, "BucketAlreadyOwnedByYou", err.Error())
 				return
@@ -740,6 +740,10 @@ func writeStorageAsS3Error(w http.ResponseWriter, r *http.Request, err error) {
 		writeS3Error(w, r, http.StatusBadRequest, "InvalidArgument", err.Error())
 	case errors.Is(err, storage.ErrBucketNotEmpty):
 		writeS3Error(w, r, http.StatusConflict, "BucketNotEmpty", err.Error())
+	case errors.Is(err, storage.ErrBucketQuotaExceeded), errors.Is(err, storage.ErrInstanceQuotaExceeded):
+		writeS3Error(w, r, http.StatusConflict, "QuotaExceeded", err.Error())
+	case errors.Is(err, storage.ErrInvalidQuota):
+		writeS3Error(w, r, http.StatusBadRequest, "InvalidArgument", err.Error())
 	default:
 		writeS3Error(w, r, http.StatusInternalServerError, "InternalError", err.Error())
 	}

@@ -7,16 +7,19 @@ import (
 )
 
 var (
-	ErrBucketExists      = errors.New("bucket already exists")
-	ErrBucketNotFound    = errors.New("bucket not found")
-	ErrBucketNotEmpty    = errors.New("bucket not empty")
-	ErrObjectNotFound    = errors.New("object not found")
-	ErrUploadNotFound    = errors.New("multipart upload not found")
-	ErrInvalidPart       = errors.New("invalid multipart part")
-	ErrInvalidPartOrder  = errors.New("invalid multipart part order")
-	ErrInvalidPartNumber = errors.New("invalid multipart part number")
-	ErrInvalidBucketName = errors.New("invalid bucket name")
-	ErrInvalidObjectKey  = errors.New("invalid object key")
+	ErrBucketExists          = errors.New("bucket already exists")
+	ErrBucketNotFound        = errors.New("bucket not found")
+	ErrBucketNotEmpty        = errors.New("bucket not empty")
+	ErrBucketQuotaExceeded   = errors.New("bucket quota exceeded")
+	ErrObjectNotFound        = errors.New("object not found")
+	ErrInstanceQuotaExceeded = errors.New("instance quota exceeded")
+	ErrInvalidQuota          = errors.New("invalid quota")
+	ErrUploadNotFound        = errors.New("multipart upload not found")
+	ErrInvalidPart           = errors.New("invalid multipart part")
+	ErrInvalidPartOrder      = errors.New("invalid multipart part order")
+	ErrInvalidPartNumber     = errors.New("invalid multipart part number")
+	ErrInvalidBucketName     = errors.New("invalid bucket name")
+	ErrInvalidObjectKey      = errors.New("invalid object key")
 )
 
 type BucketInfo struct {
@@ -25,6 +28,9 @@ type BucketInfo struct {
 	MetadataPath   string    `json:"metadata_path"`
 	CreatedAt      time.Time `json:"created_at"`
 	MetadataLayout string    `json:"metadata_layout"`
+	QuotaBytes     int64     `json:"quota_bytes,omitempty"`
+	UsedBytes      int64     `json:"used_bytes"`
+	ObjectCount    int       `json:"object_count"`
 }
 
 type ObjectInfo struct {
@@ -112,6 +118,7 @@ type bucketMetadata struct {
 	Name           string    `json:"name"`
 	CreatedAt      time.Time `json:"created_at"`
 	MetadataLayout string    `json:"metadata_layout"`
+	QuotaBytes     int64     `json:"quota_bytes,omitempty"`
 }
 
 type multipartUploadMetadata struct {

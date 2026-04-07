@@ -65,6 +65,7 @@ type StorageConfig struct {
 	Region         string `yaml:"region"`
 	TmpDir         string `yaml:"tmp_dir"`
 	MetadataLayout string `yaml:"metadata_layout"`
+	MaxBytes       int64  `yaml:"max_bytes"`
 }
 
 type LoggingConfig struct {
@@ -198,6 +199,9 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Storage.S3BaseURL) == "" {
 		return errors.New("storage.s3_base_url must not be empty")
+	}
+	if c.Storage.MaxBytes < 0 {
+		return errors.New("storage.max_bytes must not be negative")
 	}
 	if strings.TrimSpace(c.Auth.Console.Username) == "" {
 		return errors.New("auth.console.username must not be empty")

@@ -26,6 +26,7 @@ storage:
   region: home-lab-1
   tmp_dir: ./data/.bares3/tmp
   metadata_layout: hidden-dir
+  max_bytes: 0
 
 logging:
   level: info

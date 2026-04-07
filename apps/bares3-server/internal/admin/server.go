@@ -1,7 +1,6 @@
 package admin
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -127,13 +126,11 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 					return
 				}
 
-				activeLinkCount, err := countActiveLinks(r.Context(), store, buckets)
-				if err != nil {
-					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
-						"status":  "error",
-						"message": err.Error(),
-					})
-					return
+				usedBytes := int64(0)
+				activeLinkCount := 0
+				for _, bucket := range buckets {
+					usedBytes += bucket.UsedBytes
+					activeLinkCount += bucket.ObjectCount
 				}
 
 				httpx.WriteJSON(w, http.StatusOK, map[string]any{
@@ -162,6 +159,8 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 						"public_base_url":   cfg.Storage.PublicBaseURL,
 						"s3_base_url":       cfg.Storage.S3BaseURL,
 						"metadata_layout":   cfg.Storage.MetadataLayout,
+						"max_bytes":         store.InstanceQuotaBytes(),
+						"used_bytes":        usedBytes,
 						"bucket_count":      len(buckets),
 						"active_link_count": activeLinkCount,
 					},
@@ -184,7 +183,8 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 
 			protected.Post("/buckets", func(w http.ResponseWriter, r *http.Request) {
 				payload := struct {
-					Name string `json:"name"`
+					Name       string `json:"name"`
+					QuotaBytes int64  `json:"quota_bytes"`
 				}{}
 
 				decoder := json.NewDecoder(r.Body)
@@ -197,13 +197,76 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 					return
 				}
 
-				bucket, err := store.CreateBucket(r.Context(), payload.Name)
+				bucket, err := store.CreateBucket(r.Context(), payload.Name, payload.QuotaBytes)
 				if err != nil {
 					writeStorageError(w, err)
 					return
 				}
 
 				httpx.WriteJSON(w, http.StatusCreated, bucket)
+			})
+
+			protected.Get("/settings/storage", func(w http.ResponseWriter, r *http.Request) {
+				httpx.WriteJSON(w, http.StatusOK, map[string]any{
+					"max_bytes": store.InstanceQuotaBytes(),
+				})
+			})
+
+			protected.Put("/settings/storage", func(w http.ResponseWriter, r *http.Request) {
+				payload := struct {
+					MaxBytes int64 `json:"max_bytes"`
+				}{}
+
+				decoder := json.NewDecoder(r.Body)
+				decoder.DisallowUnknownFields()
+				if err := decoder.Decode(&payload); err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+						"status":  "error",
+						"message": "invalid request body",
+					})
+					return
+				}
+				nextConfig, path, _, err := config.LoadEditable(cfg.Runtime.ConfigPath)
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
+				if strings.TrimSpace(nextConfig.Storage.TmpDir) == "" {
+					nextConfig.Storage.TmpDir = cfg.Storage.TmpDir
+				}
+				if strings.TrimSpace(nextConfig.Storage.PublicBaseURL) == "" {
+					nextConfig.Storage.PublicBaseURL = cfg.Storage.PublicBaseURL
+				}
+				if strings.TrimSpace(nextConfig.Storage.S3BaseURL) == "" {
+					nextConfig.Storage.S3BaseURL = cfg.Storage.S3BaseURL
+				}
+				nextConfig.Storage.MaxBytes = payload.MaxBytes
+				if err := nextConfig.Validate(); err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
+				if err := config.Save(path, nextConfig); err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
+				if err := store.SetInstanceQuotaBytes(payload.MaxBytes); err != nil {
+					writeStorageError(w, err)
+					return
+				}
+
+				cfg.Storage.MaxBytes = payload.MaxBytes
+				httpx.WriteJSON(w, http.StatusOK, map[string]any{
+					"max_bytes": payload.MaxBytes,
+				})
 			})
 
 			protected.Delete("/buckets/{bucket}", func(w http.ResponseWriter, r *http.Request) {
@@ -377,26 +440,14 @@ func requireSession(manager *consoleauth.Manager) func(http.Handler) http.Handle
 	}
 }
 
-func countActiveLinks(ctx context.Context, store *storage.Store, buckets []storage.BucketInfo) (int, error) {
-	total := 0
-	for _, bucket := range buckets {
-		objects, err := store.ListObjects(ctx, bucket.Name, storage.ListObjectsOptions{})
-		if err != nil {
-			return 0, err
-		}
-		total += len(objects)
-	}
-	return total, nil
-}
-
 func writeStorageError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	switch {
-	case errors.Is(err, storage.ErrInvalidBucketName), errors.Is(err, storage.ErrInvalidObjectKey):
+	case errors.Is(err, storage.ErrInvalidBucketName), errors.Is(err, storage.ErrInvalidObjectKey), errors.Is(err, storage.ErrInvalidQuota):
 		status = http.StatusBadRequest
 	case errors.Is(err, storage.ErrBucketExists):
 		status = http.StatusConflict
-	case errors.Is(err, storage.ErrBucketNotEmpty):
+	case errors.Is(err, storage.ErrBucketNotEmpty), errors.Is(err, storage.ErrBucketQuotaExceeded), errors.Is(err, storage.ErrInstanceQuotaExceeded):
 		status = http.StatusConflict
 	case errors.Is(err, storage.ErrBucketNotFound), errors.Is(err, storage.ErrObjectNotFound):
 		status = http.StatusNotFound

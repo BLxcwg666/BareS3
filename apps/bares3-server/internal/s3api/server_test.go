@@ -56,7 +56,7 @@ func TestPutGetHeadAndListObjectsV2(t *testing.T) {
 	t.Parallel()
 
 	store, handler := newTestHandler(t)
-	if _, err := store.CreateBucket(context.Background(), "gallery"); err != nil {
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
 
@@ -132,7 +132,7 @@ func TestPresignedGetObject(t *testing.T) {
 	t.Parallel()
 
 	store, handler := newTestHandler(t)
-	if _, err := store.CreateBucket(context.Background(), "gallery"); err != nil {
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
 	if _, err := store.PutObject(context.Background(), storage.PutObjectInput{
@@ -161,7 +161,7 @@ func TestDeleteObjectAndBucket(t *testing.T) {
 	t.Parallel()
 
 	store, handler := newTestHandler(t)
-	if _, err := store.CreateBucket(context.Background(), "gallery"); err != nil {
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
 	if _, err := store.PutObject(context.Background(), storage.PutObjectInput{
@@ -193,7 +193,7 @@ func TestListObjectsV2DelimiterAndContinuationToken(t *testing.T) {
 	t.Parallel()
 
 	store, handler := newTestHandler(t)
-	if _, err := store.CreateBucket(context.Background(), "gallery"); err != nil {
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
 	fixtures := []string{
@@ -248,7 +248,7 @@ func TestMultipartUploadLifecycle(t *testing.T) {
 	t.Parallel()
 
 	store, handler := newTestHandler(t)
-	if _, err := store.CreateBucket(context.Background(), "gallery"); err != nil {
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
 

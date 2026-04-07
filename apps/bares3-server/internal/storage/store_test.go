@@ -18,12 +18,15 @@ func TestCreateBucketAndList(t *testing.T) {
 
 	store := newTestStore(t)
 
-	created, err := store.CreateBucket(context.Background(), "gallery")
+	created, err := store.CreateBucket(context.Background(), "gallery", 5*1024)
 	if err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
 	if created.Name != "gallery" {
 		t.Fatalf("unexpected bucket name: %s", created.Name)
+	}
+	if created.QuotaBytes != 5*1024 {
+		t.Fatalf("unexpected bucket quota: %d", created.QuotaBytes)
 	}
 
 	buckets, err := store.ListBuckets(context.Background())
@@ -33,13 +36,75 @@ func TestCreateBucketAndList(t *testing.T) {
 	if len(buckets) != 1 || buckets[0].Name != "gallery" {
 		t.Fatalf("unexpected buckets: %+v", buckets)
 	}
+	if buckets[0].QuotaBytes != 5*1024 {
+		t.Fatalf("unexpected listed quota: %d", buckets[0].QuotaBytes)
+	}
+	if buckets[0].UsedBytes != 0 || buckets[0].ObjectCount != 0 {
+		t.Fatalf("unexpected empty bucket usage: %+v", buckets[0])
+	}
+}
+
+func TestPutObjectEnforcesBucketQuota(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	if _, err := store.CreateBucket(context.Background(), "gallery", 10); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	if _, err := store.PutObject(context.Background(), PutObjectInput{
+		Bucket: "gallery",
+		Key:    "notes/a.txt",
+		Body:   bytes.NewBufferString("12345"),
+	}); err != nil {
+		t.Fatalf("initial PutObject failed: %v", err)
+	}
+
+	if _, err := store.PutObject(context.Background(), PutObjectInput{
+		Bucket: "gallery",
+		Key:    "notes/b.txt",
+		Body:   bytes.NewBufferString("123456"),
+	}); !errors.Is(err, ErrBucketQuotaExceeded) {
+		t.Fatalf("expected ErrBucketQuotaExceeded, got %v", err)
+	}
+}
+
+func TestPutObjectEnforcesInstanceQuota(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	if err := store.SetInstanceQuotaBytes(10); err != nil {
+		t.Fatalf("SetInstanceQuotaBytes failed: %v", err)
+	}
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket gallery failed: %v", err)
+	}
+	if _, err := store.CreateBucket(context.Background(), "docs", 0); err != nil {
+		t.Fatalf("CreateBucket docs failed: %v", err)
+	}
+
+	if _, err := store.PutObject(context.Background(), PutObjectInput{
+		Bucket: "gallery",
+		Key:    "notes/a.txt",
+		Body:   bytes.NewBufferString("123456"),
+	}); err != nil {
+		t.Fatalf("initial PutObject failed: %v", err)
+	}
+
+	if _, err := store.PutObject(context.Background(), PutObjectInput{
+		Bucket: "docs",
+		Key:    "notes/b.txt",
+		Body:   bytes.NewBufferString("12345"),
+	}); !errors.Is(err, ErrInstanceQuotaExceeded) {
+		t.Fatalf("expected ErrInstanceQuotaExceeded, got %v", err)
+	}
 }
 
 func TestPutObjectWritesDataAndMetadata(t *testing.T) {
 	t.Parallel()
 
 	store := newTestStore(t)
-	if _, err := store.CreateBucket(context.Background(), "gallery"); err != nil {
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
 
@@ -95,7 +160,7 @@ func TestPutObjectReplacesExistingFile(t *testing.T) {
 	t.Parallel()
 
 	store := newTestStore(t)
-	if _, err := store.CreateBucket(context.Background(), "gallery"); err != nil {
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
 
@@ -132,7 +197,7 @@ func TestListObjectsSupportsPrefixAndLimit(t *testing.T) {
 	t.Parallel()
 
 	store := newTestStore(t)
-	if _, err := store.CreateBucket(context.Background(), "gallery"); err != nil {
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
 
@@ -178,7 +243,7 @@ func TestDeleteObjectRemovesDataAndMetadata(t *testing.T) {
 	t.Parallel()
 
 	store := newTestStore(t)
-	if _, err := store.CreateBucket(context.Background(), "gallery"); err != nil {
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
 
@@ -206,7 +271,7 @@ func TestDeleteBucketRequiresEmptyBucket(t *testing.T) {
 	t.Parallel()
 
 	store := newTestStore(t)
-	if _, err := store.CreateBucket(context.Background(), "gallery"); err != nil {
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
 	if _, err := store.PutObject(context.Background(), PutObjectInput{
