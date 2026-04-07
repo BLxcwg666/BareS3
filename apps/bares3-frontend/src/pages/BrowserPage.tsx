@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { SearchOutlined, UploadOutlined } from '@ant-design/icons';
 import { Breadcrumb, Button, Descriptions, Empty, Input, InputNumber, Popconfirm, Select, Space, Spin, Table, Tag, message } from 'antd';
-import { createShareLink, deleteObject, listShareLinks, presignObject, revokeShareLink, uploadObject, type ShareLinkInfo } from '../api';
+import { createShareLink, deleteObject, listShareLinks, presignObject, removeShareLink, revokeShareLink, uploadObject, type ShareLinkInfo } from '../api';
 import { ConsoleShell } from '../components/ConsoleShell';
 import { Section } from '../components/Section';
 import { useBucketObjects } from '../hooks/useBucketObjects';
@@ -30,6 +30,7 @@ export function BrowserPage() {
   const [objectShareLinks, setObjectShareLinks] = useState<ShareLinkInfo[]>([]);
   const [shareLinksLoading, setShareLinksLoading] = useState(false);
   const [revokingShareLinkId, setRevokingShareLinkId] = useState<string | null>(null);
+  const [removingShareLinkId, setRemovingShareLinkId] = useState<string | null>(null);
   const { items: objects, loading: objectsLoading, refresh } = useBucketObjects(selectedBucket);
 
   useEffect(() => {
@@ -234,6 +235,22 @@ export function BrowserPage() {
     }
   };
 
+  const handleRemoveShareLink = async (link: ShareLinkInfo) => {
+    setRemovingShareLinkId(link.id);
+    try {
+      await removeShareLink(link.id);
+      setObjectShareLinks((current) => current.filter((item) => item.id !== link.id));
+      message.success('Removed share link');
+    } catch (error) {
+      message.error(normalizeApiError(error, 'Failed to remove share link'));
+    } finally {
+      setRemovingShareLinkId(null);
+    }
+  };
+
+  const removeShareLinkTitle = (link: ShareLinkInfo) =>
+    `Permanently remove this ${link.status === 'expired' ? 'expired' : 'revoked'} link?`;
+
   const renderShareLinkStatus = (status: ShareLinkInfo['status']) => {
     switch (status) {
       case 'active':
@@ -427,6 +444,12 @@ export function BrowserPage() {
                                   <Popconfirm okText="Revoke" onConfirm={() => void handleRevokeShareLink(link)} title="Revoke this share link?">
                                     <Button danger loading={revokingShareLinkId === link.id} size="small">
                                       Revoke
+                                    </Button>
+                                  </Popconfirm>
+                                ) : link.status === 'revoked' || link.status === 'expired' ? (
+                                  <Popconfirm okText="Remove" onConfirm={() => void handleRemoveShareLink(link)} title={removeShareLinkTitle(link)}>
+                                    <Button danger loading={removingShareLinkId === link.id} size="small">
+                                      Remove
                                     </Button>
                                   </Popconfirm>
                                 ) : null}

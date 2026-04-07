@@ -42,3 +42,9 @@ export function revokeShareLink(id: string) {
     method: 'DELETE',
   });
 }
+
+export function removeShareLink(id: string) {
+  return request<void>(`/api/v1/share-links/${encodeURIComponent(id)}/remove`, {
+    method: 'DELETE',
+  });
+}

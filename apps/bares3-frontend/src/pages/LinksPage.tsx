@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Empty, Popconfirm, Space, Table, Tag, Typography, message } from 'antd';
 import type { TableColumnsType } from 'antd';
-import { listShareLinks, revokeShareLink, type ShareLinkInfo, type ShareLinkStatus } from '../api';
+import { listShareLinks, removeShareLink, revokeShareLink, type ShareLinkInfo, type ShareLinkStatus } from '../api';
 import { ConsoleShell } from '../components/ConsoleShell';
 import { Section } from '../components/Section';
 import { copyText, formatBytes, formatDateTime, formatRelativeTime, normalizeApiError } from '../utils';
@@ -25,6 +25,7 @@ export function LinksPage() {
   const [links, setLinks] = useState<ShareLinkInfo[]>([]);
   const [linksLoading, setLinksLoading] = useState(true);
   const [revokingId, setRevokingId] = useState<string | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
 
   const refreshLinks = useCallback(
     async (showError = true) => {
@@ -67,6 +68,22 @@ export function LinksPage() {
       setRevokingId(null);
     }
   };
+
+  const handleRemove = async (link: ShareLinkInfo) => {
+    setRemovingId(link.id);
+    try {
+      await removeShareLink(link.id);
+      setLinks((current) => current.filter((item) => item.id !== link.id));
+      message.success('Removed share link');
+    } catch (error) {
+      message.error(normalizeApiError(error, 'Failed to remove share link'));
+    } finally {
+      setRemovingId(null);
+    }
+  };
+
+  const removeTitle = (link: ShareLinkInfo) =>
+    `Permanently remove this ${link.status === 'expired' ? 'expired' : 'revoked'} link?`;
 
   const columns: TableColumnsType<ShareLinkInfo> = [
     {
@@ -145,6 +162,12 @@ export function LinksPage() {
           <Popconfirm okText="Revoke" onConfirm={() => void handleRevoke(row)} title="Revoke this share link?">
             <Button danger loading={revokingId === row.id} size="small">
               Revoke
+            </Button>
+          </Popconfirm>
+        ) : row.status === 'revoked' || row.status === 'expired' ? (
+          <Popconfirm okText="Remove" onConfirm={() => void handleRemove(row)} title={removeTitle(row)}>
+            <Button danger loading={removingId === row.id} size="small">
+              Remove
             </Button>
           </Popconfirm>
         ) : (

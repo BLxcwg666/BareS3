@@ -17,4 +17,4 @@ export {
   type RuntimeInfo,
 } from './storage';
 export { listAuditEntries, type AuditEntry } from './audit';
-export { createShareLink, listShareLinks, revokeShareLink, type ShareLinkInfo, type ShareLinkStatus } from './share-links';
+export { createShareLink, listShareLinks, removeShareLink, revokeShareLink, type ShareLinkInfo, type ShareLinkStatus } from './share-links';
