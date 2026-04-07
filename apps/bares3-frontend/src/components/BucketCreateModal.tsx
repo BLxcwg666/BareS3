@@ -1,0 +1,84 @@
+import { useEffect, useState } from 'react';
+import { Form, Input, InputNumber, Modal, Select, Space, message } from 'antd';
+import { createBucket } from '../api';
+import { sizeUnitOptions } from '../constants';
+import type { BucketCreateValues } from '../types';
+import { normalizeApiError, sizeInputToBytes } from '../utils';
+
+export function BucketCreateModal({
+  open,
+  onCancel,
+  onCreated,
+}: {
+  open: boolean;
+  onCancel: () => void;
+  onCreated: () => Promise<void> | void;
+}) {
+  const [form] = Form.useForm<BucketCreateValues>();
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    form.setFieldsValue({
+      name: '',
+      quotaValue: undefined,
+      quotaUnit: 'GB',
+    });
+  }, [form, open]);
+
+  const handleSubmit = async () => {
+    const values = await form.validateFields();
+    setSubmitting(true);
+    try {
+      const bucket = await createBucket(values.name.trim(), sizeInputToBytes(values.quotaValue, values.quotaUnit));
+      message.success(`Bucket ${bucket.name} created`);
+      form.resetFields();
+      onCancel();
+      await onCreated();
+    } catch (error) {
+      message.error(normalizeApiError(error, 'Failed to create bucket'));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal
+      confirmLoading={submitting}
+      okText="Create bucket"
+      onCancel={() => {
+        if (submitting) {
+          return;
+        }
+        form.resetFields();
+        onCancel();
+      }}
+      onOk={() => void handleSubmit()}
+      open={open}
+      title="New bucket"
+    >
+      <Form form={form} initialValues={{ quotaUnit: 'GB' }} layout="vertical">
+        <Form.Item label="Bucket name" name="name" rules={[{ required: true, whitespace: true, message: 'Bucket name is required' }]}>
+          <Input placeholder="gallery" />
+        </Form.Item>
+
+        <Form.Item extra="Leave empty or 0 for unlimited." label="Bucket limit">
+          <Space.Compact block>
+            <Form.Item name="quotaValue" noStyle>
+              <InputNumber min={0} placeholder="Unlimited" precision={1} style={{ width: '100%' }} />
+            </Form.Item>
+            <Form.Item name="quotaUnit" noStyle>
+              <Select
+                options={sizeUnitOptions.map((option) => ({ label: option.label, value: option.value }))}
+                style={{ width: 96 }}
+              />
+            </Form.Item>
+          </Space.Compact>
+        </Form.Item>
+      </Form>
+    </Modal>
+  );
+}

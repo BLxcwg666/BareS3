@@ -1,17 +1,4 @@
-export class ApiError extends Error {
-  status: number;
-
-  constructor(message: string, status: number) {
-    super(message);
-    this.name = 'ApiError';
-    this.status = status;
-  }
-}
-
-export type AuthSession = {
-  username: string;
-  expires_at: string;
-};
+import { request } from './client';
 
 export type RuntimeInfo = {
   app: {
@@ -77,76 +64,8 @@ export type ObjectInfo = {
   last_modified: string;
 };
 
-export type AuditEntry = {
-  time: string;
-  actor: string;
-  action: string;
-  title: string;
-  detail?: string;
-  target?: string;
-  remote?: string;
-  status?: string;
-};
-
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim() ?? '';
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    credentials: 'include',
-    ...init,
-    headers: {
-      Accept: 'application/json',
-      ...(init?.headers ?? {}),
-    },
-  });
-
-  if (response.status === 204) {
-    return undefined as T;
-  }
-
-  const contentType = response.headers.get('content-type') ?? '';
-  const body = contentType.includes('application/json')
-    ? await response.json()
-    : await response.text();
-
-  if (!response.ok) {
-    const message =
-      typeof body === 'object' && body !== null && 'message' in body
-        ? String(body.message)
-        : `Request failed with status ${response.status}`;
-    throw new ApiError(message, response.status);
-  }
-
-  return body as T;
-}
-
-export function getSession() {
-  return request<AuthSession>('/api/v1/auth/me');
-}
-
-export function login(username: string, password: string) {
-  return request<AuthSession>('/api/v1/auth/login', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ username, password }),
-  });
-}
-
-export function logout() {
-  return request<void>('/api/v1/auth/logout', {
-    method: 'POST',
-  });
-}
-
 export function getRuntime() {
   return request<RuntimeInfo>('/api/v1/runtime');
-}
-
-export async function listAuditEntries(limit = 10) {
-  const payload = await request<{ items: AuditEntry[] }>(`/api/v1/audit/events?limit=${limit}`);
-  return payload.items;
 }
 
 export async function listBuckets() {
