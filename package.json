@@ -4,6 +4,8 @@
   "packageManager": "pnpm@10.10.0",
   "scripts": {
     "dev:frontend": "pnpm --filter @bares3/frontend dev",
-    "build:frontend": "pnpm --filter @bares3/frontend build"
+    "build:frontend": "pnpm --filter @bares3/frontend build",
+    "sync:webui": "node ./scripts/sync-webui.mjs",
+    "build:webui": "pnpm build:frontend && pnpm sync:webui"
   }
 }
