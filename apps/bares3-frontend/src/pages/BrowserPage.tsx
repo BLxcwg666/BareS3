@@ -1,15 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { SearchOutlined, UploadOutlined } from '@ant-design/icons';
-import { Breadcrumb, Button, Descriptions, Empty, Input, Popconfirm, Select, Space, Spin, Table, message } from 'antd';
-import { deleteObject, presignObject, uploadObject } from '../api';
+import { Breadcrumb, Button, Descriptions, Empty, Input, InputNumber, Popconfirm, Select, Space, Spin, Table, Tag, message } from 'antd';
+import { createShareLink, deleteObject, listShareLinks, presignObject, revokeShareLink, uploadObject, type ShareLinkInfo } from '../api';
 import { ConsoleShell } from '../components/ConsoleShell';
 import { Section } from '../components/Section';
 import { useBucketObjects } from '../hooks/useBucketObjects';
 import { useBucketsData } from '../hooks/useBucketsData';
 import { useObjectDetail } from '../hooks/useObjectDetail';
 import { objectColumns } from '../tables';
-import { copyText, formatBytes, formatDateTime, nodeSummaryToItems, normalizeApiError } from '../utils';
+import { copyText, formatBytes, formatDateTime, formatRelativeTime, nodeSummaryToItems, normalizeApiError } from '../utils';
 import { useSearchParams } from 'react-router-dom';
 
 export function BrowserPage() {
@@ -25,6 +25,11 @@ export function BrowserPage() {
   const [uploading, setUploading] = useState(false);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [presigningKey, setPresigningKey] = useState<string | null>(null);
+  const [shareLinkTTL, setShareLinkTTL] = useState(86400);
+  const [creatingShareLink, setCreatingShareLink] = useState(false);
+  const [objectShareLinks, setObjectShareLinks] = useState<ShareLinkInfo[]>([]);
+  const [shareLinksLoading, setShareLinksLoading] = useState(false);
+  const [revokingShareLinkId, setRevokingShareLinkId] = useState<string | null>(null);
   const { items: objects, loading: objectsLoading, refresh } = useBucketObjects(selectedBucket);
 
   useEffect(() => {
@@ -76,6 +81,34 @@ export function BrowserPage() {
     selectedObject?.key ?? null,
   );
   const inspectorObject = objectDetail ?? selectedObject;
+
+  const refreshShareLinks = useCallback(
+    async (showError = true) => {
+      if (!selectedBucket || !selectedObject) {
+        setObjectShareLinks([]);
+        setShareLinksLoading(false);
+        return;
+      }
+
+      setObjectShareLinks([]);
+      setShareLinksLoading(true);
+      try {
+        const links = await listShareLinks();
+        setObjectShareLinks(links.filter((item) => item.bucket === selectedBucket && item.key === selectedObject.key));
+      } catch (error) {
+        if (showError) {
+          message.error(normalizeApiError(error, 'Failed to load object share links'));
+        }
+      } finally {
+        setShareLinksLoading(false);
+      }
+    },
+    [selectedBucket, selectedObject],
+  );
+
+  useEffect(() => {
+    void refreshShareLinks(false);
+  }, [refreshShareLinks]);
 
   const syncSearchParams = (nextBucket: string | null, nextKey?: string | null, nextQuery?: string) => {
     const params = new URLSearchParams();
@@ -131,6 +164,7 @@ export function BrowserPage() {
       await deleteObject(selectedBucket, selectedObject.key);
       message.success(`Deleted ${selectedObject.key}`);
       setSelectedKey(null);
+      setObjectShareLinks([]);
       await refresh();
       syncSearchParams(selectedBucket, null, searchValue);
     } catch (error) {
@@ -154,6 +188,62 @@ export function BrowserPage() {
       message.error(normalizeApiError(error, 'Failed to generate download link'));
     } finally {
       setPresigningKey(null);
+    }
+  };
+
+  const handleCreateShareLink = async () => {
+    if (!selectedBucket || !selectedObject) {
+      return;
+    }
+
+    setCreatingShareLink(true);
+    try {
+      await createShareLink(selectedBucket, selectedObject.key, shareLinkTTL);
+      await refreshShareLinks(false);
+      message.success(`Created share link for ${selectedObject.key}`);
+    } catch (error) {
+      message.error(normalizeApiError(error, 'Failed to create share link'));
+    } finally {
+      setCreatingShareLink(false);
+    }
+  };
+
+  const handleCopyShareLink = async (value: string, label: string) => {
+    if (!value) {
+      return;
+    }
+
+    try {
+      await copyText(value);
+      message.success(`Copied ${label}`);
+    } catch (error) {
+      message.error(normalizeApiError(error, `Failed to copy ${label}`));
+    }
+  };
+
+  const handleRevokeShareLink = async (link: ShareLinkInfo) => {
+    setRevokingShareLinkId(link.id);
+    try {
+      const revoked = await revokeShareLink(link.id);
+      setObjectShareLinks((current) => current.map((item) => (item.id === revoked.id ? revoked : item)));
+      message.success('Revoked share link');
+    } catch (error) {
+      message.error(normalizeApiError(error, 'Failed to revoke share link'));
+    } finally {
+      setRevokingShareLinkId(null);
+    }
+  };
+
+  const renderShareLinkStatus = (status: ShareLinkInfo['status']) => {
+    switch (status) {
+      case 'active':
+        return <Tag color="success">Active</Tag>;
+      case 'expired':
+        return <Tag>Expired</Tag>;
+      case 'revoked':
+        return <Tag color="warning">Revoked</Tag>;
+      default:
+        return <Tag>{status}</Tag>;
     }
   };
 
@@ -238,50 +328,118 @@ export function BrowserPage() {
             />
           </Section>
 
-          <Section
-            title="Inspector"
-            extra={
-              selectedObject ? (
-                <Space size={8}>
-                  <Button loading={presigningKey === selectedObject.key} onClick={() => void handleCopyDownloadUrl()} size="small">
-                    Copy download URL
-                  </Button>
-                  <Button loading={objectDetailLoading} onClick={() => void refreshObjectDetail()} size="small">
-                    Refresh
-                  </Button>
-                  <Popconfirm
-                    cancelText="Cancel"
-                    okButtonProps={{ danger: true, loading: deletingKey === selectedObject.key }}
-                    okText="Delete"
-                    onConfirm={() => void handleDeleteObject()}
-                    title={`Delete ${selectedObject.key}?`}
-                  >
-                    <Button danger loading={deletingKey === selectedObject.key} size="small">
-                      Delete
-                    </Button>
-                  </Popconfirm>
-                </Space>
-              ) : null
-            }
-          >
+          <Section title="Inspector">
             {inspectorObject ? (
               <Spin spinning={objectDetailLoading}>
-                <Descriptions
-                  column={1}
-                  items={nodeSummaryToItems([
-                    { label: 'Key', value: inspectorObject.key },
-                    { label: 'Path', value: inspectorObject.path },
-                    { label: 'Metadata path', value: inspectorObject.metadata_path || 'None' },
-                    { label: 'Content-Type', value: inspectorObject.content_type || 'application/octet-stream' },
-                    { label: 'Content-Disposition', value: inspectorObject.content_disposition || 'Not set' },
-                    { label: 'Size', value: formatBytes(inspectorObject.size) },
-                    { label: 'Cache-Control', value: inspectorObject.cache_control || 'private' },
-                    { label: 'ETag', value: inspectorObject.etag || 'Not set' },
-                    { label: 'User metadata', value: String(Object.keys(inspectorObject.user_metadata ?? {}).length) },
-                    { label: 'Updated', value: formatDateTime(inspectorObject.last_modified) },
-                  ])}
-                  size="small"
-                />
+                <div className="inspector-stack">
+                  <Descriptions
+                    column={1}
+                    items={nodeSummaryToItems([
+                      { label: 'Key', value: inspectorObject.key },
+                      { label: 'Path', value: inspectorObject.path },
+                      { label: 'Metadata path', value: inspectorObject.metadata_path || 'None' },
+                      { label: 'Content-Type', value: inspectorObject.content_type || 'application/octet-stream' },
+                      { label: 'Content-Disposition', value: inspectorObject.content_disposition || 'Not set' },
+                      { label: 'Size', value: formatBytes(inspectorObject.size) },
+                      { label: 'Cache-Control', value: inspectorObject.cache_control || 'private' },
+                      { label: 'ETag', value: inspectorObject.etag || 'Not set' },
+                      { label: 'User metadata', value: String(Object.keys(inspectorObject.user_metadata ?? {}).length) },
+                      { label: 'Updated', value: formatDateTime(inspectorObject.last_modified) },
+                    ])}
+                    size="small"
+                  />
+
+                  <div className="inspector-panel">
+                    <div className="inspector-panel-head">
+                      <div className="row-title">Actions</div>
+                      <div className="row-note">Keep object tools inside the inspector, including share-link creation.</div>
+                    </div>
+
+                    <div className="inspector-actions-row">
+                      <div className="inspector-share-controls">
+                        <span className="inspector-field-label">Share TTL seconds</span>
+                        <InputNumber
+                          min={60}
+                          onChange={(value) => setShareLinkTTL(typeof value === 'number' ? value : 86400)}
+                          size="small"
+                          step={3600}
+                          style={{ width: 150 }}
+                          value={shareLinkTTL}
+                        />
+                        <Button loading={creatingShareLink} onClick={() => void handleCreateShareLink()} size="small" type="primary">
+                          Create share link
+                        </Button>
+                      </div>
+
+                      <Space size={8} wrap>
+                        <Button loading={presigningKey === selectedObject.key} onClick={() => void handleCopyDownloadUrl()} size="small">
+                          Copy download URL
+                        </Button>
+                        <Button loading={objectDetailLoading} onClick={() => void refreshObjectDetail()} size="small">
+                          Refresh
+                        </Button>
+                        <Popconfirm
+                          cancelText="Cancel"
+                          okButtonProps={{ danger: true, loading: deletingKey === selectedObject.key }}
+                          okText="Delete"
+                          onConfirm={() => void handleDeleteObject()}
+                          title={`Delete ${selectedObject.key}?`}
+                        >
+                          <Button danger loading={deletingKey === selectedObject.key} size="small">
+                            Delete
+                          </Button>
+                        </Popconfirm>
+                      </Space>
+                    </div>
+
+                    <div className="inspector-share-result">
+                      <div className="inspector-panel-head">
+                        <div className="row-title">Share links for this object</div>
+                        <div className="row-note">Recent links stay here so you can reopen, copy, or revoke them without leaving the inspector.</div>
+                      </div>
+
+                      {shareLinksLoading ? (
+                        <Spin size="small" />
+                      ) : objectShareLinks.length > 0 ? (
+                        <div className="inspector-share-list">
+                          {objectShareLinks.map((link) => (
+                            <div className="inspector-share-item" key={link.id}>
+                              <div className="inspector-share-item-meta">
+                                <div className="inspector-share-item-top">
+                                  <div className="row-title row-title-small">{link.filename || link.key}</div>
+                                  {renderShareLinkStatus(link.status)}
+                                </div>
+                                <div className="row-note">{link.id}</div>
+                                <div className="row-note">Expires {formatDateTime(link.expires_at)} · {formatRelativeTime(link.expires_at)}</div>
+                              </div>
+
+                              <Space size={8} wrap>
+                                <Button onClick={() => void handleCopyShareLink(link.url, 'share URL')} size="small">
+                                  Copy
+                                </Button>
+                                <Button href={link.url} rel="noreferrer" size="small" target="_blank">
+                                  Open
+                                </Button>
+                                <Button href={link.download_url} rel="noreferrer" size="small" target="_blank">
+                                  Download
+                                </Button>
+                                {link.status === 'active' ? (
+                                  <Popconfirm okText="Revoke" onConfirm={() => void handleRevokeShareLink(link)} title="Revoke this share link?">
+                                    <Button danger loading={revokingShareLinkId === link.id} size="small">
+                                      Revoke
+                                    </Button>
+                                  </Popconfirm>
+                                ) : null}
+                              </Space>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <Empty description="No share links for this object yet" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                      )}
+                    </div>
+                  </div>
+                </div>
               </Spin>
             ) : objectsLoading ? (
               <Spin />

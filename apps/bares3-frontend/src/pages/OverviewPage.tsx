@@ -40,9 +40,14 @@ export function OverviewPage() {
         : 'Runtime data is unavailable right now',
     },
     {
-      label: 'Objects',
-      value: bucketsLoading ? '--' : formatCount(totalObjects),
-      detail: totalObjects > 0 ? `Across ${formatCount(bucketCount)} bucket${bucketCount === 1 ? '' : 's'}` : 'Objects appear here after uploads',
+      label: 'Active links',
+      value: runtimeLoading ? '--' : formatCount(runtime?.storage.active_link_count ?? 0),
+      detail:
+        runtime && runtime.storage.active_link_count > 0
+          ? `${formatCount(runtime.storage.active_link_count)} share link${runtime.storage.active_link_count === 1 ? '' : 's'} currently live`
+          : totalObjects > 0
+            ? 'No active share links yet'
+            : 'Objects appear here after uploads',
     },
   ];
 

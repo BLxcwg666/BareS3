@@ -1,231 +1,181 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Alert, Button, Descriptions, Empty, InputNumber, Select, Space, Typography, message } from 'antd';
-import { presignObject } from '../api';
+import { useCallback, useEffect, useState } from 'react';
+import { Button, Empty, Popconfirm, Space, Table, Tag, Typography, message } from 'antd';
+import type { TableColumnsType } from 'antd';
+import { listShareLinks, revokeShareLink, type ShareLinkInfo, type ShareLinkStatus } from '../api';
 import { ConsoleShell } from '../components/ConsoleShell';
 import { Section } from '../components/Section';
-import { useBucketObjects } from '../hooks/useBucketObjects';
-import { useBucketsData } from '../hooks/useBucketsData';
-import { useRuntimeData } from '../hooks/useRuntimeData';
-import { copyText, formatDateTime, nodeSummaryToItems, normalizeApiError } from '../utils';
+import { copyText, formatBytes, formatDateTime, formatRelativeTime, normalizeApiError } from '../utils';
 
 const { Text } = Typography;
 
-function joinPublicObjectUrl(baseUrl: string, bucket: string, key: string) {
-  const base = baseUrl.trim().replace(/\/+$/, '');
-  const encodedKey = key
-    .split('/')
-    .map((part) => encodeURIComponent(part))
-    .join('/');
-  return `${base}/pub/${encodeURIComponent(bucket)}/${encodedKey}`;
+function statusTag(status: ShareLinkStatus) {
+  switch (status) {
+    case 'active':
+      return <Tag color="success">Active</Tag>;
+    case 'expired':
+      return <Tag color="default">Expired</Tag>;
+    case 'revoked':
+      return <Tag color="warning">Revoked</Tag>;
+    default:
+      return <Tag>{status}</Tag>;
+  }
 }
 
 export function LinksPage() {
-  const { runtime } = useRuntimeData();
-  const { items: buckets, loading: bucketsLoading } = useBucketsData();
-  const [selectedBucket, setSelectedBucket] = useState<string | null>(null);
-  const { items: objects, loading: objectsLoading } = useBucketObjects(selectedBucket);
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [expiresSeconds, setExpiresSeconds] = useState(900);
-  const [signedUrl, setSignedUrl] = useState<string>('');
-  const [signedExpiresAt, setSignedExpiresAt] = useState<string>('');
-  const [generating, setGenerating] = useState(false);
+  const [links, setLinks] = useState<ShareLinkInfo[]>([]);
+  const [linksLoading, setLinksLoading] = useState(true);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!selectedBucket && buckets.length > 0) {
-      setSelectedBucket(buckets[0].name);
-      return;
-    }
-    if (selectedBucket && !buckets.some((item) => item.name === selectedBucket)) {
-      setSelectedBucket(buckets[0]?.name ?? null);
-    }
-  }, [buckets, selectedBucket]);
-
-  useEffect(() => {
-    if (!selectedKey || !objects.some((item) => item.key === selectedKey)) {
-      setSelectedKey(objects[0]?.key ?? null);
-    }
-  }, [objects, selectedKey]);
-
-  const selectedObject = useMemo(
-    () => objects.find((item) => item.key === selectedKey) ?? null,
-    [objects, selectedKey],
+  const refreshLinks = useCallback(
+    async (showError = true) => {
+      setLinksLoading(true);
+      try {
+        setLinks(await listShareLinks());
+      } catch (error) {
+        if (showError) {
+          message.error(normalizeApiError(error, 'Failed to load share links'));
+        }
+      } finally {
+        setLinksLoading(false);
+      }
+    },
+    [],
   );
 
-  const publicUrl =
-    runtime?.storage.public_base_url && selectedBucket && selectedObject
-      ? joinPublicObjectUrl(runtime.storage.public_base_url, selectedBucket, selectedObject.key)
-      : '';
+  useEffect(() => {
+    void refreshLinks(false);
+  }, [refreshLinks]);
 
-  const handleCopyPublicUrl = async () => {
-    if (!publicUrl) {
-      return;
-    }
+  const handleCopy = async (value: string, label: string) => {
     try {
-      await copyText(publicUrl);
-      message.success('Copied public URL');
+      await copyText(value);
+      message.success(`Copied ${label}`);
     } catch (error) {
-      message.error(normalizeApiError(error, 'Failed to copy public URL'));
+      message.error(normalizeApiError(error, `Failed to copy ${label}`));
     }
   };
 
-  const handleGenerateSignedUrl = async () => {
-    if (!selectedBucket || !selectedObject) {
-      return;
-    }
-
-    setGenerating(true);
+  const handleRevoke = async (link: ShareLinkInfo) => {
+    setRevokingId(link.id);
     try {
-      const result = await presignObject(selectedBucket, selectedObject.key, expiresSeconds);
-      setSignedUrl(result.url);
-      setSignedExpiresAt(result.expires_at);
-      message.success('Generated signed download URL');
+      const revoked = await revokeShareLink(link.id);
+      setLinks((current) => current.map((item) => (item.id === revoked.id ? revoked : item)));
+      message.success('Revoked share link');
     } catch (error) {
-      message.error(normalizeApiError(error, 'Failed to generate signed URL'));
+      message.error(normalizeApiError(error, 'Failed to revoke share link'));
     } finally {
-      setGenerating(false);
+      setRevokingId(null);
     }
   };
 
-  const handleCopySignedUrl = async () => {
-    if (!signedUrl) {
-      return;
-    }
-    try {
-      await copyText(signedUrl);
-      message.success('Copied signed download URL');
-    } catch (error) {
-      message.error(normalizeApiError(error, 'Failed to copy signed URL'));
-    }
-  };
+  const columns: TableColumnsType<ShareLinkInfo> = [
+    {
+      dataIndex: 'filename',
+      key: 'filename',
+      title: 'Object',
+      render: (_value, row) => (
+        <div>
+          <div className="row-title">{row.filename || row.key}</div>
+          <div className="row-note">{`${row.bucket}/${row.key}`}</div>
+        </div>
+      ),
+    },
+    {
+      dataIndex: 'status',
+      key: 'status',
+      title: 'Status',
+      width: 110,
+      render: (value: ShareLinkStatus) => statusTag(value),
+    },
+    {
+      dataIndex: 'created_at',
+      key: 'created_at',
+      title: 'Created',
+      width: 170,
+      render: (value: string, row) => (
+        <div>
+          <div className="row-title row-title-small">{formatDateTime(value)}</div>
+          <div className="row-note">{row.created_by || 'system'}</div>
+        </div>
+      ),
+    },
+    {
+      dataIndex: 'expires_at',
+      key: 'expires_at',
+      title: 'Expires',
+      width: 180,
+      render: (value: string, row) => (
+        <div>
+          <div className="row-title row-title-small">{formatDateTime(value)}</div>
+          <div className="row-note">{row.status === 'revoked' ? 'Revoked' : formatRelativeTime(value)}</div>
+        </div>
+      ),
+    },
+    {
+      dataIndex: 'size',
+      key: 'size',
+      title: 'Size',
+      width: 110,
+      render: (value: number) => formatBytes(value),
+    },
+    {
+      key: 'access',
+      title: 'Access',
+      width: 220,
+      render: (_value, row) => (
+        <Space size={8} wrap>
+          <Button onClick={() => void handleCopy(row.url, 'share URL')} size="small">
+            Copy
+          </Button>
+          <Button href={row.url} rel="noreferrer" size="small" target="_blank">
+            Open
+          </Button>
+          <Button href={row.download_url} rel="noreferrer" size="small" target="_blank">
+            Download
+          </Button>
+        </Space>
+      ),
+    },
+    {
+      key: 'actions',
+      title: 'Actions',
+      width: 120,
+      render: (_value, row) =>
+        row.status === 'active' ? (
+          <Popconfirm okText="Revoke" onConfirm={() => void handleRevoke(row)} title="Revoke this share link?">
+            <Button danger loading={revokingId === row.id} size="small">
+              Revoke
+            </Button>
+          </Popconfirm>
+        ) : (
+          <Text type="secondary">-</Text>
+        ),
+    },
+  ];
 
   return (
     <ConsoleShell showHeaderSearch={false}>
       <div className="workspace-stack">
-        <Section title="Link target" note="Pick an object, then copy its public route or generate a signed download URL.">
-          <Space direction="vertical" size={12} style={{ width: '100%' }}>
-            <Space size={12} wrap>
-              <div>
-                <Text type="secondary">Bucket</Text>
-                <Select
-                  loading={bucketsLoading}
-                  onChange={(value) => {
-                    setSelectedBucket(value);
-                    setSignedUrl('');
-                    setSignedExpiresAt('');
-                  }}
-                  options={buckets.map((bucket) => ({ label: bucket.name, value: bucket.name }))}
-                  placeholder="Select bucket"
-                  style={{ minWidth: 220 }}
-                  value={selectedBucket ?? undefined}
-                />
-              </div>
-
-              <div>
-                <Text type="secondary">Object</Text>
-                <Select
-                  loading={objectsLoading}
-                  onChange={(value) => {
-                    setSelectedKey(value);
-                    setSignedUrl('');
-                    setSignedExpiresAt('');
-                  }}
-                  options={objects.map((object) => ({ label: object.key, value: object.key }))}
-                  placeholder="Select object"
-                  showSearch
-                  style={{ minWidth: 360 }}
-                  value={selectedKey ?? undefined}
-                />
-              </div>
-
-              <div>
-                <Text type="secondary">Signed URL TTL</Text>
-                <InputNumber
-                  min={60}
-                  onChange={(value) => setExpiresSeconds(typeof value === 'number' ? value : 900)}
-                  step={60}
-                  style={{ width: 140 }}
-                  value={expiresSeconds}
-                />
-              </div>
-            </Space>
-
-            {selectedObject ? (
-              <Descriptions
-                column={1}
-                items={nodeSummaryToItems([
-                  { label: 'Key', value: selectedObject.key },
-                  { label: 'Content-Type', value: selectedObject.content_type || 'application/octet-stream' },
-                  { label: 'Size', value: `${selectedObject.size} B` },
-                ])}
-                size="small"
-              />
-            ) : (
-              <Empty description="Pick an object to create links" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-            )}
-          </Space>
-        </Section>
-
         <Section
-          title="Public route"
+          flush
+          title="Recent links"
+          note="Create new links from the Browser inspector, then manage or revoke them here."
           extra={
-            <Space size={8}>
-              <Button disabled={!publicUrl} onClick={() => void handleCopyPublicUrl()} size="small">
-                Copy
-              </Button>
-              <Button disabled={!publicUrl} href={publicUrl || undefined} rel="noreferrer" size="small" target="_blank">
-                Open
-              </Button>
-            </Space>
+            <Button loading={linksLoading} onClick={() => void refreshLinks()} size="small">
+              Refresh
+            </Button>
           }
         >
-          {publicUrl ? (
-            <Descriptions
-              column={1}
-              items={nodeSummaryToItems([
-                { label: 'URL', value: publicUrl },
-                { label: 'Route type', value: 'Direct file service public route' },
-              ])}
-              size="small"
-            />
-          ) : (
-            <Empty description="Select an object to preview its public route" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-          )}
-        </Section>
-
-        <Section
-          title="Signed download"
-          extra={
-            <Space size={8}>
-              <Button disabled={!selectedObject} loading={generating} onClick={() => void handleGenerateSignedUrl()} size="small" type="primary">
-                Generate
-              </Button>
-              <Button disabled={!signedUrl} onClick={() => void handleCopySignedUrl()} size="small">
-                Copy
-              </Button>
-              <Button disabled={!signedUrl} href={signedUrl || undefined} rel="noreferrer" size="small" target="_blank">
-                Open
-              </Button>
-            </Space>
-          }
-        >
-          {signedUrl ? (
-            <Descriptions
-              column={1}
-              items={nodeSummaryToItems([
-                { label: 'URL', value: signedUrl },
-                { label: 'Expires at', value: formatDateTime(signedExpiresAt) },
-                { label: 'Method', value: 'GET' },
-              ])}
-              size="small"
-            />
-          ) : (
-            <Alert
-              message="No signed URL generated yet"
-              showIcon
-              type="info"
-              description="Select an object and click Generate to create a temporary download link."
-            />
-          )}
+          <Table
+            columns={columns}
+            dataSource={links}
+            loading={linksLoading}
+            locale={{ emptyText: <Empty description="No share links yet" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+            pagination={{ pageSize: 10, showSizeChanger: false }}
+            rowKey="id"
+            scroll={{ x: 1080 }}
+            size="small"
+          />
         </Section>
       </div>
     </ConsoleShell>

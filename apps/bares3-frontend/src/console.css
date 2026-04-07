@@ -419,7 +419,74 @@ a {
 }
 
 .section-body-flush {
-  padding: 0 0 2px;
+  padding: 0;
+}
+
+.inspector-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.inspector-panel,
+.inspector-share-result {
+  display: grid;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.inspector-panel-head {
+  display: grid;
+  gap: 2px;
+}
+
+.inspector-actions-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.inspector-share-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.inspector-field-label {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.inspector-share-list {
+  display: grid;
+  gap: 10px;
+}
+
+.inspector-share-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.inspector-share-item-meta {
+  display: grid;
+  gap: 4px;
+}
+
+.inspector-share-item-top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .rule-grid {
@@ -750,6 +817,11 @@ a {
   .header-search,
   .section-search {
     width: 100%;
+  }
+
+  .inspector-actions-row,
+  .inspector-share-controls {
+    align-items: stretch;
   }
 
   .login-aside,
