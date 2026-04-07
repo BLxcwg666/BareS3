@@ -46,6 +46,7 @@ export type RuntimeInfo = {
     s3_base_url: string;
     metadata_layout: string;
     bucket_count: number;
+    active_link_count: number;
   };
 };
 

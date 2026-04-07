@@ -966,7 +966,7 @@ function OverviewPage() {
   };
   metrics[2] = {
     ...metrics[2],
-    value: 'N/A',
+    value: runtimeLoading ? 'N/A' : String(runtime?.storage.active_link_count ?? 0),
     detail: 'Link analytics will appear when share management is connected',
   };
 
