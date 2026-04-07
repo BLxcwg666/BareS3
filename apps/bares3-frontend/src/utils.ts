@@ -1,6 +1,5 @@
 import type { DescriptionsProps } from 'antd';
 import { ApiError, type BucketInfo } from './api';
-import { bucketRows as placeholderBucketRows } from './console-data';
 import { sizeUnitOptions } from './constants';
 import type { BucketDisplayRow, SizeUnit } from './types';
 
@@ -151,20 +150,6 @@ export async function copyText(value: string) {
 }
 
 export function buildBucketDisplayRows(buckets: BucketInfo[]): BucketDisplayRow[] {
-  if (buckets.length === 0) {
-    return placeholderBucketRows.map((bucket) => ({
-      name: bucket.key,
-      purpose: bucket.purpose,
-      root: bucket.root,
-      mode: bucket.mode,
-      size: bucket.size,
-      objects: bucket.objects,
-      fill: bucket.used ? `${bucket.used}%` : 'N/A',
-      fillPercent: bucket.used ?? null,
-      policy: bucket.policy,
-    }));
-  }
-
   return buckets.map((bucket) => ({
     name: bucket.name,
     purpose: bucket.quota_bytes > 0 ? `Limit ${formatBytes(bucket.quota_bytes)}` : 'Unlimited bucket quota',

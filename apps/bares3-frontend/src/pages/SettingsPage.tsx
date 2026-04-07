@@ -1,6 +1,5 @@
 import { useState } from 'react';
-import { Button, Descriptions, Skeleton } from 'antd';
-import { settingGroups as placeholderSettingGroups } from '../console-data';
+import { Button, Descriptions, Empty, Skeleton } from 'antd';
 import { ConsoleShell } from '../components/ConsoleShell';
 import { Section } from '../components/Section';
 import { StorageLimitModal } from '../components/StorageLimitModal';
@@ -11,39 +10,34 @@ export function SettingsPage() {
   const { runtime, loading, refresh } = useRuntimeData();
   const [isStorageModalOpen, setIsStorageModalOpen] = useState(false);
 
-  const groups = placeholderSettingGroups.map((group) => ({
-    title: group.title,
-    items: group.items.map((item) => ({ ...item })),
-  }));
-
-  if (runtime) {
-    groups[0] = {
-      title: 'Endpoint identity',
-      items: [
-        { label: 'Console name', value: runtime.app.name },
-        { label: 'S3 endpoint', value: runtime.storage.s3_base_url },
-        { label: 'Region label', value: runtime.storage.region },
-      ],
-    };
-
-    groups[1] = {
-      title: 'Storage defaults',
-      items: [
-        { label: 'Bucket mapping', value: 'One bucket = one top-level folder' },
-        { label: 'Metadata mode', value: runtime.storage.metadata_layout },
-        { label: 'Upload safety', value: 'Temp write then atomic rename' },
-      ],
-    };
-
-    groups[2] = {
-      title: 'Delivery rules',
-      items: [
-        { label: 'Range requests', value: 'Enabled' },
-        { label: 'Public routes', value: '/pub/{bucket}/{key}' },
-        { label: 'Signed downloads', value: 'Generated from Share links' },
-      ],
-    };
-  }
+  const groups = runtime
+    ? [
+        {
+          title: 'Endpoint identity',
+          items: [
+            { label: 'Console name', value: runtime.app.name },
+            { label: 'Environment', value: runtime.app.env },
+            { label: 'Config source', value: runtime.config.used ? runtime.config.path : 'Defaults only (no config file loaded)' },
+          ],
+        },
+        {
+          title: 'Storage paths',
+          items: [
+            { label: 'Data directory', value: runtime.paths.data_dir },
+            { label: 'Temp directory', value: runtime.paths.tmp_dir },
+            { label: 'Log directory', value: runtime.paths.log_dir },
+          ],
+        },
+        {
+          title: 'Delivery defaults',
+          items: [
+            { label: 'S3 endpoint', value: runtime.storage.s3_base_url },
+            { label: 'Public base URL', value: runtime.storage.public_base_url },
+            { label: 'Metadata mode', value: runtime.storage.metadata_layout },
+          ],
+        },
+      ]
+    : [];
 
   const maxBytes = runtime?.storage.max_bytes ?? 0;
   const usedBytes = runtime?.storage.used_bytes ?? 0;
@@ -66,6 +60,12 @@ export function SettingsPage() {
         <div className="workspace-stack">
           <Section title="Runtime">
             <Skeleton active paragraph={{ rows: 8 }} title={false} />
+          </Section>
+        </div>
+      ) : !runtime ? (
+        <div className="workspace-stack">
+          <Section title="Runtime">
+            <Empty description="Runtime settings are unavailable" image={Empty.PRESENTED_IMAGE_SIMPLE} />
           </Section>
         </div>
       ) : (

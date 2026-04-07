@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { UploadOutlined } from '@ant-design/icons';
 import { Button, Descriptions, Empty, List, Skeleton, Table, Typography } from 'antd';
 import { useNavigate } from 'react-router-dom';
-import { nodeSummary as placeholderNodeSummary, overviewMetrics as placeholderOverviewMetrics } from '../console-data';
 import { BucketCreateModal } from '../components/BucketCreateModal';
 import { ConsoleShell } from '../components/ConsoleShell';
 import { MetricStrip } from '../components/MetricStrip';
@@ -12,7 +11,7 @@ import { useBucketsData } from '../hooks/useBucketsData';
 import { useRuntimeData } from '../hooks/useRuntimeData';
 import { bucketColumns, bucketDisplayRows } from '../tables';
 import type { ActivityDisplayItem, MetricItem } from '../types';
-import { formatBytes, formatRelativeTime, nodeSummaryToItems, usagePercentLabel } from '../utils';
+import { formatBytes, formatCount, formatRelativeTime, nodeSummaryToItems, usagePercentLabel } from '../utils';
 
 const { Text } = Typography;
 
@@ -22,29 +21,30 @@ export function OverviewPage() {
   const { items: buckets, loading: bucketsLoading, refresh: refreshBuckets } = useBucketsData();
   const { items: auditEntries, loading: activityLoading, refresh: refreshActivity } = useAuditActivity();
   const [isBucketModalOpen, setIsBucketModalOpen] = useState(false);
+  const bucketCount = runtime?.storage.bucket_count ?? buckets.length;
+  const totalObjects = buckets.reduce((sum, bucket) => sum + bucket.object_count, 0);
 
-  const metrics: MetricItem[] = placeholderOverviewMetrics.map((item) => ({ ...item }));
-  metrics[0] = {
-    ...metrics[0],
-    value: String(runtime?.storage.bucket_count ?? buckets.length),
-    detail: buckets.length > 0 ? `${buckets.length} bucket${buckets.length === 1 ? '' : 's'} currently configured` : 'No buckets created yet',
-  };
-  metrics[1] = {
-    ...metrics[1],
-    value:
-      runtimeLoading || !runtime?.storage.max_bytes
-        ? 'N/A'
-        : usagePercentLabel(runtime.storage.used_bytes, runtime.storage.max_bytes),
-    detail:
-      runtime?.storage.max_bytes && runtime.storage.max_bytes > 0
-        ? `${formatBytes(runtime.storage.used_bytes)} of ${formatBytes(runtime.storage.max_bytes)} allocated`
-        : 'Set an instance limit in Settings',
-  };
-  metrics[2] = {
-    ...metrics[2],
-    value: runtimeLoading ? 'N/A' : String(runtime?.storage.active_link_count ?? 0),
-    detail: 'Link analytics will appear when share management is connected',
-  };
+  const metrics: MetricItem[] = [
+    {
+      label: 'Buckets',
+      value: runtimeLoading && bucketsLoading ? '--' : formatCount(bucketCount),
+      detail: bucketCount > 0 ? `${formatCount(bucketCount)} bucket${bucketCount === 1 ? '' : 's'} currently configured` : 'No buckets created yet',
+    },
+    {
+      label: 'Used',
+      value: runtimeLoading ? '--' : runtime ? (runtime.storage.max_bytes > 0 ? usagePercentLabel(runtime.storage.used_bytes, runtime.storage.max_bytes) : formatBytes(runtime.storage.used_bytes)) : 'Unavailable',
+      detail: runtime
+        ? runtime.storage.max_bytes > 0
+          ? `${formatBytes(runtime.storage.used_bytes)} of ${formatBytes(runtime.storage.max_bytes)} allocated`
+          : `${formatBytes(runtime.storage.used_bytes)} used with no instance limit configured`
+        : 'Runtime data is unavailable right now',
+    },
+    {
+      label: 'Objects',
+      value: bucketsLoading ? '--' : formatCount(totalObjects),
+      detail: totalObjects > 0 ? `Across ${formatCount(bucketCount)} bucket${bucketCount === 1 ? '' : 's'}` : 'Objects appear here after uploads',
+    },
+  ];
 
   const overviewBuckets = bucketDisplayRows(buckets);
   const activityItems: ActivityDisplayItem[] = auditEntries.map((entry) => ({
@@ -54,11 +54,14 @@ export function OverviewPage() {
     time: formatRelativeTime(entry.time),
   }));
 
-  const nodeItems = placeholderNodeSummary.map((item) => ({ ...item }));
-  nodeItems[0] = { label: 'Console', value: runtime?.app.name ?? 'BareS3' };
-  nodeItems[1] = { label: 'Endpoint', value: runtime?.storage.s3_base_url ?? 'N/A' };
-  nodeItems[2] = { label: 'Region', value: runtime?.storage.region ?? 'N/A' };
-  nodeItems[3] = { label: 'Write mode', value: 'temp file then atomic rename' };
+  const nodeItems = runtime
+    ? [
+        { label: 'Console', value: runtime.app.name || 'BareS3' },
+        { label: 'Environment', value: runtime.app.env || 'Unknown' },
+        { label: 'Endpoint', value: runtime.storage.s3_base_url || 'Not configured' },
+        { label: 'Region', value: runtime.storage.region || 'Not configured' },
+      ]
+    : [];
 
   return (
     <ConsoleShell
@@ -133,8 +136,10 @@ export function OverviewPage() {
         <Section title="Node">
           {runtimeLoading ? (
             <Skeleton active paragraph={{ rows: 4 }} title={false} />
-          ) : (
+          ) : runtime ? (
             <Descriptions column={1} items={nodeSummaryToItems(nodeItems)} size="small" />
+          ) : (
+            <Empty description="Runtime details are unavailable" image={Empty.PRESENTED_IMAGE_SIMPLE} />
           )}
         </Section>
       </div>
