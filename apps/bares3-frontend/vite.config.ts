@@ -2,10 +2,12 @@ import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 
 function vendorChunkName(id: string) {
+  // @ts-ignore
   if (id.includes('node_modules/react/') || id.includes('node_modules/react-dom/') || id.includes('node_modules/scheduler/')) {
     return 'react-vendor';
   }
 
+  // @ts-ignore
   if (id.includes('node_modules/react-router/') || id.includes('node_modules/react-router-dom/') || id.includes('node_modules/@remix-run/router/')) {
     return 'router-vendor';
   }
@@ -18,6 +20,7 @@ function vendorChunkName(id: string) {
 
   const packagePath = id.slice(markerIndex + marker.length);
   const segments = packagePath.split('/');
+  // @ts-ignore
   const packageName = segments[0]?.startsWith('@') ? `${segments[0]}/${segments[1]}` : segments[0];
   if (!packageName) {
     return undefined;
@@ -35,10 +38,12 @@ function vendorChunkName(id: string) {
     return 'antd-icons';
   }
 
+  // @ts-ignore
   if (packageName.startsWith('@ant-design/')) {
     return `ant-design-${packageName.split('/')[1]}`;
   }
 
+  // @ts-ignore
   if (packageName.startsWith('rc-')) {
     return `rc-${packageName.slice(3)}`;
   }

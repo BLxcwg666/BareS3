@@ -1,9 +1,11 @@
 import { useState } from 'react';
+import { CheckCircleFilled } from '@ant-design/icons';
 import { Alert, Button, Form, Input, Space, Typography } from 'antd';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { loginNotes } from '../console-data';
 import { useAuth } from '../auth';
 import { ThemeModeButton } from '../components/ThemeModeButton';
+import { WaveBackground } from '../components/WaveBackground';
 import { normalizeApiError } from '../utils';
 
 const { Text, Title } = Typography;
@@ -34,7 +36,8 @@ export function LoginPage() {
     <div className="login-page">
       <div className="login-frame route-fade">
         <section className="login-aside">
-          <div className="brand-row brand-row-login">
+          <WaveBackground />
+          <div className="brand-row brand-row-login" style={{ position: 'relative', zIndex: 10 }}>
             <img alt="BareS3 logo" className="brand-mark" src="/logo.png" />
             <div>
               <div className="brand-name">BareS3</div>
@@ -42,39 +45,45 @@ export function LoginPage() {
             </div>
           </div>
 
-          <div className="login-copy-block">
-            <Title className="login-title" level={2}>
-              Keep S3 outside. Keep files readable inside.
-            </Title>
-            <Text className="login-note-text">
-              Sign in with the console account configured on this node, then manage buckets and file routes in one place.
-            </Text>
-          </div>
+          <div className="login-hero-container" style={{ position: 'relative', zIndex: 10 }}>
+            <div className="login-copy-block">
+              <Title className="login-title" level={2}>
+                Keep S3 outside. <br />
+                Keep files readable inside.
+              </Title>
+              <Text className="login-note-text">
+                Sign in with the console account configured on this node, then manage buckets and file routes in one place.
+              </Text>
+            </div>
 
-          <div className="login-lines">
-            {loginNotes.map((item) => (
-              <div className="login-line" key={item.label}>
-                <span>{item.label}</span>
-                <strong>{item.value}</strong>
-              </div>
-            ))}
+            <div className="login-features">
+              {loginNotes.map((item) => (
+                <div className="login-feature-card" key={item.label}>
+                  <CheckCircleFilled className="feature-icon" />
+                  <div className="feature-text">
+                    <strong>{item.label}</strong>
+                    <span>{item.value}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </section>
 
         <section className="login-panel">
           <div className="login-panel-head">
             <div>
-              <Title className="section-title" level={5}>
+              <Title className="section-title login-panel-title" level={5}>
                 Sign in
               </Title>
-              <Text type="secondary">The console uses one configured admin account and a signed session cookie.</Text>
+              <Text type="secondary">Login to BareS3 Console</Text>
             </div>
             <ThemeModeButton />
           </div>
 
           <Form
             className="login-form"
-            initialValues={{ username: 'admin', password: '' }}
+            initialValues={{ username: '', password: '' }}
             layout="vertical"
             onFinish={handleSubmit}
           >
@@ -89,7 +98,7 @@ export function LoginPage() {
 
             <Space className="login-actions" size={8} wrap>
               <Button htmlType="submit" loading={submitting} type="primary">
-                Enter console
+                Login
               </Button>
             </Space>
           </Form>

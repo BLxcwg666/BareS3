@@ -514,15 +514,14 @@ a {
 
 .login-page {
   min-height: 100vh;
-  padding: 12px;
 }
 
 .login-frame {
   display: grid;
-  min-height: calc(100vh - 24px);
+  min-height: 100vh;
   grid-template-columns: minmax(0, 1.15fr) minmax(340px, 0.85fr);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 0;
   background: var(--surface);
   overflow: hidden;
 }
@@ -533,10 +532,23 @@ a {
 }
 
 .login-aside {
-  display: grid;
-  align-content: start;
-  gap: 18px;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  background: radial-gradient(circle at 10% 90%, oklch(48.8% 0.048 147 / 0.05), transparent 60%),
+              radial-gradient(circle at 80% 20%, oklch(74% 0.036 147 / 0.08), transparent 50%),
+              var(--surface);
   border-right: 1px solid var(--line);
+}
+
+.login-hero-container {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  flex: 1;
+  gap: 40px;
+  max-width: 44rem;
+  padding-bottom: 8vh;
 }
 
 .login-copy-block {
@@ -556,28 +568,51 @@ a {
   color: var(--muted);
 }
 
-.login-lines {
-  border-top: 1px solid var(--line);
+.login-features {
+  display: grid;
+  gap: 16px;
 }
 
-.login-line {
+.login-feature-card {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--line);
+  align-items: flex-start;
+  gap: 16px;
+  padding: 18px 20px;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  transition: all 0.2s ease;
 }
 
-.login-line span {
-  color: var(--muted);
+.login-feature-card:hover {
+  background: var(--surface);
+  border-color: color-mix(in oklab, var(--accent) 70%, transparent);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 30px oklch(0% 0 0 / 0.08);
 }
 
-.login-line strong {
+.feature-icon {
+  font-size: 22px;
+  color: var(--accent);
+  margin-top: 2px;
+  filter: drop-shadow(0 2px 8px color-mix(in oklab, var(--accent) 50%, transparent));
+}
+
+.feature-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.feature-text strong {
   color: var(--ink);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.feature-text span {
+  color: var(--muted);
   font-size: 14px;
-  font-weight: 500;
-  text-align: right;
 }
 
 .login-panel {
@@ -592,6 +627,10 @@ a {
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 12px;
+}
+
+.login-panel-title.ant-typography {
+  font-size: 25px !important;
 }
 
 .login-form {
@@ -692,7 +731,6 @@ a {
 }
 
 @media (max-width: 768px) {
-  .login-page,
   .shell-content {
     padding: 8px;
   }
