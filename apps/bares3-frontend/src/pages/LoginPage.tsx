@@ -35,7 +35,7 @@ export function LoginPage() {
       <div className="login-frame route-fade">
         <section className="login-aside">
           <div className="brand-row brand-row-login">
-            <span className="brand-mark">B</span>
+            <img alt="BareS3 logo" className="brand-mark" src="/logo.png" />
             <div>
               <div className="brand-name">BareS3</div>
               <div className="brand-note">file-first object storage</div>

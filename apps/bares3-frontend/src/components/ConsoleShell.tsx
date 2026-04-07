@@ -59,7 +59,7 @@ export function ConsoleShell({ children, actions, showHeaderSearch = true }: She
           <Sider className="shell-sider" width={228}>
             <div className="sider-inner">
               <Link className="brand-row" to="/overview">
-                <span className="brand-mark">B</span>
+                <img alt="BareS3 logo" className="brand-mark" src="/logo.png" />
                 <div>
                   <div className="brand-name">BareS3</div>
                   <div className="brand-note">file-first object storage</div>
