@@ -318,6 +318,34 @@ func TestCreateListAndRevokeShareLinks(t *testing.T) {
 	if revoked.ID != created.ID || revoked.Status != "revoked" {
 		t.Fatalf("unexpected revoked share link payload: %+v", revoked)
 	}
+
+	removeRequest := httptest.NewRequest(http.MethodDelete, "/api/v1/share-links/"+created.ID+"/remove", nil)
+	removeRequest.AddCookie(cookie)
+	removeRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(removeRecorder, removeRequest)
+	if removeRecorder.Code != http.StatusNoContent {
+		t.Fatalf("unexpected remove share link status: %d body=%s", removeRecorder.Code, removeRecorder.Body.String())
+	}
+
+	listAfterRemoveRequest := httptest.NewRequest(http.MethodGet, "/api/v1/share-links", nil)
+	listAfterRemoveRequest.AddCookie(cookie)
+	listAfterRemoveRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(listAfterRemoveRecorder, listAfterRemoveRequest)
+	if listAfterRemoveRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected list share links after remove status: %d body=%s", listAfterRemoveRecorder.Code, listAfterRemoveRecorder.Body.String())
+	}
+
+	listedAfterRemove := struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}{}
+	if err := json.Unmarshal(listAfterRemoveRecorder.Body.Bytes(), &listedAfterRemove); err != nil {
+		t.Fatalf("unmarshal list share links after remove payload: %v", err)
+	}
+	if len(listedAfterRemove.Items) != 0 {
+		t.Fatalf("expected no share links after remove, got %+v", listedAfterRemove.Items)
+	}
 }
 
 func loginCookie(t *testing.T, handler http.Handler) *http.Cookie {

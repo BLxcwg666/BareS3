@@ -578,6 +578,24 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 				httpx.WriteJSON(w, http.StatusOK, makeShareLinkResponse(cfg.Storage.PublicBaseURL, link, time.Now().UTC()))
 			})
 
+			protected.Delete("/share-links/{id}/remove", func(w http.ResponseWriter, r *http.Request) {
+				link, err := shareLinks.Remove(r.Context(), chi.URLParam(r, "id"))
+				if err != nil {
+					writeShareLinkError(w, err)
+					return
+				}
+
+				recordAudit(logger, auditRecorder, auditlog.Entry{
+					Actor:  actorFromRequest(r),
+					Action: "sharelink.remove",
+					Title:  fmt.Sprintf("Removed revoked share link for %s/%s", link.Bucket, link.Key),
+					Target: "/s/" + link.ID,
+					Remote: requestRemote(r),
+					Status: "success",
+				})
+				w.WriteHeader(http.StatusNoContent)
+			})
+
 			protected.Post("/presign/s3", func(w http.ResponseWriter, r *http.Request) {
 				payload := struct {
 					Method         string `json:"method"`
@@ -680,7 +698,7 @@ func writeStorageError(w http.ResponseWriter, err error) {
 func writeShareLinkError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	switch {
-	case errors.Is(err, sharelink.ErrInvalidID), errors.Is(err, sharelink.ErrInvalidExpiry):
+	case errors.Is(err, sharelink.ErrInvalidID), errors.Is(err, sharelink.ErrInvalidExpiry), errors.Is(err, sharelink.ErrNotRevoked):
 		status = http.StatusBadRequest
 	case errors.Is(err, sharelink.ErrNotFound):
 		status = http.StatusNotFound

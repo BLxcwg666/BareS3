@@ -67,6 +67,22 @@ func TestCreateListActiveCountAndRevoke(t *testing.T) {
 	if _, err := store.GetActive(context.Background(), created.ID); err == nil {
 		t.Fatalf("expected GetActive to fail for revoked link")
 	}
+
+	removed, err := store.Remove(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("Remove failed: %v", err)
+	}
+	if removed.ID != created.ID {
+		t.Fatalf("unexpected removed link id: %s", removed.ID)
+	}
+
+	links, err = store.List(context.Background())
+	if err != nil {
+		t.Fatalf("List after remove failed: %v", err)
+	}
+	if len(links) != 0 {
+		t.Fatalf("expected 0 links after remove, got %d", len(links))
+	}
 }
 
 func TestGetActiveRejectsExpiredLinks(t *testing.T) {
@@ -93,6 +109,32 @@ func TestGetActiveRejectsExpiredLinks(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("expected active count 0 for expired link, got %d", count)
+	}
+
+	removed, err := store.Remove(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("Remove expired link failed: %v", err)
+	}
+	if removed.ID != created.ID {
+		t.Fatalf("unexpected removed expired link id: %s", removed.ID)
+	}
+}
+
+func TestRemoveRejectsActiveLinks(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newTestStore(t)
+	created, err := store.Create(context.Background(), CreateInput{
+		Bucket:  "gallery",
+		Key:     "notes/active.txt",
+		Expires: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	if _, err := store.Remove(context.Background(), created.ID); err == nil {
+		t.Fatalf("expected remove to fail for active link")
 	}
 }
 

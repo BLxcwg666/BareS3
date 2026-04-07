@@ -30,6 +30,7 @@ var (
 	ErrNotFound      = errors.New("share link not found")
 	ErrInvalidID     = errors.New("invalid share link id")
 	ErrInvalidExpiry = errors.New("invalid share link expiry")
+	ErrNotRevoked    = errors.New("share link must be revoked or expired before removal")
 	ErrExpired       = errors.New("share link expired")
 	ErrRevoked       = errors.New("share link revoked")
 )
@@ -238,6 +239,37 @@ func (s *Store) Revoke(ctx context.Context, id string) (Link, error) {
 
 	s.logger.Info(
 		"share link revoked",
+		zap.String("id", link.ID),
+		zap.String("bucket", link.Bucket),
+		zap.String("key", link.Key),
+	)
+	return link, nil
+}
+
+func (s *Store) Remove(ctx context.Context, id string) (Link, error) {
+	if err := ctx.Err(); err != nil {
+		return Link{}, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	link, err := s.readLink(id)
+	if err != nil {
+		return Link{}, err
+	}
+	if link.RevokedAt == nil && link.Status(s.now()) != "expired" {
+		return Link{}, fmt.Errorf("%w: %s", ErrNotRevoked, link.ID)
+	}
+	if err := os.Remove(s.linkPath(link.ID)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Link{}, fmt.Errorf("%w: %s", ErrNotFound, link.ID)
+		}
+		return Link{}, fmt.Errorf("remove share link: %w", err)
+	}
+
+	s.logger.Info(
+		"share link removed",
 		zap.String("id", link.ID),
 		zap.String("bucket", link.Bucket),
 		zap.String("key", link.Key),
