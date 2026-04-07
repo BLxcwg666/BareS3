@@ -1,16 +1,19 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"bares3-server/internal/auditlog"
 	"bares3-server/internal/buildinfo"
 	"bares3-server/internal/config"
 	"bares3-server/internal/consoleauth"
@@ -32,6 +35,10 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 	})
 	if err != nil {
 		panic(fmt.Sprintf("initialize console auth manager: %v", err))
+	}
+	auditRecorder, err := auditlog.New(cfg.Paths.LogDir)
+	if err != nil {
+		panic(fmt.Sprintf("initialize audit recorder: %v", err))
 	}
 
 	router := chi.NewRouter()
@@ -77,9 +84,19 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "message": "invalid request body"})
 					return
 				}
+				username := strings.TrimSpace(payload.Username)
 
-				session, err := manager.Authenticate(strings.TrimSpace(payload.Username), payload.Password)
+				session, err := manager.Authenticate(username, payload.Password)
 				if err != nil {
+					recordAudit(logger, auditRecorder, auditlog.Entry{
+						Actor:  username,
+						Action: "auth.login",
+						Title:  fmt.Sprintf("Failed sign-in for %s", fallbackActor(username)),
+						Detail: "Invalid credentials",
+						Target: username,
+						Remote: requestRemote(r),
+						Status: "failed",
+					})
 					httpx.WriteJSON(w, http.StatusUnauthorized, map[string]any{"status": "error", "message": "invalid credentials"})
 					return
 				}
@@ -90,6 +107,14 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 					return
 				}
 				http.SetCookie(w, cookie)
+				recordAudit(logger, auditRecorder, auditlog.Entry{
+					Actor:  session.Username,
+					Action: "auth.login",
+					Title:  "Signed in to console",
+					Detail: fmt.Sprintf("Session active until %s", session.ExpiresAt.UTC().Format(time.RFC3339)),
+					Remote: requestRemote(r),
+					Status: "success",
+				})
 				httpx.WriteJSON(w, http.StatusOK, map[string]any{
 					"username":   session.Username,
 					"expires_at": session.ExpiresAt,
@@ -97,6 +122,15 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 			})
 
 			logoutHandler := func(w http.ResponseWriter, r *http.Request) {
+				if session, err := manager.SessionFromRequest(r); err == nil {
+					recordAudit(logger, auditRecorder, auditlog.Entry{
+						Actor:  session.Username,
+						Action: "auth.logout",
+						Title:  "Signed out of console",
+						Remote: requestRemote(r),
+						Status: "success",
+					})
+				}
 				http.SetCookie(w, manager.ClearCookie())
 				w.WriteHeader(http.StatusNoContent)
 			}
@@ -115,6 +149,32 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 
 		api.Group(func(protected chi.Router) {
 			protected.Use(requireSession(manager))
+
+			protected.Get("/audit/events", func(w http.ResponseWriter, r *http.Request) {
+				limit := 10
+				if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+					parsed, err := strconv.Atoi(rawLimit)
+					if err != nil || parsed < 0 {
+						httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+							"status":  "error",
+							"message": "limit must be a non-negative integer",
+						})
+						return
+					}
+					limit = parsed
+				}
+
+				items, err := auditRecorder.Recent(limit)
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
+
+				httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
+			})
 
 			protected.Get("/runtime", func(w http.ResponseWriter, r *http.Request) {
 				buckets, err := store.ListBuckets(r.Context())
@@ -202,6 +262,15 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 					writeStorageError(w, err)
 					return
 				}
+				recordAudit(logger, auditRecorder, auditlog.Entry{
+					Actor:  actorFromRequest(r),
+					Action: "bucket.create",
+					Title:  fmt.Sprintf("Created bucket %s", bucket.Name),
+					Detail: fmt.Sprintf("Quota %s", quotaLabel(bucket.QuotaBytes)),
+					Target: bucket.Name,
+					Remote: requestRemote(r),
+					Status: "success",
+				})
 
 				httpx.WriteJSON(w, http.StatusCreated, bucket)
 			})
@@ -264,16 +333,33 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 				}
 
 				cfg.Storage.MaxBytes = payload.MaxBytes
+				recordAudit(logger, auditRecorder, auditlog.Entry{
+					Actor:  actorFromRequest(r),
+					Action: "settings.storage.update",
+					Title:  "Updated instance storage limit",
+					Detail: fmt.Sprintf("Limit set to %s", quotaLabel(payload.MaxBytes)),
+					Remote: requestRemote(r),
+					Status: "success",
+				})
 				httpx.WriteJSON(w, http.StatusOK, map[string]any{
 					"max_bytes": payload.MaxBytes,
 				})
 			})
 
 			protected.Delete("/buckets/{bucket}", func(w http.ResponseWriter, r *http.Request) {
-				if err := store.DeleteBucket(r.Context(), chi.URLParam(r, "bucket")); err != nil {
+				bucketName := chi.URLParam(r, "bucket")
+				if err := store.DeleteBucket(r.Context(), bucketName); err != nil {
 					writeStorageError(w, err)
 					return
 				}
+				recordAudit(logger, auditRecorder, auditlog.Entry{
+					Actor:  actorFromRequest(r),
+					Action: "bucket.delete",
+					Title:  fmt.Sprintf("Deleted bucket %s", bucketName),
+					Target: bucketName,
+					Remote: requestRemote(r),
+					Status: "success",
+				})
 				w.WriteHeader(http.StatusNoContent)
 			})
 
@@ -350,14 +436,33 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 					writeStorageError(w, err)
 					return
 				}
+				recordAudit(logger, auditRecorder, auditlog.Entry{
+					Actor:  actorFromRequest(r),
+					Action: "object.upload",
+					Title:  fmt.Sprintf("Uploaded %s/%s", object.Bucket, object.Key),
+					Detail: fmt.Sprintf("%s · %s", formatBytes(object.Size), contentTypeLabel(object.ContentType)),
+					Target: object.Bucket + "/" + object.Key,
+					Remote: requestRemote(r),
+					Status: "success",
+				})
 				httpx.WriteJSON(w, http.StatusCreated, object)
 			})
 
 			protected.Delete("/buckets/{bucket}/objects/*", func(w http.ResponseWriter, r *http.Request) {
-				if err := store.DeleteObject(r.Context(), chi.URLParam(r, "bucket"), chi.URLParam(r, "*")); err != nil {
+				bucketName := chi.URLParam(r, "bucket")
+				key := chi.URLParam(r, "*")
+				if err := store.DeleteObject(r.Context(), bucketName, key); err != nil {
 					writeStorageError(w, err)
 					return
 				}
+				recordAudit(logger, auditRecorder, auditlog.Entry{
+					Actor:  actorFromRequest(r),
+					Action: "object.delete",
+					Title:  fmt.Sprintf("Deleted %s/%s", bucketName, key),
+					Target: bucketName + "/" + key,
+					Remote: requestRemote(r),
+					Status: "success",
+				})
 				w.WriteHeader(http.StatusNoContent)
 			})
 
@@ -417,6 +522,15 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 					return
 				}
 
+				recordAudit(logger, auditRecorder, auditlog.Entry{
+					Actor:  actorFromRequest(r),
+					Action: "presign.s3",
+					Title:  fmt.Sprintf("Generated presigned %s for %s/%s", strings.ToUpper(strings.TrimSpace(payload.Method)), strings.TrimSpace(payload.Bucket), strings.TrimSpace(payload.Key)),
+					Detail: fmt.Sprintf("Expires in %ds", payload.ExpiresSeconds),
+					Target: strings.TrimSpace(payload.Bucket) + "/" + strings.TrimSpace(payload.Key),
+					Remote: requestRemote(r),
+					Status: "success",
+				})
 				httpx.WriteJSON(w, http.StatusOK, result)
 			})
 		})
@@ -431,11 +545,12 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 func requireSession(manager *consoleauth.Manager) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if _, err := manager.SessionFromRequest(r); err != nil {
+			session, err := manager.SessionFromRequest(r)
+			if err != nil {
 				httpx.WriteJSON(w, http.StatusUnauthorized, map[string]any{"status": "error", "message": "not authenticated"})
 				return
 			}
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, r.WithContext(sessionWithContext(r.Context(), session)))
 		})
 	}
 }
@@ -490,4 +605,84 @@ func collectMetadataFields(values map[string][]string) map[string]string {
 		return nil
 	}
 	return metadata
+}
+
+type sessionContextKey struct{}
+
+func sessionWithContext(ctx context.Context, session consoleauth.Session) context.Context {
+	return context.WithValue(ctx, sessionContextKey{}, session)
+}
+
+func sessionFromContext(ctx context.Context) (consoleauth.Session, bool) {
+	session, ok := ctx.Value(sessionContextKey{}).(consoleauth.Session)
+	return session, ok
+}
+
+func actorFromRequest(r *http.Request) string {
+	if r != nil {
+		if session, ok := sessionFromContext(r.Context()); ok && strings.TrimSpace(session.Username) != "" {
+			return session.Username
+		}
+	}
+	return "system"
+}
+
+func requestRemote(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr)); err == nil {
+		return host
+	}
+	return strings.TrimSpace(r.RemoteAddr)
+}
+
+func fallbackActor(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "unknown user"
+	}
+	return strings.TrimSpace(value)
+}
+
+func quotaLabel(bytes int64) string {
+	if bytes <= 0 {
+		return "unlimited"
+	}
+	return formatBytes(bytes)
+}
+
+func contentTypeLabel(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "application/octet-stream"
+	}
+	return strings.TrimSpace(value)
+}
+
+func formatBytes(bytes int64) string {
+	if bytes <= 0 {
+		return "0 B"
+	}
+	if bytes < 1024 {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	units := []string{"KB", "MB", "GB", "TB"}
+	value := float64(bytes)
+	index := -1
+	for value >= 1024 && index < len(units)-1 {
+		value /= 1024
+		index += 1
+	}
+	if value >= 10 {
+		return fmt.Sprintf("%.0f %s", value, units[index])
+	}
+	return fmt.Sprintf("%.1f %s", value, units[index])
+}
+
+func recordAudit(logger *zap.Logger, recorder *auditlog.Recorder, entry auditlog.Entry) {
+	if recorder == nil {
+		return
+	}
+	if err := recorder.Record(entry); err != nil {
+		logger.Warn("record audit log", zap.Error(err), zap.String("action", entry.Action), zap.String("title", entry.Title))
+	}
 }

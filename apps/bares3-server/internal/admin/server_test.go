@@ -83,6 +83,14 @@ func TestLoginAndProtectedRuntime(t *testing.T) {
 		t.Fatalf("unexpected runtime status: %d body=%s", runtimeRecorder.Code, runtimeRecorder.Body.String())
 	}
 
+	auditRequest := httptest.NewRequest(http.MethodGet, "/api/v1/audit/events?limit=5", nil)
+	auditRequest.AddCookie(loginRecorder.Result().Cookies()[0])
+	auditRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(auditRecorder, auditRequest)
+	if auditRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected audit status: %d body=%s", auditRecorder.Code, auditRecorder.Body.String())
+	}
+
 	payload := struct {
 		Storage struct {
 			MaxBytes        int `json:"max_bytes"`
@@ -105,6 +113,26 @@ func TestLoginAndProtectedRuntime(t *testing.T) {
 	}
 	if payload.Storage.ActiveLinkCount != 2 {
 		t.Fatalf("unexpected active link count: %d", payload.Storage.ActiveLinkCount)
+	}
+
+	auditPayload := struct {
+		Items []struct {
+			Action string `json:"action"`
+			Title  string `json:"title"`
+			Actor  string `json:"actor"`
+		} `json:"items"`
+	}{}
+	if err := json.Unmarshal(auditRecorder.Body.Bytes(), &auditPayload); err != nil {
+		t.Fatalf("unmarshal audit payload: %v", err)
+	}
+	if len(auditPayload.Items) == 0 {
+		t.Fatalf("expected at least one audit event")
+	}
+	if auditPayload.Items[0].Action != "auth.login" {
+		t.Fatalf("unexpected latest audit action: %s", auditPayload.Items[0].Action)
+	}
+	if auditPayload.Items[0].Actor != "admin" {
+		t.Fatalf("unexpected latest audit actor: %s", auditPayload.Items[0].Actor)
 	}
 }
 
