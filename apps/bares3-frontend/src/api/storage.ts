@@ -77,6 +77,33 @@ export type PresignResult = {
   method: string;
 };
 
+export type MoveEntryRequest =
+  | {
+      kind: 'object';
+      source_bucket: string;
+      source_key: string;
+      destination_bucket: string;
+      destination_key: string;
+    }
+  | {
+      kind: 'prefix';
+      source_bucket: string;
+      source_prefix: string;
+      destination_bucket: string;
+      destination_prefix: string;
+    };
+
+export type MoveEntryResult = {
+  kind: 'object' | 'prefix';
+  source_bucket: string;
+  source_key?: string;
+  source_prefix?: string;
+  destination_bucket: string;
+  destination_key?: string;
+  destination_prefix?: string;
+  moved_count: number;
+};
+
 export function getRuntime() {
   return request<RuntimeInfo>('/api/v1/runtime');
 }
@@ -163,5 +190,15 @@ export function uploadObject(bucket: string, file: File, key?: string) {
   return request<ObjectInfo>(`/api/v1/buckets/${encodeURIComponent(bucket)}/objects`, {
     method: 'POST',
     body: formData,
+  });
+}
+
+export function moveBrowserEntry(payload: MoveEntryRequest) {
+  return request<MoveEntryResult>('/api/v1/browser/move', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
   });
 }

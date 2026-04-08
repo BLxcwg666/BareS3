@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, DragEvent } from 'react';
-import { CopyOutlined, FileOutlined, FolderOpenOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons';
+import { CheckOutlined, CloseOutlined, CopyOutlined, EditOutlined, FileOutlined, FolderOpenOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons';
 import {
   App as AntApp,
   Button,
@@ -12,6 +12,7 @@ import {
   Popconfirm,
   Progress,
   Select,
+  Tooltip,
   Space,
   Spin,
   Table,
@@ -22,6 +23,7 @@ import {
   createShareLink,
   deleteObject,
   listShareLinks,
+  moveBrowserEntry,
   presignObject,
   removeShareLink,
   revokeShareLink,
@@ -46,6 +48,7 @@ type BrowserEntry =
     }
   | {
       kind: 'folder';
+      bucket: string;
       key: string;
       name: string;
       prefix: string;
@@ -66,6 +69,22 @@ type UploadProgressState = {
   current: string;
   phase: 'uploading' | 'done';
 };
+
+type RenameState =
+  | {
+      kind: 'object';
+      sourceBucket: string;
+      sourceKey: string;
+      parentPrefix: string;
+      value: string;
+    }
+  | {
+      kind: 'folder';
+      sourceBucket: string;
+      sourcePrefix: string;
+      parentPrefix: string;
+      value: string;
+    };
 
 function normalizePrefix(value: string | null) {
   const normalized = (value ?? '')
@@ -99,7 +118,7 @@ function objectParentPrefix(key: string) {
   return normalized.slice(0, index + 1);
 }
 
-function buildBrowserEntries(objects: ObjectInfo[], prefix: string): BrowserEntry[] {
+function buildBrowserEntries(objects: ObjectInfo[], bucket: string | null, prefix: string): BrowserEntry[] {
   const folders = new Map<string, { key: string; name: string; prefix: string; lastModified: string | null }>();
   const files: Array<Extract<BrowserEntry, { kind: 'object' }>> = [];
 
@@ -140,6 +159,7 @@ function buildBrowserEntries(objects: ObjectInfo[], prefix: string): BrowserEntr
     .sort((left, right) => left.name.localeCompare(right.name))
     .map((folder) => ({
       kind: 'folder',
+      bucket: bucket ?? '',
       key: folder.key,
       name: folder.name,
       prefix: folder.prefix,
@@ -166,6 +186,7 @@ export function BrowserPage() {
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
   const uploadProgressTimeoutRef = useRef<number | null>(null);
+  const draggedEntryRef = useRef<Extract<BrowserEntry, { kind: 'object' | 'folder' }> | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedBucket = searchParams.get('bucket')?.trim() ?? '';
   const requestedKey = searchParams.get('key')?.trim() ?? '';
@@ -174,10 +195,16 @@ export function BrowserPage() {
   const { items: buckets, loading: bucketsLoading } = useBucketsData();
   const [selectedBucket, setSelectedBucket] = useState<string | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [selectedFolderPrefix, setSelectedFolderPrefix] = useState<string | null>(null);
   const [searchValue, setSearchValue] = useState('');
   const [uploading, setUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  const [moveDragging, setMoveDragging] = useState(false);
+  const [bucketMenuOpen, setBucketMenuOpen] = useState(false);
+  const [dropTargetKey, setDropTargetKey] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<UploadProgressState | null>(null);
+  const [renameState, setRenameState] = useState<RenameState | null>(null);
+  const [renaming, setRenaming] = useState(false);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [presigningKey, setPresigningKey] = useState<string | null>(null);
   const [shareLinkTTL, setShareLinkTTL] = useState(86400);
@@ -213,9 +240,21 @@ export function BrowserPage() {
     setSearchValue(requestedQuery);
   }, [requestedQuery]);
 
+  useEffect(() => {
+    if (!moveDragging) {
+      setBucketMenuOpen(false);
+      setDropTargetKey(null);
+    }
+  }, [moveDragging]);
+
   const currentPrefix = selectedBucket === requestedBucket ? requestedPath : '';
   const pathSignature = `${selectedBucket ?? ''}:${currentPrefix}`;
   const { items: objects, loading: objectsLoading, refresh } = useBucketObjects(selectedBucket, currentPrefix);
+
+  useEffect(() => {
+    setSelectedFolderPrefix(null);
+    setRenameState(null);
+  }, [pathSignature]);
 
   const filteredObjects = useMemo(() => {
     const keyword = searchValue.trim().toLowerCase();
@@ -228,11 +267,12 @@ export function BrowserPage() {
     );
   }, [objects, searchValue]);
 
-  const browserEntries = useMemo(() => buildBrowserEntries(filteredObjects, currentPrefix), [currentPrefix, filteredObjects]);
+  const browserEntries = useMemo(() => buildBrowserEntries(filteredObjects, selectedBucket, currentPrefix), [currentPrefix, filteredObjects, selectedBucket]);
 
   useEffect(() => {
     const visibleKeys = new Set(browserEntries.filter((entry) => entry.kind === 'object').map((entry) => entry.object.key));
     if (requestedKey && visibleKeys.has(requestedKey) && selectedKey !== requestedKey) {
+      setSelectedFolderPrefix(null);
       setSelectedKey(requestedKey);
       return;
     }
@@ -245,6 +285,17 @@ export function BrowserPage() {
     const matched = browserEntries.find((entry) => entry.kind === 'object' && entry.object.key === selectedKey);
     return matched?.kind === 'object' ? matched.object : null;
   }, [browserEntries, selectedKey]);
+
+  const selectedFolder = useMemo(() => {
+    const matched = browserEntries.find((entry) => entry.kind === 'folder' && entry.prefix === selectedFolderPrefix);
+    return matched?.kind === 'folder' ? matched : null;
+  }, [browserEntries, selectedFolderPrefix]);
+
+  useEffect(() => {
+    if (selectedFolderPrefix && !selectedFolder) {
+      setSelectedFolderPrefix(null);
+    }
+  }, [selectedFolder, selectedFolderPrefix]);
 
   const { item: objectDetail, loading: objectDetailLoading, refresh: refreshObjectDetail } = useObjectDetail(
     selectedBucket,
@@ -303,6 +354,7 @@ export function BrowserPage() {
   const handleSelectBucket = (value: string) => {
     setSelectedBucket(value);
     setSelectedKey(null);
+    setSelectedFolderPrefix(null);
     syncSearchParams(value, '', null, searchValue);
   };
 
@@ -508,11 +560,190 @@ export function BrowserPage() {
 
   const handleOpenFolder = (prefix: string) => {
     setSelectedKey(null);
+    setSelectedFolderPrefix(null);
     syncSearchParams(selectedBucket, prefix, null, searchValue);
   };
 
   const handleOpenParent = () => {
     handleOpenFolder(parentPrefix(currentPrefix));
+  };
+
+  const moveEntryToDestination = useCallback(
+    async (entry: Extract<BrowserEntry, { kind: 'object' | 'folder' }>, destinationBucket: string, destinationPrefix: string) => {
+      const normalizedDestinationPrefix = normalizePrefix(destinationPrefix);
+      if (entry.kind === 'object') {
+        const destinationKey = `${normalizedDestinationPrefix}${entry.name}`;
+        if (entry.object.bucket === destinationBucket && entry.object.key === destinationKey) {
+          return;
+        }
+
+        await moveBrowserEntry({
+          kind: 'object',
+          source_bucket: entry.object.bucket,
+          source_key: entry.object.key,
+          destination_bucket: destinationBucket,
+          destination_key: destinationKey,
+        });
+
+        await refresh();
+        if (selectedBucket === destinationBucket && currentPrefix === normalizedDestinationPrefix) {
+          setSelectedFolderPrefix(null);
+          setSelectedKey(destinationKey);
+          syncSearchParams(destinationBucket, normalizedDestinationPrefix, destinationKey, searchValue);
+        } else if (entry.object.key === selectedKey) {
+          setSelectedKey(null);
+        }
+        message.success(`Moved ${entry.object.key}`);
+        return;
+      }
+
+      const destinationFolderPrefix = `${normalizedDestinationPrefix}${entry.name}/`;
+      if (entry.prefix === destinationFolderPrefix && selectedBucket === destinationBucket) {
+        return;
+      }
+
+      await moveBrowserEntry({
+        kind: 'prefix',
+        source_bucket: entry.bucket,
+        source_prefix: entry.prefix,
+        destination_bucket: destinationBucket,
+        destination_prefix: destinationFolderPrefix,
+      });
+
+      await refresh();
+      if (selectedBucket === destinationBucket && currentPrefix === normalizedDestinationPrefix) {
+        setSelectedKey(null);
+        setSelectedFolderPrefix(destinationFolderPrefix);
+      } else if (selectedFolderPrefix === entry.prefix) {
+        setSelectedFolderPrefix(null);
+      }
+      message.success(`Moved ${entry.prefix}`);
+    },
+    [currentPrefix, message, refresh, searchValue, selectedBucket, selectedFolderPrefix, selectedKey, syncSearchParams],
+  );
+
+  const handleStartRename = () => {
+    if (inspectorObject && selectedBucket) {
+      setRenameState({
+        kind: 'object',
+        sourceBucket: selectedBucket,
+        sourceKey: inspectorObject.key,
+        parentPrefix: objectParentPrefix(inspectorObject.key),
+        value: inspectorObject.key.split('/').pop() ?? inspectorObject.key,
+      });
+      return;
+    }
+
+    if (selectedFolder && selectedBucket) {
+      setRenameState({
+        kind: 'folder',
+        sourceBucket: selectedFolder.bucket,
+        sourcePrefix: selectedFolder.prefix,
+        parentPrefix: parentPrefix(selectedFolder.prefix),
+        value: selectedFolder.name,
+      });
+    }
+  };
+
+  const handleCommitRename = async () => {
+    if (!renameState) {
+      return;
+    }
+
+    const nextSegment = renameState.value.trim();
+    if (!nextSegment || nextSegment.includes('/')) {
+      message.error('Name must be a single path segment');
+      return;
+    }
+
+    setRenaming(true);
+    try {
+      if (renameState.kind === 'object') {
+        const destinationKey = `${renameState.parentPrefix}${nextSegment}`;
+        await moveBrowserEntry({
+          kind: 'object',
+          source_bucket: renameState.sourceBucket,
+          source_key: renameState.sourceKey,
+          destination_bucket: renameState.sourceBucket,
+          destination_key: destinationKey,
+        });
+        await refresh();
+        setSelectedFolderPrefix(null);
+        setSelectedKey(destinationKey);
+        syncSearchParams(renameState.sourceBucket, currentPrefix, destinationKey, searchValue);
+        message.success(`Renamed to ${destinationKey}`);
+      } else {
+        const destinationPrefix = `${renameState.parentPrefix}${nextSegment}/`;
+        await moveBrowserEntry({
+          kind: 'prefix',
+          source_bucket: renameState.sourceBucket,
+          source_prefix: renameState.sourcePrefix,
+          destination_bucket: renameState.sourceBucket,
+          destination_prefix: destinationPrefix,
+        });
+        await refresh();
+        setSelectedKey(null);
+        setSelectedFolderPrefix(destinationPrefix);
+        message.success(`Renamed to ${destinationPrefix}`);
+      }
+      setRenameState(null);
+    } catch (error) {
+      message.error(normalizeApiError(error, 'Failed to rename entry'));
+    } finally {
+      setRenaming(false);
+    }
+  };
+
+  const handleRowDragStart = (entry: BrowserEntry, event: DragEvent<HTMLTableRowElement>) => {
+    if (entry.kind !== 'object' && entry.kind !== 'folder') {
+      return;
+    }
+
+    draggedEntryRef.current = entry;
+    setMoveDragging(true);
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('application/x-bares3-move', entry.key);
+  };
+
+  const handleRowDragEnd = () => {
+    draggedEntryRef.current = null;
+    setMoveDragging(false);
+  };
+
+  const handleBucketOptionDragEnter = (value: string) => {
+    if (!moveDragging || value === selectedBucket) {
+      return;
+    }
+
+    setBucketMenuOpen(false);
+    handleSelectBucket(value);
+  };
+
+  const handleDropMove = async (destinationBucket: string, destinationPrefix: string) => {
+    const entry = draggedEntryRef.current;
+    if (!entry) {
+      return;
+    }
+
+    try {
+      await moveEntryToDestination(entry, destinationBucket, destinationPrefix);
+    } catch (error) {
+      message.error(normalizeApiError(error, 'Failed to move entry'));
+    } finally {
+      draggedEntryRef.current = null;
+      setMoveDragging(false);
+      setDropTargetKey(null);
+    }
+  };
+
+  const handleRootMoveDrop = async (event: DragEvent<HTMLDivElement>) => {
+    if (!moveDragging || !selectedBucket) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    await handleDropMove(selectedBucket, currentPrefix);
   };
 
   const handleDeleteObject = async () => {
@@ -647,6 +878,7 @@ export function BrowserPage() {
     }));
 
   const currentPath = selectedBucket ? `${selectedBucket}/${currentPrefix}` : '';
+  const selectedFolderObjectCount = selectedFolder ? objects.filter((item) => item.key.startsWith(selectedFolder.prefix)).length : 0;
 
   const handleCopyCurrentPath = async () => {
     if (!currentPath) {
@@ -772,11 +1004,42 @@ export function BrowserPage() {
                 )}
               </div>
 
-              <div className="path-actions">
+              <div
+                className="path-actions"
+                onDragEnter={() => {
+                  if (moveDragging) {
+                    setBucketMenuOpen(true);
+                  }
+                }}
+                onDragOver={(event) => {
+                  if (!moveDragging) {
+                    return;
+                  }
+                  event.preventDefault();
+                  setBucketMenuOpen(true);
+                }}
+              >
                 <Select
                   className="bucket-select"
                   loading={bucketsLoading}
+                  onOpenChange={setBucketMenuOpen}
                   onChange={handleSelectBucket}
+                  open={moveDragging ? bucketMenuOpen : undefined}
+                  optionRender={(option) => (
+                    <div
+                      className="bucket-option-row"
+                      onDragEnter={() => handleBucketOptionDragEnter(String((option as { data: { value: string } }).data.value))}
+                      onDragOver={(event) => {
+                        if (!moveDragging) {
+                          return;
+                        }
+                        event.preventDefault();
+                        handleBucketOptionDragEnter(String((option as { data: { value: string } }).data.value));
+                      }}
+                    >
+                      {(option as { data: { label: string } }).data.label}
+                    </div>
+                  )}
                   options={buckets.map((bucket) => ({ label: bucket.name, value: bucket.name }))}
                   placeholder="Select bucket"
                   value={selectedBucket ?? undefined}
@@ -823,160 +1086,266 @@ export function BrowserPage() {
                   />
                 }
               >
-                <Table
-                  columns={browserColumns}
-                  dataSource={browserEntries}
-                  loading={objectsLoading}
-                  locale={{
-                    emptyText: selectedBucket ? (
-                      <Empty description="No files or folders in this path yet" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-                    ) : (
-                      <Empty description="Create a bucket first" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-                    ),
+                <div
+                  className="browser-table-dropzone"
+                  onDragLeave={() => {
+                    if (dropTargetKey === `root:${selectedBucket}:${currentPrefix}`) {
+                      setDropTargetKey(null);
+                    }
                   }}
-                  onRow={(record) => ({
-                    onClick: () => {
-                      if (record.kind === 'parent') {
-                        handleOpenParent();
-                        return;
+                  onDragOver={(event) => {
+                    if (!moveDragging || !selectedBucket) {
+                      return;
+                    }
+                    event.preventDefault();
+                    setDropTargetKey(`root:${selectedBucket}:${currentPrefix}`);
+                  }}
+                  onDrop={(event) => void handleRootMoveDrop(event)}
+                >
+                  <Table
+                    columns={browserColumns}
+                    dataSource={browserEntries}
+                    loading={objectsLoading}
+                    locale={{
+                      emptyText: selectedBucket ? (
+                        <Empty description="No files or folders in this path yet" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                      ) : (
+                        <Empty description="Create a bucket first" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                      ),
+                    }}
+                    onRow={(record) => ({
+                      draggable: record.kind === 'object' || record.kind === 'folder',
+                      onClick: () => {
+                        if (record.kind === 'parent') {
+                          return;
+                        }
+                        setRenameState(null);
+                        if (record.kind === 'folder') {
+                          setSelectedKey(null);
+                          setSelectedFolderPrefix(record.prefix);
+                          return;
+                        }
+                        setSelectedFolderPrefix(null);
+                        setSelectedKey(record.object.key);
+                        syncSearchParams(selectedBucket, currentPrefix, record.object.key, searchValue);
+                      },
+                      onDoubleClick: () => {
+                        if (record.kind === 'parent') {
+                          handleOpenParent();
+                          return;
+                        }
+                        if (record.kind === 'folder') {
+                          handleOpenFolder(record.prefix);
+                        }
+                      },
+                      onDragStart: (event) => handleRowDragStart(record, event),
+                      onDragEnd: handleRowDragEnd,
+                      onDragOver: (event) => {
+                        if (!moveDragging || !selectedBucket || (record.kind !== 'folder' && record.kind !== 'parent')) {
+                          return;
+                        }
+                        event.preventDefault();
+                        setDropTargetKey(record.key);
+                      },
+                      onDrop: (event) => {
+                        if (!moveDragging || !selectedBucket || (record.kind !== 'folder' && record.kind !== 'parent')) {
+                          return;
+                        }
+                        event.preventDefault();
+                        event.stopPropagation();
+                        void handleDropMove(selectedBucket, record.kind === 'folder' ? record.prefix : record.prefix);
+                      },
+                    })}
+                    pagination={false}
+                    rowClassName={(record) => {
+                      const classes = [];
+                      if (record.kind === 'object' && record.object.key === selectedObject?.key) {
+                        classes.push('table-row-selected');
                       }
-                      if (record.kind === 'folder') {
-                        handleOpenFolder(record.prefix);
-                        return;
+                      if (record.kind === 'folder' && record.prefix === selectedFolderPrefix) {
+                        classes.push('table-row-selected');
                       }
-                      setSelectedKey(record.object.key);
-                      syncSearchParams(selectedBucket, currentPrefix, record.object.key, searchValue);
-                    },
-                  })}
-                  pagination={false}
-                  rowClassName={(record) => (record.kind === 'object' && record.object.key === selectedObject?.key ? 'table-row-selected' : '')}
-                  rowKey="key"
-                  scroll={{ x: 880 }}
-                  size="small"
-                />
+                      if (record.key === dropTargetKey) {
+                        classes.push('browser-row-drop-target');
+                      }
+                      return classes.join(' ');
+                    }}
+                    rowKey="key"
+                    scroll={{ x: 880 }}
+                    size="small"
+                  />
+                </div>
               </Section>
 
               <Section title="Inspector">
-                {inspectorObject ? (
+                {inspectorObject || selectedFolder ? (
                   <Spin spinning={objectDetailLoading}>
                     <div className="inspector-stack">
-                      <Descriptions
-                        column={1}
-                        items={nodeSummaryToItems([
-                          { label: 'Key', value: inspectorObject.key },
-                          { label: 'Content-Type', value: inspectorObject.content_type || 'application/octet-stream' },
-                          { label: 'Content-Disposition', value: inspectorObject.content_disposition || 'Not set' },
-                          { label: 'Size', value: formatBytes(inspectorObject.size) },
-                          { label: 'Cache-Control', value: inspectorObject.cache_control || 'private' },
-                          { label: 'ETag', value: inspectorObject.etag || 'Not set' },
-                          { label: 'User metadata', value: String(Object.keys(inspectorObject.user_metadata ?? {}).length) },
-                          { label: 'Updated', value: formatDateTime(inspectorObject.last_modified) },
-                        ])}
-                        size="small"
-                      />
+                      <div className="inspector-edit-row">
+                        <span className="inspector-field-label">Key</span>
+                        {renameState ? (
+                          <div className="inspector-edit-controls">
+                            <Input
+                              autoFocus
+                              onChange={(event) => setRenameState({ ...renameState, value: event.target.value })}
+                              onPressEnter={() => void handleCommitRename()}
+                              size="small"
+                              value={renameState.value}
+                            />
+                            <Button icon={<CheckOutlined />} loading={renaming} onClick={() => void handleCommitRename()} size="small" type="primary" />
+                            <Button icon={<CloseOutlined />} onClick={() => setRenameState(null)} size="small" />
+                          </div>
+                        ) : (
+                          <div className="inspector-edit-display">
+                            <span className="inspector-edit-value">{inspectorObject ? inspectorObject.key : selectedFolder?.prefix}</span>
+                            <Tooltip title="Rename">
+                              <button className="inspector-icon-button" onClick={handleStartRename} type="button">
+                                <EditOutlined />
+                              </button>
+                            </Tooltip>
+                          </div>
+                        )}
+                      </div>
+
+                      {inspectorObject ? (
+                        <Descriptions
+                          column={1}
+                          items={nodeSummaryToItems([
+                            { label: 'Content-Type', value: inspectorObject.content_type || 'application/octet-stream' },
+                            { label: 'Content-Disposition', value: inspectorObject.content_disposition || 'Not set' },
+                            { label: 'Size', value: formatBytes(inspectorObject.size) },
+                            { label: 'Cache-Control', value: inspectorObject.cache_control || 'private' },
+                            { label: 'ETag', value: inspectorObject.etag || 'Not set' },
+                            { label: 'User metadata', value: String(Object.keys(inspectorObject.user_metadata ?? {}).length) },
+                            { label: 'Updated', value: formatDateTime(inspectorObject.last_modified) },
+                          ])}
+                          size="small"
+                        />
+                      ) : selectedFolder ? (
+                        <Descriptions
+                          column={1}
+                          items={nodeSummaryToItems([
+                            { label: 'Bucket', value: selectedFolder.bucket },
+                            { label: 'Prefix', value: selectedFolder.prefix },
+                            { label: 'Items', value: String(selectedFolderObjectCount) },
+                            { label: 'Updated', value: selectedFolder.lastModified ? formatDateTime(selectedFolder.lastModified) : 'N/A' },
+                          ])}
+                          size="small"
+                        />
+                      ) : null}
 
                       <div className="inspector-panel">
                         <div className="inspector-panel-head">
                           <div className="row-title">Actions</div>
-                          <div className="row-note">Keep object tools inside the inspector, including share-link creation.</div>
+                          <div className="row-note">
+                            {inspectorObject
+                              ? 'Keep object tools inside the inspector, including share-link creation.'
+                              : 'Single-click selects a folder, double-click enters it, and drag moves it.'}
+                          </div>
                         </div>
 
-                        <div className="inspector-actions-row">
-                          <div className="inspector-share-controls">
-                            <span className="inspector-field-label">Share TTL seconds</span>
-                            <InputNumber
-                              min={60}
-                              onChange={(value) => setShareLinkTTL(typeof value === 'number' ? value : 86400)}
-                              size="small"
-                              step={3600}
-                              style={{ width: 150 }}
-                              value={shareLinkTTL}
-                            />
-                            <Button loading={creatingShareLink} onClick={() => void handleCreateShareLink()} size="small" type="primary">
-                              Create share link
-                            </Button>
-                          </div>
+                        {inspectorObject ? (
+                          <>
+                            <div className="inspector-actions-row">
+                              <div className="inspector-share-controls">
+                                <span className="inspector-field-label">Share TTL seconds</span>
+                                <InputNumber
+                                  min={60}
+                                  onChange={(value) => setShareLinkTTL(typeof value === 'number' ? value : 86400)}
+                                  size="small"
+                                  step={3600}
+                                  style={{ width: 150 }}
+                                  value={shareLinkTTL}
+                                />
+                                <Button loading={creatingShareLink} onClick={() => void handleCreateShareLink()} size="small" type="primary">
+                                  Create share link
+                                </Button>
+                              </div>
 
-                          <Space size={8} wrap>
-                            <Button loading={presigningKey === selectedObject?.key} onClick={() => void handleCopyDownloadUrl()} size="small">
-                              Copy download URL
-                            </Button>
-                            <Button loading={objectDetailLoading} onClick={() => void refreshObjectDetail()} size="small">
-                              Refresh
-                            </Button>
-                            <Popconfirm
-                              cancelText="Cancel"
-                              okButtonProps={{ danger: true, loading: deletingKey === selectedObject?.key }}
-                              okText="Delete"
-                              onConfirm={() => void handleDeleteObject()}
-                              title={`Delete ${selectedObject?.key}?`}
-                            >
-                              <Button danger loading={deletingKey === selectedObject?.key} size="small">
-                                Delete
-                              </Button>
-                            </Popconfirm>
-                          </Space>
-                        </div>
-
-                        <div className="inspector-share-result">
-                          <div className="inspector-panel-head">
-                            <div className="row-title">Share links for this object</div>
-                            <div className="row-note">Recent links stay here so you can reopen, copy, or revoke them without leaving the inspector.</div>
-                          </div>
-
-                          {shareLinksLoading ? (
-                            <Spin size="small" />
-                          ) : objectShareLinks.length > 0 ? (
-                            <div className="inspector-share-list">
-                              {objectShareLinks.map((link) => (
-                                <div className="inspector-share-item" key={link.id}>
-                                  <div className="inspector-share-item-meta">
-                                    <div className="inspector-share-item-top">
-                                      <div className="row-title row-title-small">{link.filename || link.key}</div>
-                                      {renderShareLinkStatus(link.status)}
-                                    </div>
-                                    <div className="row-note">{link.id}</div>
-                                    <div className="row-note">Expires {formatDateTime(link.expires_at)} · {formatRelativeTime(link.expires_at)}</div>
-                                  </div>
-
-                                  <Space size={8} wrap>
-                                    <Button onClick={() => void handleCopyShareLink(link.url, 'share URL')} size="small">
-                                      Copy
-                                    </Button>
-                                    <Button href={link.url} rel="noreferrer" size="small" target="_blank">
-                                      Open
-                                    </Button>
-                                    <Button href={link.download_url} rel="noreferrer" size="small" target="_blank">
-                                      Download
-                                    </Button>
-                                    {link.status === 'active' ? (
-                                      <Popconfirm okText="Revoke" onConfirm={() => void handleRevokeShareLink(link)} title="Revoke this share link?">
-                                        <Button danger loading={revokingShareLinkId === link.id} size="small">
-                                          Revoke
-                                        </Button>
-                                      </Popconfirm>
-                                    ) : link.status === 'revoked' || link.status === 'expired' ? (
-                                      <Popconfirm okText="Remove" onConfirm={() => void handleRemoveShareLink(link)} title={removeShareLinkTitle(link)}>
-                                        <Button danger loading={removingShareLinkId === link.id} size="small">
-                                          Remove
-                                        </Button>
-                                      </Popconfirm>
-                                    ) : null}
-                                  </Space>
-                                </div>
-                              ))}
+                              <Space size={8} wrap>
+                                <Button loading={presigningKey === selectedObject?.key} onClick={() => void handleCopyDownloadUrl()} size="small">
+                                  Copy download URL
+                                </Button>
+                                <Button loading={objectDetailLoading} onClick={() => void refreshObjectDetail()} size="small">
+                                  Refresh
+                                </Button>
+                                <Popconfirm
+                                  cancelText="Cancel"
+                                  okButtonProps={{ danger: true, loading: deletingKey === selectedObject?.key }}
+                                  okText="Delete"
+                                  onConfirm={() => void handleDeleteObject()}
+                                  title={`Delete ${selectedObject?.key}?`}
+                                >
+                                  <Button danger loading={deletingKey === selectedObject?.key} size="small">
+                                    Delete
+                                  </Button>
+                                </Popconfirm>
+                              </Space>
                             </div>
-                          ) : (
-                            <Empty description="No share links for this object yet" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-                          )}
-                        </div>
+
+                            <div className="inspector-share-result">
+                              <div className="inspector-panel-head">
+                                <div className="row-title">Share links for this object</div>
+                                <div className="row-note">Recent links stay here so you can reopen, copy, or revoke them without leaving the inspector.</div>
+                              </div>
+
+                              {shareLinksLoading ? (
+                                <Spin size="small" />
+                              ) : objectShareLinks.length > 0 ? (
+                                <div className="inspector-share-list">
+                                  {objectShareLinks.map((link) => (
+                                    <div className="inspector-share-item" key={link.id}>
+                                      <div className="inspector-share-item-meta">
+                                        <div className="inspector-share-item-top">
+                                          <div className="row-title row-title-small">{link.filename || link.key}</div>
+                                          {renderShareLinkStatus(link.status)}
+                                        </div>
+                                        <div className="row-note">{link.id}</div>
+                                        <div className="row-note">Expires {formatDateTime(link.expires_at)} · {formatRelativeTime(link.expires_at)}</div>
+                                      </div>
+
+                                      <Space size={8} wrap>
+                                        <Button onClick={() => void handleCopyShareLink(link.url, 'share URL')} size="small">
+                                          Copy
+                                        </Button>
+                                        <Button href={link.url} rel="noreferrer" size="small" target="_blank">
+                                          Open
+                                        </Button>
+                                        <Button href={link.download_url} rel="noreferrer" size="small" target="_blank">
+                                          Download
+                                        </Button>
+                                        {link.status === 'active' ? (
+                                          <Popconfirm okText="Revoke" onConfirm={() => void handleRevokeShareLink(link)} title="Revoke this share link?">
+                                            <Button danger loading={revokingShareLinkId === link.id} size="small">
+                                              Revoke
+                                            </Button>
+                                          </Popconfirm>
+                                        ) : link.status === 'revoked' || link.status === 'expired' ? (
+                                          <Popconfirm okText="Remove" onConfirm={() => void handleRemoveShareLink(link)} title={removeShareLinkTitle(link)}>
+                                            <Button danger loading={removingShareLinkId === link.id} size="small">
+                                              Remove
+                                            </Button>
+                                          </Popconfirm>
+                                        ) : null}
+                                      </Space>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <Empty description="No share links for this object yet" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                              )}
+                            </div>
+                          </>
+                        ) : (
+                          <div className="inspector-folder-note">Drag this folder onto another folder, `..`, or another bucket to move it.</div>
+                        )}
                       </div>
                     </div>
                   </Spin>
                 ) : objectsLoading ? (
                   <Spin />
                 ) : (
-                  <Empty description="Select a file to inspect" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                  <Empty description="Select a file or folder to inspect" image={Empty.PRESENTED_IMAGE_SIMPLE} />
                 )}
               </Section>
             </div>
