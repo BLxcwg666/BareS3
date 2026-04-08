@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { listObjects, type ObjectInfo } from '../api';
 import { useAuth } from '../auth';
 
-export function useBucketObjects(bucket: string | null) {
+export function useBucketObjects(bucket: string | null, prefix?: string | null) {
   const auth = useAuth();
   const [items, setItems] = useState<ObjectInfo[]>([]);
   const [loading, setLoading] = useState(false);
@@ -16,11 +16,11 @@ export function useBucketObjects(bucket: string | null) {
 
     setLoading(true);
     try {
-      setItems(await listObjects(bucket));
+      setItems(await listObjects(bucket, prefix ?? undefined));
     } finally {
       setLoading(false);
     }
-  }, [auth.status, bucket]);
+  }, [auth.status, bucket, prefix]);
 
   useEffect(() => {
     void refresh();

@@ -4,6 +4,13 @@ import { useLocation } from 'react-router-dom';
 export function RouteProgressBar() {
   const location = useLocation();
   const [state, setState] = useState<'idle' | 'loading' | 'done'>('idle');
+  const progressKey =
+    location.pathname === '/browser'
+      ? (() => {
+          const params = new URLSearchParams(location.search);
+          return `${location.pathname}?bucket=${params.get('bucket') ?? ''}&path=${params.get('path') ?? ''}`;
+        })()
+      : location.pathname;
 
   useEffect(() => {
     setState('loading');
@@ -20,7 +27,7 @@ export function RouteProgressBar() {
       window.clearTimeout(complete);
       window.clearTimeout(reset);
     };
-  }, [location.pathname]);
+  }, [progressKey]);
 
   return <div aria-hidden className={`route-progress route-progress-${state}`} />;
 }
