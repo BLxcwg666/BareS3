@@ -3,14 +3,8 @@ import type { ReactNode } from 'react';
 import { SearchOutlined } from '@ant-design/icons';
 import { AutoComplete, Input, Spin } from 'antd';
 import { useNavigate } from 'react-router-dom';
-import { listBuckets, listObjects } from '../api';
+import { searchStorage, type SearchHit } from '../api';
 import { useAuth } from '../auth';
-
-type SearchHit = {
-  kind: 'bucket' | 'object';
-  bucket: string;
-  key?: string;
-};
 
 type SearchOption = {
   value: string;
@@ -55,43 +49,11 @@ export function GlobalSearch() {
       void (async () => {
         setSearching(true);
         try {
-          const buckets = await listBuckets();
-          const nextOptions: SearchOption[] = [];
-
-          for (const bucket of buckets) {
-            if (bucket.name.toLowerCase().includes(keyword)) {
-              const payload = JSON.stringify({ kind: 'bucket', bucket: bucket.name } satisfies SearchHit);
-              nextOptions.push({
-                value: payload,
-                label: buildOptionLabel(bucket.name, 'Bucket'),
-              });
-            }
-          }
-
-          if (nextOptions.length < 12) {
-            for (const bucket of buckets) {
-              const objects = await listObjects(bucket.name, undefined, 200);
-              for (const object of objects) {
-                if (!object.key.toLowerCase().includes(keyword)) {
-                  continue;
-                }
-
-                const payload = JSON.stringify({ kind: 'object', bucket: bucket.name, key: object.key } satisfies SearchHit);
-                nextOptions.push({
-                  value: payload,
-                  label: buildOptionLabel(object.key, bucket.name),
-                });
-
-                if (nextOptions.length >= 12) {
-                  break;
-                }
-              }
-
-              if (nextOptions.length >= 12) {
-                break;
-              }
-            }
-          }
+          const hits = await searchStorage(keyword, 12);
+          const nextOptions: SearchOption[] = hits.map((hit) => ({
+            value: JSON.stringify(hit satisfies SearchHit),
+            label: buildOptionLabel(hit.kind === 'bucket' ? hit.bucket : hit.key ?? hit.bucket, hit.kind === 'bucket' ? 'Bucket' : hit.bucket),
+          }));
 
           if (requestIdRef.current === requestId) {
             setOptions(nextOptions);

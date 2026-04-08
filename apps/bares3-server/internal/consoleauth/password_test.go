@@ -1,6 +1,7 @@
 package consoleauth
 
 import (
+	"crypto/tls"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -46,7 +47,7 @@ func TestSessionRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Authenticate failed: %v", err)
 	}
-	cookie, err := manager.IssueCookie(session)
+	cookie, err := manager.IssueCookie(session, false)
 	if err != nil {
 		t.Fatalf("IssueCookie failed: %v", err)
 	}
@@ -59,5 +60,26 @@ func TestSessionRoundTrip(t *testing.T) {
 	}
 	if loaded.Username != "admin" {
 		t.Fatalf("unexpected session username: %s", loaded.Username)
+	}
+}
+
+func TestSecureCookiesForRequest(t *testing.T) {
+	t.Parallel()
+
+	httpsRequest := httptest.NewRequest("GET", "https://bares3.test/", nil)
+	httpsRequest.TLS = &tls.ConnectionState{}
+	if !SecureCookiesForRequest(httpsRequest) {
+		t.Fatalf("expected TLS request to require secure cookies")
+	}
+
+	forwardedRequest := httptest.NewRequest("GET", "http://bares3.test/", nil)
+	forwardedRequest.Header.Set("X-Forwarded-Proto", "https")
+	if !SecureCookiesForRequest(forwardedRequest) {
+		t.Fatalf("expected forwarded HTTPS request to require secure cookies")
+	}
+
+	insecureRequest := httptest.NewRequest("GET", "http://bares3.test/", nil)
+	if SecureCookiesForRequest(insecureRequest) {
+		t.Fatalf("expected plain HTTP request to keep secure cookies disabled")
 	}
 }

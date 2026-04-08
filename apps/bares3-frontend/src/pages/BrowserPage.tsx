@@ -264,7 +264,11 @@ export function BrowserPage() {
 
   const currentPrefix = selectedBucket === requestedBucket ? requestedPath : '';
   const pathSignature = `${selectedBucket ?? ''}:${currentPrefix}`;
-  const { items: objects, loading: objectsLoading, refresh } = useBucketObjects(selectedBucket, currentPrefix);
+  const { items: objects, loading: objectsLoading, loadingMore, hasMore, refresh, loadMore } = useBucketObjects(
+    selectedBucket,
+    currentPrefix,
+    searchValue,
+  );
 
   useEffect(() => {
     setSelectedFolderPrefix(null);
@@ -272,18 +276,7 @@ export function BrowserPage() {
     setMetadataEditState(null);
   }, [pathSignature]);
 
-  const filteredObjects = useMemo(() => {
-    const keyword = searchValue.trim().toLowerCase();
-    if (!keyword) {
-      return objects;
-    }
-
-    return objects.filter((item) =>
-      [item.key, item.content_type, item.cache_control ?? '', item.etag ?? ''].some((field) => field.toLowerCase().includes(keyword)),
-    );
-  }, [objects, searchValue]);
-
-  const browserEntries = useMemo(() => buildBrowserEntries(filteredObjects, selectedBucket, currentPrefix), [currentPrefix, filteredObjects, selectedBucket]);
+  const browserEntries = useMemo(() => buildBrowserEntries(objects, selectedBucket, currentPrefix), [currentPrefix, objects, selectedBucket]);
 
   useEffect(() => {
     const visibleKeys = new Set(browserEntries.filter((entry) => entry.kind === 'object').map((entry) => entry.object.key));
@@ -1369,6 +1362,16 @@ export function BrowserPage() {
                     scroll={{ x: 880 }}
                     size="small"
                   />
+
+                  {selectedBucket ? (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 12, flexWrap: 'wrap' }}>
+                      {hasMore ? (
+                        <Button loading={loadingMore} onClick={() => void loadMore()} size="small">
+                          Load more
+                        </Button>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
               </Section>
 

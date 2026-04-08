@@ -257,6 +257,33 @@ func validateQuotaBytes(value int64) error {
 }
 
 func (s *Store) ListObjects(ctx context.Context, bucket string, options ListObjectsOptions) ([]ObjectInfo, error) {
+	page, err := s.ListObjectsPage(ctx, bucket, options)
+	if err != nil {
+		return nil, err
+	}
+	return page.Items, nil
+}
+
+func (s *Store) ListObjectsPage(ctx context.Context, bucket string, options ListObjectsOptions) (ListObjectsPage, error) {
+	objects, err := s.collectObjects(ctx, bucket, options.Prefix)
+	if err != nil {
+		return ListObjectsPage{}, err
+	}
+
+	objects = filterObjectsByQuery(objects, options.Query)
+	objects = applyObjectsAfterCursor(objects, options.After)
+
+	page := ListObjectsPage{Items: objects}
+	if options.Limit > 0 && len(objects) > options.Limit {
+		page.Items = objects[:options.Limit]
+		page.HasMore = true
+		page.NextCursor = page.Items[len(page.Items)-1].Key
+	}
+
+	return page, nil
+}
+
+func (s *Store) collectObjects(ctx context.Context, bucket, prefix string) ([]ObjectInfo, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -264,7 +291,7 @@ func (s *Store) ListObjects(ctx context.Context, bucket string, options ListObje
 		return nil, err
 	}
 
-	prefix := strings.TrimSpace(options.Prefix)
+	prefix = strings.TrimSpace(prefix)
 	objectsByKey := make(map[string]ObjectInfo)
 
 	metadataRoot := s.bucketMetaDir(bucket)
@@ -366,11 +393,57 @@ func (s *Store) ListObjects(ctx context.Context, bucket string, options ListObje
 		return objects[i].Key < objects[j].Key
 	})
 
-	if options.Limit > 0 && len(objects) > options.Limit {
-		objects = objects[:options.Limit]
+	return objects, nil
+}
+
+func filterObjectsByQuery(objects []ObjectInfo, query string) []ObjectInfo {
+	trimmed := strings.ToLower(strings.TrimSpace(query))
+	if trimmed == "" {
+		return objects
 	}
 
-	return objects, nil
+	filtered := make([]ObjectInfo, 0, len(objects))
+	for _, object := range objects {
+		if objectMatchesQuery(object, trimmed) {
+			filtered = append(filtered, object)
+		}
+	}
+	return filtered
+}
+
+func objectMatchesQuery(object ObjectInfo, query string) bool {
+	if strings.Contains(strings.ToLower(object.Key), query) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(object.ContentType), query) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(object.CacheControl), query) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(object.ETag), query) {
+		return true
+	}
+	for key, value := range object.UserMetadata {
+		if strings.Contains(strings.ToLower(key), query) || strings.Contains(strings.ToLower(value), query) {
+			return true
+		}
+	}
+	return false
+}
+
+func applyObjectsAfterCursor(objects []ObjectInfo, after string) []ObjectInfo {
+	trimmed := strings.TrimSpace(after)
+	if trimmed == "" || len(objects) == 0 {
+		return objects
+	}
+	start := sort.Search(len(objects), func(index int) bool {
+		return objects[index].Key > trimmed
+	})
+	if start >= len(objects) {
+		return []ObjectInfo{}
+	}
+	return objects[start:]
 }
 
 func (s *Store) PutObject(ctx context.Context, input PutObjectInput) (ObjectInfo, error) {

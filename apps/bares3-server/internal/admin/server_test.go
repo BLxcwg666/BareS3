@@ -3,6 +3,7 @@ package admin
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -135,6 +136,197 @@ func TestLoginAndProtectedRuntime(t *testing.T) {
 	}
 	if auditPayload.Items[0].Actor != "admin" {
 		t.Fatalf("unexpected latest audit actor: %s", auditPayload.Items[0].Actor)
+	}
+}
+
+func TestLoginSetsSecureCookieForHTTPSRequests(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	hash, err := consoleauth.HashPassword("secret-password")
+	if err != nil {
+		t.Fatalf("HashPassword failed: %v", err)
+	}
+	cfg.Auth.Console.PasswordHash = hash
+	cfg.Auth.Console.SessionSecret = "test-session-secret"
+
+	handler := NewHandler(cfg, storage.New(cfg, zap.NewNop()), zap.NewNop())
+
+	loginBody, _ := json.Marshal(map[string]string{"username": "admin", "password": "secret-password"})
+	loginRequest := httptest.NewRequest(http.MethodPost, "https://bares3.test/api/v1/auth/login", bytes.NewReader(loginBody))
+	loginRequest.TLS = &tls.ConnectionState{}
+	loginRequest.Header.Set("Content-Type", "application/json")
+	loginRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(loginRecorder, loginRequest)
+	if loginRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected login status: %d body=%s", loginRecorder.Code, loginRecorder.Body.String())
+	}
+	if len(loginRecorder.Result().Cookies()) == 0 {
+		t.Fatalf("expected session cookie after login")
+	}
+	if !loginRecorder.Result().Cookies()[0].Secure {
+		t.Fatalf("expected HTTPS login to set a secure cookie")
+	}
+}
+
+func TestObjectListingSupportsPaginationAndSearch(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	hash, err := consoleauth.HashPassword("secret-password")
+	if err != nil {
+		t.Fatalf("HashPassword failed: %v", err)
+	}
+	cfg.Auth.Console.PasswordHash = hash
+	cfg.Auth.Console.SessionSecret = "test-session-secret"
+
+	store := storage.New(cfg, zap.NewNop())
+	ctx := context.Background()
+	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	for _, fixture := range []struct {
+		key         string
+		contentType string
+	}{
+		{key: "docs/alpha.txt", contentType: "text/plain"},
+		{key: "docs/beta.txt", contentType: "text/plain"},
+		{key: "images/cover.png", contentType: "image/png"},
+	} {
+		if _, err := store.PutObject(ctx, storage.PutObjectInput{
+			Bucket:      "gallery",
+			Key:         fixture.key,
+			Body:        bytes.NewBufferString(fixture.key),
+			ContentType: fixture.contentType,
+		}); err != nil {
+			t.Fatalf("PutObject(%s) failed: %v", fixture.key, err)
+		}
+	}
+
+	handler := NewHandler(cfg, store, zap.NewNop())
+	cookie := loginCookie(t, handler)
+
+	listRequest := httptest.NewRequest(http.MethodGet, "/api/v1/buckets/gallery/objects?query=text/plain&limit=1", nil)
+	listRequest.AddCookie(cookie)
+	listRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(listRecorder, listRequest)
+	if listRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected list objects status: %d body=%s", listRecorder.Code, listRecorder.Body.String())
+	}
+	listPayload := struct {
+		Items []struct {
+			Key string `json:"key"`
+		} `json:"items"`
+		HasMore    bool   `json:"has_more"`
+		NextCursor string `json:"next_cursor"`
+	}{}
+	if err := json.Unmarshal(listRecorder.Body.Bytes(), &listPayload); err != nil {
+		t.Fatalf("unmarshal list objects payload: %v", err)
+	}
+	if len(listPayload.Items) != 1 || listPayload.Items[0].Key != "docs/alpha.txt" {
+		t.Fatalf("unexpected first list page: %+v", listPayload)
+	}
+	if !listPayload.HasMore || listPayload.NextCursor != "docs/alpha.txt" {
+		t.Fatalf("expected next cursor for paginated results, got %+v", listPayload)
+	}
+
+	nextRequest := httptest.NewRequest(http.MethodGet, "/api/v1/buckets/gallery/objects?query=text/plain&limit=1&cursor=docs%2Falpha.txt", nil)
+	nextRequest.AddCookie(cookie)
+	nextRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(nextRecorder, nextRequest)
+	if nextRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected second list status: %d body=%s", nextRecorder.Code, nextRecorder.Body.String())
+	}
+	nextPayload := struct {
+		Items []struct {
+			Key string `json:"key"`
+		} `json:"items"`
+		HasMore bool `json:"has_more"`
+	}{}
+	if err := json.Unmarshal(nextRecorder.Body.Bytes(), &nextPayload); err != nil {
+		t.Fatalf("unmarshal second list payload: %v", err)
+	}
+	if len(nextPayload.Items) != 1 || nextPayload.Items[0].Key != "docs/beta.txt" || nextPayload.HasMore {
+		t.Fatalf("unexpected second list page: %+v", nextPayload)
+	}
+}
+
+func TestGlobalSearchEndpointReturnsBucketAndObjectHits(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	hash, err := consoleauth.HashPassword("secret-password")
+	if err != nil {
+		t.Fatalf("HashPassword failed: %v", err)
+	}
+	cfg.Auth.Console.PasswordHash = hash
+	cfg.Auth.Console.SessionSecret = "test-session-secret"
+
+	store := storage.New(cfg, zap.NewNop())
+	ctx := context.Background()
+	for _, bucket := range []string{"gallery", "readables"} {
+		if _, err := store.CreateBucket(ctx, bucket, 0); err != nil {
+			t.Fatalf("CreateBucket(%s) failed: %v", bucket, err)
+		}
+	}
+	if _, err := store.PutObject(ctx, storage.PutObjectInput{
+		Bucket: "gallery",
+		Key:    "notes/readme.txt",
+		Body:   bytes.NewBufferString("readme"),
+	}); err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	handler := NewHandler(cfg, store, zap.NewNop())
+	cookie := loginCookie(t, handler)
+
+	searchRequest := httptest.NewRequest(http.MethodGet, "/api/v1/search?query=read&limit=5", nil)
+	searchRequest.AddCookie(cookie)
+	searchRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(searchRecorder, searchRequest)
+	if searchRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected search status: %d body=%s", searchRecorder.Code, searchRecorder.Body.String())
+	}
+	searchPayload := struct {
+		Items []struct {
+			Kind   string `json:"kind"`
+			Bucket string `json:"bucket"`
+			Key    string `json:"key"`
+		} `json:"items"`
+	}{}
+	if err := json.Unmarshal(searchRecorder.Body.Bytes(), &searchPayload); err != nil {
+		t.Fatalf("unmarshal search payload: %v", err)
+	}
+	foundBucket := false
+	foundObject := false
+	for _, item := range searchPayload.Items {
+		if item.Kind == "bucket" && item.Bucket == "readables" {
+			foundBucket = true
+		}
+		if item.Kind == "object" && item.Bucket == "gallery" && item.Key == "notes/readme.txt" {
+			foundObject = true
+		}
+	}
+	if !foundBucket || !foundObject {
+		t.Fatalf("expected bucket and object search hits, got %+v", searchPayload.Items)
 	}
 }
 

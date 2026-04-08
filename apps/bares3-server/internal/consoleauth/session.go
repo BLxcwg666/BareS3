@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/textproto"
 	"strings"
 	"time"
 )
@@ -86,7 +87,7 @@ func (m *Manager) Authenticate(username, password string) (Session, error) {
 	return Session{Username: m.username, ExpiresAt: expiresAt}, nil
 }
 
-func (m *Manager) IssueCookie(session Session) (*http.Cookie, error) {
+func (m *Manager) IssueCookie(session Session, secure bool) (*http.Cookie, error) {
 	payload := sessionPayload{Username: session.Username, ExpiresUnix: session.ExpiresAt.UTC().Unix(), PasswordMarker: m.passwordMarker}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -102,11 +103,11 @@ func (m *Manager) IssueCookie(session Session) (*http.Cookie, error) {
 		SameSite: http.SameSiteLaxMode,
 		Expires:  session.ExpiresAt.UTC(),
 		MaxAge:   int(time.Until(session.ExpiresAt).Seconds()),
-		Secure:   false,
+		Secure:   secure,
 	}, nil
 }
 
-func (m *Manager) ClearCookie() *http.Cookie {
+func (m *Manager) ClearCookie(secure bool) *http.Cookie {
 	return &http.Cookie{
 		Name:     CookieName,
 		Value:    "",
@@ -115,7 +116,7 @@ func (m *Manager) ClearCookie() *http.Cookie {
 		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Unix(0, 0).UTC(),
 		MaxAge:   -1,
-		Secure:   false,
+		Secure:   secure,
 	}
 }
 
@@ -154,4 +155,44 @@ func signHMAC(secret []byte, payload string) []byte {
 	h := hmac.New(sha256.New, secret)
 	_, _ = h.Write([]byte(payload))
 	return h.Sum(nil)
+}
+
+func SecureCookiesForRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if r.TLS != nil {
+		return true
+	}
+	if value := firstHeaderToken(r.Header.Get("X-Forwarded-Proto")); strings.EqualFold(value, "https") {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Ssl")), "on") {
+		return true
+	}
+	if forwardedProto := forwardedHeaderProto(r.Header.Get("Forwarded")); strings.EqualFold(forwardedProto, "https") {
+		return true
+	}
+	return false
+}
+
+func firstHeaderToken(value string) string {
+	if value == "" {
+		return ""
+	}
+	parts := strings.Split(value, ",")
+	return strings.TrimSpace(parts[0])
+}
+
+func forwardedHeaderProto(value string) string {
+	for _, entry := range strings.Split(value, ",") {
+		for _, part := range strings.Split(entry, ";") {
+			name, rawValue, ok := strings.Cut(part, "=")
+			if !ok || !strings.EqualFold(textproto.TrimString(name), "proto") {
+				continue
+			}
+			return strings.Trim(textproto.TrimString(rawValue), `"`)
+		}
+	}
+	return ""
 }

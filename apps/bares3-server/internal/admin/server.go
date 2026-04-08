@@ -107,7 +107,7 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 					return
 				}
 
-				cookie, err := manager.IssueCookie(session)
+				cookie, err := manager.IssueCookie(session, consoleauth.SecureCookiesForRequest(r))
 				if err != nil {
 					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": "failed to issue session"})
 					return
@@ -137,7 +137,7 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 						Status: "success",
 					})
 				}
-				http.SetCookie(w, manager.ClearCookie())
+				http.SetCookie(w, manager.ClearCookie(consoleauth.SecureCookiesForRequest(r)))
 				w.WriteHeader(http.StatusNoContent)
 			}
 			auth.Post("/logout", logoutHandler)
@@ -155,6 +155,78 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 
 		api.Group(func(protected chi.Router) {
 			protected.Use(requireSession(manager))
+
+			protected.Get("/search", func(w http.ResponseWriter, r *http.Request) {
+				query := strings.TrimSpace(r.URL.Query().Get("query"))
+				if query == "" {
+					httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": []searchResultItem{}})
+					return
+				}
+
+				limit := 12
+				if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+					parsed, err := strconv.Atoi(rawLimit)
+					if err != nil || parsed < 0 {
+						httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+							"status":  "error",
+							"message": "limit must be a non-negative integer",
+						})
+						return
+					}
+					limit = parsed
+				}
+				if limit == 0 {
+					httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": []searchResultItem{}})
+					return
+				}
+				if limit > 50 {
+					limit = 50
+				}
+
+				buckets, err := store.ListBuckets(r.Context())
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
+
+				keyword := strings.ToLower(query)
+				results := make([]searchResultItem, 0, limit)
+				for _, bucket := range buckets {
+					if strings.Contains(strings.ToLower(bucket.Name), keyword) {
+						results = append(results, searchResultItem{Kind: "bucket", Bucket: bucket.Name})
+						if len(results) >= limit {
+							break
+						}
+					}
+				}
+
+				if len(results) < limit {
+					for _, bucket := range buckets {
+						page, err := store.ListObjectsPage(r.Context(), bucket.Name, storage.ListObjectsOptions{
+							Query: query,
+							Limit: limit - len(results),
+						})
+						if err != nil {
+							writeStorageError(w, err)
+							return
+						}
+						for _, item := range page.Items {
+							results = append(results, searchResultItem{Kind: "object", Bucket: item.Bucket, Key: item.Key})
+							if len(results) >= limit {
+								break
+							}
+						}
+						if len(results) >= limit {
+							break
+						}
+					}
+				}
+
+				httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": results})
+			})
 
 			protected.Get("/audit/events", func(w http.ResponseWriter, r *http.Request) {
 				limit := 10
@@ -405,15 +477,21 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 					limit = parsed
 				}
 
-				items, err := store.ListObjects(r.Context(), chi.URLParam(r, "bucket"), storage.ListObjectsOptions{
+				page, err := store.ListObjectsPage(r.Context(), chi.URLParam(r, "bucket"), storage.ListObjectsOptions{
 					Prefix: r.URL.Query().Get("prefix"),
+					Query:  r.URL.Query().Get("query"),
+					After:  r.URL.Query().Get("cursor"),
 					Limit:  limit,
 				})
 				if err != nil {
 					writeStorageError(w, err)
 					return
 				}
-				httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
+				httpx.WriteJSON(w, http.StatusOK, map[string]any{
+					"items":       page.Items,
+					"has_more":    page.HasMore,
+					"next_cursor": page.NextCursor,
+				})
 			})
 
 			protected.Post("/buckets/{bucket}/objects", func(w http.ResponseWriter, r *http.Request) {
@@ -966,6 +1044,12 @@ type shareLinkResponse struct {
 	Status      string     `json:"status"`
 	URL         string     `json:"url"`
 	DownloadURL string     `json:"download_url"`
+}
+
+type searchResultItem struct {
+	Kind   string `json:"kind"`
+	Bucket string `json:"bucket"`
+	Key    string `json:"key,omitempty"`
 }
 
 func makeShareLinkResponse(baseURL string, link sharelink.Link, now time.Time) shareLinkResponse {

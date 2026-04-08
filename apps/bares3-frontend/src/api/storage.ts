@@ -71,6 +71,25 @@ export type ObjectInfo = {
   last_modified: string;
 };
 
+export type ListObjectsOptions = {
+  prefix?: string;
+  query?: string;
+  limit?: number;
+  cursor?: string;
+};
+
+export type ListObjectsResult = {
+  items: ObjectInfo[];
+  has_more: boolean;
+  next_cursor?: string;
+};
+
+export type SearchHit = {
+  kind: 'bucket' | 'object';
+  bucket: string;
+  key?: string;
+};
+
 export type PresignResult = {
   url: string;
   expires_at: string;
@@ -146,19 +165,38 @@ export function updateStorageLimit(maxBytes: number) {
   });
 }
 
-export async function listObjects(bucket: string, prefix?: string, limit?: number) {
+export async function listObjects(bucket: string, options: ListObjectsOptions = {}) {
   const query = new URLSearchParams();
-  if (prefix?.trim()) {
-    query.set('prefix', prefix.trim());
+  if (options.prefix?.trim()) {
+    query.set('prefix', options.prefix.trim());
   }
-  if (typeof limit === 'number' && limit > 0) {
-    query.set('limit', String(limit));
+  if (options.query?.trim()) {
+    query.set('query', options.query.trim());
+  }
+  if (options.cursor?.trim()) {
+    query.set('cursor', options.cursor.trim());
+  }
+  if (typeof options.limit === 'number' && options.limit > 0) {
+    query.set('limit', String(options.limit));
   }
 
   const suffix = query.toString();
-  const payload = await request<{ items: ObjectInfo[] }>(
+  return request<ListObjectsResult>(
     `/api/v1/buckets/${encodeURIComponent(bucket)}/objects${suffix ? `?${suffix}` : ''}`,
   );
+}
+
+export async function searchStorage(query: string, limit = 12) {
+  const params = new URLSearchParams();
+  if (query.trim()) {
+    params.set('query', query.trim());
+  }
+  if (limit > 0) {
+    params.set('limit', String(limit));
+  }
+
+  const suffix = params.toString();
+  const payload = await request<{ items: SearchHit[] }>(`/api/v1/search${suffix ? `?${suffix}` : ''}`);
   return payload.items;
 }
 

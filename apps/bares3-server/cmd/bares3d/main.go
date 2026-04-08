@@ -16,9 +16,13 @@ import (
 	"bares3-server/internal/consoleauth"
 	"bares3-server/internal/logx"
 	"go.uber.org/zap"
+	"golang.org/x/term"
 )
 
 var stdinReader = bufio.NewReader(os.Stdin)
+var stdinFD = func() int { return int(os.Stdin.Fd()) }
+var stdinIsTerminal = func(fd int) bool { return term.IsTerminal(fd) }
+var readPassword = func(fd int) ([]byte, error) { return term.ReadPassword(fd) }
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "auth" {
@@ -175,6 +179,15 @@ func promptPasswordTwice(label string) (string, error) {
 
 func promptPassword(prompt string) (string, error) {
 	fmt.Fprint(os.Stderr, prompt)
+	fd := stdinFD()
+	if stdinIsTerminal(fd) {
+		password, err := readPassword(fd)
+		fmt.Fprintln(os.Stderr)
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(password)), nil
+	}
 	password, err := stdinReader.ReadString('\n')
 	if err != nil {
 		return "", err

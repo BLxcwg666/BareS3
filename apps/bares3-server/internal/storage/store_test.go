@@ -239,6 +239,63 @@ func TestListObjectsSupportsPrefixAndLimit(t *testing.T) {
 	}
 }
 
+func TestListObjectsPageSupportsQueryAndCursor(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	fixtures := []struct {
+		key         string
+		contentType string
+	}{
+		{key: "docs/alpha.txt", contentType: "text/plain"},
+		{key: "docs/beta.txt", contentType: "text/plain"},
+		{key: "images/cover.png", contentType: "image/png"},
+	}
+	for _, fixture := range fixtures {
+		if _, err := store.PutObject(context.Background(), PutObjectInput{
+			Bucket:      "gallery",
+			Key:         fixture.key,
+			Body:        bytes.NewBufferString(fixture.key),
+			ContentType: fixture.contentType,
+		}); err != nil {
+			t.Fatalf("PutObject(%s) failed: %v", fixture.key, err)
+		}
+	}
+
+	queryPage, err := store.ListObjectsPage(context.Background(), "gallery", ListObjectsOptions{
+		Query: "text/plain",
+		Limit: 1,
+	})
+	if err != nil {
+		t.Fatalf("ListObjectsPage(query) failed: %v", err)
+	}
+	if len(queryPage.Items) != 1 || queryPage.Items[0].Key != "docs/alpha.txt" {
+		t.Fatalf("unexpected first query page: %+v", queryPage.Items)
+	}
+	if !queryPage.HasMore || queryPage.NextCursor != "docs/alpha.txt" {
+		t.Fatalf("expected next cursor for query page, got %+v", queryPage)
+	}
+
+	nextPage, err := store.ListObjectsPage(context.Background(), "gallery", ListObjectsOptions{
+		Query: "text/plain",
+		After: queryPage.NextCursor,
+		Limit: 1,
+	})
+	if err != nil {
+		t.Fatalf("ListObjectsPage(after) failed: %v", err)
+	}
+	if len(nextPage.Items) != 1 || nextPage.Items[0].Key != "docs/beta.txt" {
+		t.Fatalf("unexpected second query page: %+v", nextPage.Items)
+	}
+	if nextPage.HasMore {
+		t.Fatalf("expected second query page to be final, got %+v", nextPage)
+	}
+}
+
 func TestDeleteObjectRemovesDataAndMetadata(t *testing.T) {
 	t.Parallel()
 

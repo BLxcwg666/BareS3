@@ -74,7 +74,15 @@ type PutObjectInput struct {
 
 type ListObjectsOptions struct {
 	Prefix string
+	Query  string
+	After  string
 	Limit  int
+}
+
+type ListObjectsPage struct {
+	Items      []ObjectInfo
+	HasMore    bool
+	NextCursor string
 }
 
 type MoveObjectInput struct {
