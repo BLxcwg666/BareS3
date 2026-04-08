@@ -150,19 +150,25 @@ export async function copyText(value: string) {
 }
 
 export function buildBucketDisplayRows(buckets: BucketInfo[]): BucketDisplayRow[] {
-  return buckets.map((bucket) => ({
-    name: bucket.name,
-    purpose: bucket.quota_bytes > 0 ? `Limit ${formatBytes(bucket.quota_bytes)}` : 'Unlimited bucket quota',
-    root: bucket.path,
-    mode: bucket.quota_bytes > 0 ? 'Limited' : 'Unlimited',
-    size: formatBytes(bucket.used_bytes),
-    objects: formatCount(bucket.object_count),
-    fill: usagePercentLabel(bucket.used_bytes, bucket.quota_bytes),
-    fillPercent: usagePercentValue(bucket.used_bytes, bucket.quota_bytes),
-    policy: bucket.metadata_layout
-      ? `Metadata: ${bucket.metadata_layout} • Quota: ${quotaLabel(bucket.quota_bytes)}`
-      : `Quota: ${quotaLabel(bucket.quota_bytes)}`,
-  }));
+  return buckets.map((bucket) => {
+    const note = bucket.note?.trim() ?? '';
+
+    const policyParts = [bucket.metadata_layout ? `Metadata: ${bucket.metadata_layout}` : '', `Created: ${formatDateTime(bucket.created_at)}`].filter(Boolean);
+
+    return {
+      name: bucket.name,
+      purpose: bucket.quota_bytes > 0 ? `Limit ${formatBytes(bucket.quota_bytes)}` : 'Unlimited bucket quota',
+      tags: bucket.tags ?? [],
+      note,
+      root: bucket.path,
+      mode: bucket.quota_bytes > 0 ? 'Limited' : 'Unlimited',
+      size: formatBytes(bucket.used_bytes),
+      objects: formatCount(bucket.object_count),
+      fill: usagePercentLabel(bucket.used_bytes, bucket.quota_bytes),
+      fillPercent: usagePercentValue(bucket.used_bytes, bucket.quota_bytes),
+      policy: policyParts.join(' • '),
+    };
+  });
 }
 
 export function nodeSummaryToItems(items: Array<{ label: string; value: string }>): DescriptionsProps['items'] {

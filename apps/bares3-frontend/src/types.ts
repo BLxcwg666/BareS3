@@ -7,6 +7,8 @@ export type MetricItem = {
 export type BucketDisplayRow = {
   name: string;
   purpose: string;
+  tags: string[];
+  note: string;
   root: string;
   mode: string;
   size: string;
@@ -24,6 +26,14 @@ export type BucketCreateValues = {
   name: string;
   quotaValue?: number;
   quotaUnit: SizeUnit;
+};
+
+export type BucketEditValues = {
+  name: string;
+  quotaValue?: number;
+  quotaUnit: SizeUnit;
+  tags: string[];
+  note: string;
 };
 
 export type StorageLimitValues = {

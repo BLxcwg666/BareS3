@@ -4,6 +4,7 @@ import type { TableColumnsType } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import { deleteBucket } from '../api';
 import { BucketCreateModal } from '../components/BucketCreateModal';
+import { BucketEditDrawer } from '../components/BucketEditDrawer';
 import { ConsoleShell } from '../components/ConsoleShell';
 import { Section } from '../components/Section';
 import { useBucketsData } from '../hooks/useBucketsData';
@@ -17,7 +18,9 @@ export function BucketsPage() {
   const { items, loading, refresh } = useBucketsData();
   const displayRows = bucketDisplayRows(items);
   const [isBucketModalOpen, setIsBucketModalOpen] = useState(false);
+  const [editingBucketName, setEditingBucketName] = useState<string | null>(null);
   const [deletingBucket, setDeletingBucket] = useState<string | null>(null);
+  const editingBucket = useMemo(() => items.find((item) => item.name === editingBucketName) ?? null, [editingBucketName, items]);
 
   const handleDeleteBucket = useCallback(
     async (name: string) => {
@@ -41,9 +44,12 @@ export function BucketsPage() {
       {
         key: 'actions',
         title: 'Actions',
-        width: 170,
+        width: 220,
         render: (_value, row) => (
           <Space size={8}>
+            <Button onClick={() => setEditingBucketName(row.name)} size="small">
+              Edit
+            </Button>
             <Button
               onClick={() => navigate({ pathname: '/browser', search: `?bucket=${encodeURIComponent(row.name)}` })}
               size="small"
@@ -82,6 +88,13 @@ export function BucketsPage() {
           onCancel={() => setIsBucketModalOpen(false)}
           onCreated={() => refresh()}
           open={isBucketModalOpen}
+        />
+
+        <BucketEditDrawer
+          bucket={editingBucket}
+          onCancel={() => setEditingBucketName(null)}
+          onSaved={() => refresh()}
+          open={editingBucket !== null}
         />
 
         <Section flush title="All buckets">

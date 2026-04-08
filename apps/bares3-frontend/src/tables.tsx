@@ -1,4 +1,4 @@
-import { Progress, Typography } from 'antd';
+import { Progress, Tag, Typography } from 'antd';
 import type { TableColumnsType } from 'antd';
 import type { AuditEntry, BucketInfo, ObjectInfo } from './api';
 import { ExposureTag } from './components/ExposureTag';
@@ -93,9 +93,21 @@ export function bucketColumns(compact = false): TableColumnsType<BucketDisplayRo
       key: 'name',
       title: 'Bucket',
       render: (value: string, row) => (
-        <div>
-          <div className="row-title">{value}</div>
+        <div className="bucket-name-cell">
+          <div className="bucket-name-row">
+            <div className="row-title">{value}</div>
+            {row.tags.length > 0 ? (
+              <div className="bucket-tag-row">
+                {row.tags.map((tag) => (
+                  <Tag className="soft-tag bucket-inline-tag" key={`${row.name}-${tag}`}>
+                    {tag}
+                  </Tag>
+                ))}
+              </div>
+            ) : null}
+          </div>
           <div className="row-note">{row.purpose}</div>
+          {row.note ? <div className="row-note bucket-note-line">{row.note}</div> : null}
         </div>
       ),
     },

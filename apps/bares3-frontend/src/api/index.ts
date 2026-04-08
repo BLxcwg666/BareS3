@@ -3,6 +3,8 @@ export { getSession, login, logout, type AuthSession } from './auth';
 export {
   createBucket,
   deleteBucket,
+  listBucketUsageHistory,
+  updateBucket,
   deleteBrowserPrefix,
   deleteObject,
   getObject,
@@ -16,6 +18,7 @@ export {
   updateStorageLimit,
   uploadObject,
   type BucketInfo,
+  type BucketUsageSample,
   type ListObjectsOptions,
   type ListObjectsResult,
   type MoveEntryRequest,
@@ -24,6 +27,7 @@ export {
   type PresignResult,
   type RuntimeInfo,
   type SearchHit,
+  type UpdateBucketPayload,
   type UpdateObjectMetadataPayload,
 } from './storage';
 export { listAuditEntries, type AuditEntry } from './audit';

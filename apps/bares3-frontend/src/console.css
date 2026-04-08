@@ -652,9 +652,158 @@ a {
   overflow-wrap: anywhere;
 }
 
+.bucket-name-cell {
+  display: grid;
+  gap: 1px;
+}
+
+.bucket-name-cell .row-title,
+.bucket-name-cell .row-note {
+  line-height: 1.2;
+}
+
+.bucket-name-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bucket-tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.bucket-inline-tag {
+  margin-inline-end: 0;
+  padding-inline: 7px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.bucket-note-line {
+  max-width: 34rem;
+}
+
 .used-cell {
   display: grid;
   gap: 4px;
+}
+
+.bucket-drawer-stack {
+  display: grid;
+  gap: 18px;
+}
+
+.bucket-insight-card {
+  display: grid;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.bucket-insight-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.bucket-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.bucket-stat {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: color-mix(in oklab, var(--surface-soft) 64%, var(--surface));
+}
+
+.bucket-stat-value {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.bucket-trend-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.bucket-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.bucket-panel-head .row-note {
+  max-width: 19rem;
+  text-align: right;
+}
+
+.bucket-trend {
+  display: grid;
+  gap: 12px;
+}
+
+.bucket-trend-stats,
+.bucket-trend-foot {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.bucket-trend-stat {
+  display: grid;
+  gap: 4px;
+}
+
+.bucket-trend-stat-end {
+  text-align: right;
+}
+
+.bucket-trend-foot {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.bucket-trend-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  padding-top: 2px;
+}
+
+.bucket-trend-grid {
+  stroke: color-mix(in oklab, var(--line) 72%, transparent);
+  stroke-dasharray: 2 6;
+}
+
+.bucket-trend-axis {
+  stroke: color-mix(in oklab, var(--line) 90%, transparent);
+}
+
+.bucket-trend-area {
+  fill: color-mix(in oklab, var(--accent) 10%, transparent);
+}
+
+.bucket-trend-line {
+  fill: none;
+  stroke: color-mix(in oklab, var(--accent) 72%, black);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.bucket-trend-dot {
+  fill: color-mix(in oklab, var(--accent) 76%, black);
 }
 
 .path-strip {
@@ -1078,10 +1227,27 @@ a {
   }
 
   .header-row,
+  .bucket-insight-head,
+  .bucket-panel-head,
+  .bucket-trend-foot,
   .path-strip,
   .login-line {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .bucket-panel-head .row-note,
+  .bucket-trend-stat-end {
+    text-align: left;
+  }
+
+  .bucket-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .bucket-trend-stats,
+  .bucket-trend-foot {
+    grid-template-columns: 1fr;
   }
 
   .path-actions,

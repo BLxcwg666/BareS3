@@ -53,8 +53,24 @@ export type BucketInfo = {
   created_at: string;
   metadata_layout: string;
   quota_bytes: number;
+  tags?: string[];
+  note?: string;
   used_bytes: number;
   object_count: number;
+};
+
+export type BucketUsageSample = {
+  recorded_at: string;
+  used_bytes: number;
+  object_count: number;
+  quota_bytes: number;
+};
+
+export type UpdateBucketPayload = {
+  name: string;
+  quota_bytes: number;
+  tags: string[];
+  note: string;
 };
 
 export type ObjectInfo = {
@@ -153,6 +169,23 @@ export function deleteBucket(bucket: string) {
   return request<void>(`/api/v1/buckets/${encodeURIComponent(bucket)}`, {
     method: 'DELETE',
   });
+}
+
+export function updateBucket(bucket: string, payload: UpdateBucketPayload) {
+  return request<BucketInfo>(`/api/v1/buckets/${encodeURIComponent(bucket)}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function listBucketUsageHistory(bucket: string, limit = 24) {
+  const payload = await request<{ items: BucketUsageSample[] }>(
+    `/api/v1/buckets/${encodeURIComponent(bucket)}/history?limit=${limit}`,
+  );
+  return payload.items;
 }
 
 export function updateStorageLimit(maxBytes: number) {
