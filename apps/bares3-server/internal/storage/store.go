@@ -32,6 +32,8 @@ type Store struct {
 	logger         *zap.Logger
 }
 
+const bucketUsageHistoryLimit = 60
+
 func New(cfg config.Config, logger *zap.Logger) *Store {
 	store := &Store{
 		dataDir:        cfg.Paths.DataDir,
@@ -81,6 +83,9 @@ func (s *Store) CreateBucket(ctx context.Context, name string, quotaBytes int64)
 	if err := s.writeBucketMetadata(name, meta); err != nil {
 		return BucketInfo{}, err
 	}
+	if err := s.recordBucketUsageSample(name, 0, 0, meta.QuotaBytes); err != nil {
+		return BucketInfo{}, err
+	}
 
 	info := BucketInfo{
 		Name:           meta.Name,
@@ -89,6 +94,8 @@ func (s *Store) CreateBucket(ctx context.Context, name string, quotaBytes int64)
 		CreatedAt:      meta.CreatedAt,
 		MetadataLayout: meta.MetadataLayout,
 		QuotaBytes:     meta.QuotaBytes,
+		Tags:           cloneStringSlice(meta.Tags),
+		Note:           meta.Note,
 	}
 
 	s.logger.Info("bucket created", zap.String("bucket", name), zap.String("path", root))
@@ -123,10 +130,14 @@ func (s *Store) GetBucket(ctx context.Context, name string) (BucketInfo, error) 
 	createdAt := info.ModTime().UTC()
 	metadataLayout := s.metadataLayout
 	quotaBytes := int64(0)
+	tags := []string(nil)
+	note := ""
 	if err == nil {
 		createdAt = meta.CreatedAt
 		metadataLayout = meta.MetadataLayout
 		quotaBytes = meta.QuotaBytes
+		tags = cloneStringSlice(meta.Tags)
+		note = meta.Note
 	}
 
 	return BucketInfo{
@@ -136,6 +147,8 @@ func (s *Store) GetBucket(ctx context.Context, name string) (BucketInfo, error) 
 		CreatedAt:      createdAt,
 		MetadataLayout: metadataLayout,
 		QuotaBytes:     quotaBytes,
+		Tags:           tags,
+		Note:           note,
 	}, nil
 }
 
@@ -182,6 +195,164 @@ func (s *Store) ListBuckets(ctx context.Context) ([]BucketInfo, error) {
 	})
 
 	return buckets, nil
+}
+
+func (s *Store) UpdateBucket(ctx context.Context, input UpdateBucketInput) (BucketInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return BucketInfo{}, err
+	}
+
+	name := strings.TrimSpace(input.Name)
+	if err := validateBucketName(name); err != nil {
+		return BucketInfo{}, err
+	}
+
+	nextName := strings.TrimSpace(input.NewName)
+	if nextName == "" {
+		nextName = name
+	}
+	if err := validateBucketName(nextName); err != nil {
+		return BucketInfo{}, err
+	}
+	if err := validateQuotaBytes(input.QuotaBytes); err != nil {
+		return BucketInfo{}, err
+	}
+
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
+
+	currentBucket, err := s.GetBucket(ctx, name)
+	if err != nil {
+		return BucketInfo{}, err
+	}
+	usage, err := s.bucketUsage(ctx, name)
+	if err != nil {
+		return BucketInfo{}, err
+	}
+	currentBucket.UsedBytes = usage.UsedBytes
+	currentBucket.ObjectCount = usage.ObjectCount
+
+	if input.QuotaBytes > 0 && currentBucket.UsedBytes > input.QuotaBytes {
+		return BucketInfo{}, fmt.Errorf("%w: quota %d is below current usage %d", ErrInvalidQuota, input.QuotaBytes, currentBucket.UsedBytes)
+	}
+	if instanceQuota := s.InstanceQuotaBytes(); instanceQuota > 0 && input.QuotaBytes > instanceQuota {
+		return BucketInfo{}, fmt.Errorf("%w: bucket quota %d exceeds instance quota %d", ErrInvalidQuota, input.QuotaBytes, instanceQuota)
+	}
+
+	meta, err := s.readBucketMetadata(name)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return BucketInfo{}, err
+		}
+		meta = bucketMetadata{
+			Name:           currentBucket.Name,
+			CreatedAt:      currentBucket.CreatedAt,
+			MetadataLayout: currentBucket.MetadataLayout,
+			QuotaBytes:     currentBucket.QuotaBytes,
+			Tags:           cloneStringSlice(currentBucket.Tags),
+			Note:           currentBucket.Note,
+		}
+	}
+
+	meta.Name = nextName
+	meta.MetadataLayout = currentBucket.MetadataLayout
+	meta.QuotaBytes = input.QuotaBytes
+	meta.Tags = normalizeBucketTags(input.Tags)
+	meta.Note = strings.TrimSpace(input.Note)
+
+	renamed := false
+	if nextName != name {
+		if _, err := os.Stat(s.bucketRoot(nextName)); err == nil {
+			return BucketInfo{}, fmt.Errorf("%w: %s", ErrBucketExists, nextName)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return BucketInfo{}, err
+		}
+		if err := os.Rename(s.bucketRoot(name), s.bucketRoot(nextName)); err != nil {
+			return BucketInfo{}, fmt.Errorf("rename bucket dir: %w", err)
+		}
+		renamed = true
+	}
+
+	if err := s.writeBucketMetadata(nextName, meta); err != nil {
+		if renamed {
+			_ = os.Rename(s.bucketRoot(nextName), s.bucketRoot(name))
+		}
+		return BucketInfo{}, err
+	}
+	if renamed {
+		if err := s.rewriteBucketObjectMetadata(nextName); err != nil {
+			return BucketInfo{}, err
+		}
+		if err := s.rewriteBucketMultipartMetadata(nextName); err != nil {
+			return BucketInfo{}, err
+		}
+	}
+	if input.QuotaBytes != currentBucket.QuotaBytes {
+		if err := s.recordBucketUsageSample(nextName, currentBucket.UsedBytes, currentBucket.ObjectCount, input.QuotaBytes); err != nil {
+			return BucketInfo{}, err
+		}
+	}
+
+	updated := currentBucket
+	updated.Name = nextName
+	updated.Path = s.bucketRoot(nextName)
+	updated.MetadataPath = s.bucketMetadataPath(nextName)
+	updated.QuotaBytes = input.QuotaBytes
+	updated.Tags = cloneStringSlice(meta.Tags)
+	updated.Note = meta.Note
+
+	s.logger.Info(
+		"bucket updated",
+		zap.String("bucket", name),
+		zap.String("updated_bucket", nextName),
+		zap.Int64("quota_bytes", updated.QuotaBytes),
+	)
+
+	return updated, nil
+}
+
+func (s *Store) ListBucketUsageHistory(ctx context.Context, name string, limit int) ([]BucketUsageSample, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if limit == 0 {
+		if _, err := s.GetBucket(ctx, name); err != nil {
+			return nil, err
+		}
+		return []BucketUsageSample{}, nil
+	}
+
+	bucket, err := s.GetBucket(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+
+	history, err := s.readBucketUsageHistory(name)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		snapshot, snapshotErr := s.currentBucketUsageSample(ctx, name)
+		if snapshotErr != nil {
+			return nil, snapshotErr
+		}
+		snapshot.QuotaBytes = bucket.QuotaBytes
+		history = []BucketUsageSample{snapshot}
+	}
+	if len(history) == 0 {
+		snapshot, snapshotErr := s.currentBucketUsageSample(ctx, name)
+		if snapshotErr != nil {
+			return nil, snapshotErr
+		}
+		history = []BucketUsageSample{snapshot}
+	}
+	if limit > 0 && len(history) > limit {
+		history = history[len(history)-limit:]
+	}
+
+	items := make([]BucketUsageSample, len(history))
+	copy(items, history)
+	return items, nil
 }
 
 func (s *Store) InstanceQuotaBytes() int64 {
@@ -651,7 +822,10 @@ func (s *Store) DeleteObject(ctx context.Context, bucket, key string) error {
 	if _, err := s.GetBucket(ctx, bucket); err != nil {
 		return err
 	}
-	return s.deleteObjectLocked(bucket, key)
+	if err := s.deleteObjectLocked(bucket, key); err != nil {
+		return err
+	}
+	return s.recordBucketUsageSamples(ctx, bucket)
 }
 
 func (s *Store) DeletePrefix(ctx context.Context, bucket, prefix string) (int, error) {
@@ -684,6 +858,9 @@ func (s *Store) DeletePrefix(ctx context.Context, bucket, prefix string) (int, e
 			return deleted, err
 		}
 		deleted += 1
+	}
+	if err := s.recordBucketUsageSamples(ctx, bucket); err != nil {
+		return deleted, err
 	}
 
 	s.logger.Info("prefix deleted", zap.String("bucket", bucket), zap.String("prefix", prefix), zap.Int("count", deleted))
@@ -820,7 +997,16 @@ func (s *Store) MoveObject(ctx context.Context, input MoveObjectInput) (ObjectIn
 		return ObjectInfo{}, err
 	}
 
-	return s.moveObjectLocked(object, destinationBucket, destinationKey)
+	moved, err := s.moveObjectLocked(object, destinationBucket, destinationKey)
+	if err != nil {
+		return ObjectInfo{}, err
+	}
+	if object.Bucket != moved.Bucket {
+		if err := s.recordBucketUsageSamples(ctx, object.Bucket, moved.Bucket); err != nil {
+			return ObjectInfo{}, err
+		}
+	}
+	return moved, nil
 }
 
 func (s *Store) MovePrefix(ctx context.Context, input MovePrefixInput) (MoveResult, error) {
@@ -891,6 +1077,11 @@ func (s *Store) MovePrefix(ctx context.Context, input MovePrefixInput) (MoveResu
 			return MoveResult{}, err
 		}
 	}
+	if sourceBucket != destinationBucket {
+		if err := s.recordBucketUsageSamples(ctx, sourceBucket, destinationBucket); err != nil {
+			return MoveResult{}, err
+		}
+	}
 
 	s.logger.Info(
 		"prefix moved",
@@ -950,6 +1141,10 @@ func (s *Store) bucketMetadataPath(name string) string {
 	return joinPath(s.bucketControlDir(name), bucketMetaName)
 }
 
+func (s *Store) bucketUsageHistoryPath(name string) string {
+	return joinPath(s.bucketControlDir(name), bucketHistoryName)
+}
+
 func (s *Store) readBucketMetadata(name string) (bucketMetadata, error) {
 	meta := bucketMetadata{}
 	if err := readJSONFile(s.bucketMetadataPath(name), &meta); err != nil {
@@ -971,6 +1166,124 @@ func (s *Store) writeBucketMetadata(name string, meta bucketMetadata) error {
 		_ = os.Remove(staged)
 	}()
 	return replaceFile(staged, path)
+}
+
+func (s *Store) readBucketUsageHistory(name string) ([]BucketUsageSample, error) {
+	items := []BucketUsageSample{}
+	if err := readJSONFile(s.bucketUsageHistoryPath(name), &items); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func (s *Store) writeBucketUsageHistory(name string, items []BucketUsageSample) error {
+	path := s.bucketUsageHistoryPath(name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	staged, err := writeJSONTemp(filepath.Dir(path), "bucket-history-*", items)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = os.Remove(staged)
+	}()
+	return replaceFile(staged, path)
+}
+
+func (s *Store) currentBucketUsageSample(ctx context.Context, bucket string) (BucketUsageSample, error) {
+	info, err := s.GetBucket(ctx, bucket)
+	if err != nil {
+		return BucketUsageSample{}, err
+	}
+	usage, err := s.bucketUsage(ctx, bucket)
+	if err != nil {
+		return BucketUsageSample{}, err
+	}
+	return BucketUsageSample{
+		RecordedAt:  time.Now().UTC(),
+		UsedBytes:   usage.UsedBytes,
+		ObjectCount: usage.ObjectCount,
+		QuotaBytes:  info.QuotaBytes,
+	}, nil
+}
+
+func (s *Store) recordBucketUsageSamples(ctx context.Context, buckets ...string) error {
+	seen := make(map[string]struct{}, len(buckets))
+	for _, bucket := range buckets {
+		bucket = strings.TrimSpace(bucket)
+		if bucket == "" {
+			continue
+		}
+		if _, exists := seen[bucket]; exists {
+			continue
+		}
+		seen[bucket] = struct{}{}
+
+		snapshot, err := s.currentBucketUsageSample(ctx, bucket)
+		if err != nil {
+			return err
+		}
+		if err := s.recordBucketUsageSample(bucket, snapshot.UsedBytes, snapshot.ObjectCount, snapshot.QuotaBytes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) recordBucketUsageSample(bucket string, usedBytes int64, objectCount int, quotaBytes int64) error {
+	history, err := s.readBucketUsageHistory(bucket)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	history = append(history, BucketUsageSample{
+		RecordedAt:  time.Now().UTC(),
+		UsedBytes:   usedBytes,
+		ObjectCount: objectCount,
+		QuotaBytes:  quotaBytes,
+	})
+	if len(history) > bucketUsageHistoryLimit {
+		history = history[len(history)-bucketUsageHistoryLimit:]
+	}
+	return s.writeBucketUsageHistory(bucket, history)
+}
+
+func (s *Store) rewriteBucketObjectMetadata(bucket string) error {
+	root := s.bucketMetaDir(bucket)
+	if _, err := os.Stat(root); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".json" {
+			return nil
+		}
+
+		meta := objectMetadata{}
+		if err := readJSONFile(path, &meta); err != nil {
+			return err
+		}
+		if meta.Bucket == bucket {
+			return nil
+		}
+
+		meta.Bucket = bucket
+		staged, err := writeJSONTemp(filepath.Dir(path), "meta-*", meta)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			_ = os.Remove(staged)
+		}()
+		return replaceFile(staged, path)
+	})
 }
 
 func (s *Store) resolveObjectPaths(bucket, key string) (string, string, error) {
@@ -1042,6 +1355,39 @@ func cloneStringMap(input map[string]string) map[string]string {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func cloneStringSlice(input []string) []string {
+	if len(input) == 0 {
+		return nil
+	}
+	cloned := make([]string, len(input))
+	copy(cloned, input)
+	return cloned
+}
+
+func normalizeBucketTags(tags []string) []string {
+	if len(tags) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(tags))
+	normalized := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		trimmed := strings.TrimSpace(tag)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		normalized = append(normalized, trimmed)
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
 }
 
 func (s *Store) ensureDestinationBucketQuota(ctx context.Context, sourceBucket, destinationBucket string, movedBytes int64) error {

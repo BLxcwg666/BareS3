@@ -216,6 +216,49 @@ func (s *Store) ReassignObject(ctx context.Context, sourceBucket, sourceKey, des
 	return updated, nil
 }
 
+func (s *Store) ReassignBucket(ctx context.Context, sourceBucket, destinationBucket string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	sourceBucket = strings.TrimSpace(sourceBucket)
+	destinationBucket = strings.TrimSpace(destinationBucket)
+	if sourceBucket == "" || destinationBucket == "" {
+		return 0, fmt.Errorf("share link source and destination buckets are required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	links, err := s.listLocked(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	updated := 0
+	for _, link := range links {
+		if link.Bucket != sourceBucket {
+			continue
+		}
+		link.Bucket = destinationBucket
+		if err := s.writeLink(link); err != nil {
+			return updated, err
+		}
+		updated += 1
+	}
+
+	if updated > 0 {
+		s.logger.Info(
+			"share links reassigned for bucket rename",
+			zap.String("source_bucket", sourceBucket),
+			zap.String("destination_bucket", destinationBucket),
+			zap.Int("count", updated),
+		)
+	}
+
+	return updated, nil
+}
+
 func (s *Store) RemoveByObject(ctx context.Context, bucket, key string) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err

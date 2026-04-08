@@ -173,6 +173,36 @@ func TestReassignObjectUpdatesExistingLinks(t *testing.T) {
 	}
 }
 
+func TestReassignBucketUpdatesExistingLinks(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newTestStore(t)
+	created, err := store.Create(context.Background(), CreateInput{
+		Bucket:  "gallery",
+		Key:     "notes/readme.txt",
+		Expires: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	updated, err := store.ReassignBucket(context.Background(), "gallery", "archive")
+	if err != nil {
+		t.Fatalf("ReassignBucket failed: %v", err)
+	}
+	if updated != 1 {
+		t.Fatalf("expected 1 reassigned link, got %d", updated)
+	}
+
+	link, err := store.Get(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if link.Bucket != "archive" || link.Key != "notes/readme.txt" {
+		t.Fatalf("unexpected reassigned bucket link: %+v", link)
+	}
+}
+
 func TestReassignPrefixUpdatesMatchingLinksOnly(t *testing.T) {
 	t.Parallel()
 

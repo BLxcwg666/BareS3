@@ -12,6 +12,7 @@ const (
 	controlDirName     = ".bares3"
 	metaDirName        = "meta"
 	bucketMetaName     = "bucket.json"
+	bucketHistoryName  = "usage-history.json"
 	escapedPrefix      = "~x"
 	emptySegmentToken  = "~e"
 	dotSegmentToken    = "~d"

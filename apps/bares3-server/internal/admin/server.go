@@ -359,6 +359,69 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 				httpx.WriteJSON(w, http.StatusCreated, bucket)
 			})
 
+			protected.Put("/buckets/{bucket}", func(w http.ResponseWriter, r *http.Request) {
+				payload := struct {
+					Name       string   `json:"name"`
+					QuotaBytes int64    `json:"quota_bytes"`
+					Tags       []string `json:"tags"`
+					Note       string   `json:"note"`
+				}{}
+
+				decoder := json.NewDecoder(r.Body)
+				decoder.DisallowUnknownFields()
+				if err := decoder.Decode(&payload); err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+						"status":  "error",
+						"message": "invalid request body",
+					})
+					return
+				}
+
+				bucketName := chi.URLParam(r, "bucket")
+				updated, err := store.UpdateBucket(r.Context(), storage.UpdateBucketInput{
+					Name:       bucketName,
+					NewName:    payload.Name,
+					QuotaBytes: payload.QuotaBytes,
+					Tags:       payload.Tags,
+					Note:       payload.Note,
+				})
+				if err != nil {
+					writeStorageError(w, err)
+					return
+				}
+				if bucketName != updated.Name {
+					if _, err := shareLinks.ReassignBucket(r.Context(), bucketName, updated.Name); err != nil {
+						httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+							"status":  "error",
+							"message": err.Error(),
+						})
+						return
+					}
+				}
+
+				detailParts := []string{fmt.Sprintf("Quota %s", quotaLabel(updated.QuotaBytes))}
+				if bucketName != updated.Name {
+					detailParts = append([]string{fmt.Sprintf("Renamed from %s", bucketName)}, detailParts...)
+				}
+				if len(updated.Tags) > 0 {
+					detailParts = append(detailParts, fmt.Sprintf("Labels %s", strings.Join(updated.Tags, ", ")))
+				}
+				if updated.Note != "" {
+					detailParts = append(detailParts, fmt.Sprintf("Note %s", updated.Note))
+				}
+				recordAudit(logger, auditRecorder, auditlog.Entry{
+					Actor:  actorFromRequest(r),
+					Action: "bucket.update",
+					Title:  fmt.Sprintf("Updated bucket %s", updated.Name),
+					Detail: strings.Join(detailParts, " · "),
+					Target: updated.Name,
+					Remote: requestRemote(r),
+					Status: "success",
+				})
+
+				httpx.WriteJSON(w, http.StatusOK, updated)
+			})
+
 			protected.Get("/settings/storage", func(w http.ResponseWriter, r *http.Request) {
 				httpx.WriteJSON(w, http.StatusOK, map[string]any{
 					"max_bytes": store.InstanceQuotaBytes(),
@@ -461,6 +524,28 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 					return
 				}
 				httpx.WriteJSON(w, http.StatusOK, bucket)
+			})
+
+			protected.Get("/buckets/{bucket}/history", func(w http.ResponseWriter, r *http.Request) {
+				limit := 24
+				if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+					parsed, err := strconv.Atoi(rawLimit)
+					if err != nil || parsed < 0 {
+						httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+							"status":  "error",
+							"message": "limit must be a non-negative integer",
+						})
+						return
+					}
+					limit = parsed
+				}
+
+				items, err := store.ListBucketUsageHistory(r.Context(), chi.URLParam(r, "bucket"), limit)
+				if err != nil {
+					writeStorageError(w, err)
+					return
+				}
+				httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
 			})
 
 			protected.Get("/buckets/{bucket}/objects", func(w http.ResponseWriter, r *http.Request) {

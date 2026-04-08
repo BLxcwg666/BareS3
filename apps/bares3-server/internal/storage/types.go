@@ -32,8 +32,25 @@ type BucketInfo struct {
 	CreatedAt      time.Time `json:"created_at"`
 	MetadataLayout string    `json:"metadata_layout"`
 	QuotaBytes     int64     `json:"quota_bytes,omitempty"`
+	Tags           []string  `json:"tags,omitempty"`
+	Note           string    `json:"note,omitempty"`
 	UsedBytes      int64     `json:"used_bytes"`
 	ObjectCount    int       `json:"object_count"`
+}
+
+type BucketUsageSample struct {
+	RecordedAt  time.Time `json:"recorded_at"`
+	UsedBytes   int64     `json:"used_bytes"`
+	ObjectCount int       `json:"object_count"`
+	QuotaBytes  int64     `json:"quota_bytes,omitempty"`
+}
+
+type UpdateBucketInput struct {
+	Name       string
+	NewName    string
+	QuotaBytes int64
+	Tags       []string
+	Note       string
 }
 
 type ObjectInfo struct {
@@ -164,6 +181,8 @@ type bucketMetadata struct {
 	CreatedAt      time.Time `json:"created_at"`
 	MetadataLayout string    `json:"metadata_layout"`
 	QuotaBytes     int64     `json:"quota_bytes,omitempty"`
+	Tags           []string  `json:"tags,omitempty"`
+	Note           string    `json:"note,omitempty"`
 }
 
 type multipartUploadMetadata struct {

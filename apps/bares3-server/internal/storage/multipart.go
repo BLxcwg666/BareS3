@@ -413,6 +413,41 @@ func (s *Store) writeMultipartUploadMetadata(bucket, uploadID string, meta multi
 	return replaceFile(staged, path)
 }
 
+func (s *Store) rewriteBucketMultipartMetadata(bucket string) error {
+	entries, err := os.ReadDir(s.bucketMultipartDir(bucket))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		uploadID := entry.Name()
+		meta := multipartUploadMetadata{}
+		if err := readJSONFile(s.multipartUploadMetaPath(bucket, uploadID), &meta); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		if meta.Bucket == bucket {
+			continue
+		}
+
+		meta.Bucket = bucket
+		if err := s.writeMultipartUploadMetadata(bucket, uploadID, meta); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (s *Store) commitObjectWithQuota(ctx context.Context, bucket, key, stagedObjectPath string, meta objectMetadata) (ObjectInfo, error) {
 	s.commitMu.Lock()
 	defer s.commitMu.Unlock()
@@ -454,7 +489,14 @@ func (s *Store) commitObjectWithQuota(ctx context.Context, bucket, key, stagedOb
 		return ObjectInfo{}, fmt.Errorf("%w: total usage exceeds %d bytes", ErrInstanceQuotaExceeded, instanceQuota)
 	}
 
-	return s.commitObjectFromStaged(bucket, key, stagedObjectPath, meta)
+	info, err := s.commitObjectFromStaged(bucket, key, stagedObjectPath, meta)
+	if err != nil {
+		return ObjectInfo{}, err
+	}
+	if err := s.recordBucketUsageSamples(ctx, bucket); err != nil {
+		return ObjectInfo{}, err
+	}
+	return info, nil
 }
 
 func (s *Store) currentObjectSize(bucket, key string) (int64, error) {

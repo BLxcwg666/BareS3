@@ -966,6 +966,122 @@ func TestDeleteBucketAlsoRemovesShareLinks(t *testing.T) {
 	}
 }
 
+func TestUpdateBucketRenamesMetadataAndHistory(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	hash, err := consoleauth.HashPassword("secret-password")
+	if err != nil {
+		t.Fatalf("HashPassword failed: %v", err)
+	}
+	cfg.Auth.Console.PasswordHash = hash
+	cfg.Auth.Console.SessionSecret = "test-session-secret"
+
+	store := storage.New(cfg, zap.NewNop())
+	ctx := context.Background()
+	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	if _, err := store.PutObject(ctx, storage.PutObjectInput{
+		Bucket: "gallery",
+		Key:    "notes/readme.txt",
+		Body:   bytes.NewBufferString("hello"),
+	}); err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+	links, err := sharelink.New(cfg.Paths.DataDir, zap.NewNop())
+	if err != nil {
+		t.Fatalf("sharelink.New failed: %v", err)
+	}
+	if _, err := links.Create(ctx, sharelink.CreateInput{Bucket: "gallery", Key: "notes/readme.txt", Expires: time.Hour}); err != nil {
+		t.Fatalf("Create share link failed: %v", err)
+	}
+
+	handler := NewHandler(cfg, store, zap.NewNop())
+	cookie := loginCookie(t, handler)
+
+	updateBody, _ := json.Marshal(map[string]any{
+		"name":        "archive",
+		"quota_bytes": 1024,
+		"tags":        []string{"media", "launch"},
+		"note":        "Launch assets",
+	})
+	updateRequest := httptest.NewRequest(http.MethodPut, "/api/v1/buckets/gallery", bytes.NewReader(updateBody))
+	updateRequest.Header.Set("Content-Type", "application/json")
+	updateRequest.AddCookie(cookie)
+	updateRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(updateRecorder, updateRequest)
+	if updateRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected update bucket status: %d body=%s", updateRecorder.Code, updateRecorder.Body.String())
+	}
+	updated := struct {
+		Name       string   `json:"name"`
+		QuotaBytes int64    `json:"quota_bytes"`
+		Tags       []string `json:"tags"`
+		Note       string   `json:"note"`
+	}{}
+	if err := json.Unmarshal(updateRecorder.Body.Bytes(), &updated); err != nil {
+		t.Fatalf("unmarshal update bucket payload failed: %v", err)
+	}
+	if updated.Name != "archive" || updated.QuotaBytes != 1024 || updated.Note != "Launch assets" {
+		t.Fatalf("unexpected updated bucket payload: %+v", updated)
+	}
+	if len(updated.Tags) != 2 || updated.Tags[0] != "media" || updated.Tags[1] != "launch" {
+		t.Fatalf("unexpected updated tags: %+v", updated.Tags)
+	}
+
+	historyRequest := httptest.NewRequest(http.MethodGet, "/api/v1/buckets/archive/history?limit=10", nil)
+	historyRequest.AddCookie(cookie)
+	historyRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(historyRecorder, historyRequest)
+	if historyRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected bucket history status: %d body=%s", historyRecorder.Code, historyRecorder.Body.String())
+	}
+	historyPayload := struct {
+		Items []struct {
+			UsedBytes   int64 `json:"used_bytes"`
+			ObjectCount int   `json:"object_count"`
+			QuotaBytes  int64 `json:"quota_bytes"`
+		} `json:"items"`
+	}{}
+	if err := json.Unmarshal(historyRecorder.Body.Bytes(), &historyPayload); err != nil {
+		t.Fatalf("unmarshal history payload failed: %v", err)
+	}
+	if len(historyPayload.Items) < 2 {
+		t.Fatalf("expected usage history entries, got %+v", historyPayload.Items)
+	}
+	lastHistory := historyPayload.Items[len(historyPayload.Items)-1]
+	if lastHistory.UsedBytes != int64(len("hello")) || lastHistory.ObjectCount != 1 || lastHistory.QuotaBytes != 1024 {
+		t.Fatalf("unexpected latest history sample: %+v", lastHistory)
+	}
+
+	listRequest := httptest.NewRequest(http.MethodGet, "/api/v1/share-links", nil)
+	listRequest.AddCookie(cookie)
+	listRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(listRecorder, listRequest)
+	if listRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected share links status after bucket rename: %d body=%s", listRecorder.Code, listRecorder.Body.String())
+	}
+	listed := struct {
+		Items []struct {
+			Bucket string `json:"bucket"`
+			Key    string `json:"key"`
+		} `json:"items"`
+	}{}
+	if err := json.Unmarshal(listRecorder.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("unmarshal share links after bucket rename failed: %v", err)
+	}
+	if len(listed.Items) != 1 || listed.Items[0].Bucket != "archive" || listed.Items[0].Key != "notes/readme.txt" {
+		t.Fatalf("expected share link bucket rename to propagate, got %+v", listed.Items)
+	}
+}
+
 func loginCookie(t *testing.T, handler http.Handler) *http.Cookie {
 	t.Helper()
 

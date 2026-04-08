@@ -44,6 +44,114 @@ func TestCreateBucketAndList(t *testing.T) {
 	}
 }
 
+func TestUpdateBucketRenamesAndPersistsMetadata(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	ctx := context.Background()
+	if _, err := store.CreateBucket(ctx, "gallery", 10*1024); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	if _, err := store.PutObject(ctx, PutObjectInput{
+		Bucket: "gallery",
+		Key:    "notes/a.txt",
+		Body:   bytes.NewBufferString("hello"),
+	}); err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	updated, err := store.UpdateBucket(ctx, UpdateBucketInput{
+		Name:       "gallery",
+		NewName:    "archive",
+		QuotaBytes: 20 * 1024,
+		Tags:       []string{"media", "launch", "media"},
+		Note:       "Launch assets",
+	})
+	if err != nil {
+		t.Fatalf("UpdateBucket failed: %v", err)
+	}
+	if updated.Name != "archive" {
+		t.Fatalf("unexpected updated bucket name: %s", updated.Name)
+	}
+	if updated.QuotaBytes != 20*1024 {
+		t.Fatalf("unexpected updated quota: %d", updated.QuotaBytes)
+	}
+	if len(updated.Tags) != 2 || updated.Tags[0] != "media" || updated.Tags[1] != "launch" {
+		t.Fatalf("unexpected updated tags: %+v", updated.Tags)
+	}
+	if updated.Note != "Launch assets" {
+		t.Fatalf("unexpected updated note: %q", updated.Note)
+	}
+
+	if _, err := store.GetBucket(ctx, "gallery"); !errors.Is(err, ErrBucketNotFound) {
+		t.Fatalf("expected old bucket to be gone, got %v", err)
+	}
+	bucket, err := store.GetBucket(ctx, "archive")
+	if err != nil {
+		t.Fatalf("GetBucket archive failed: %v", err)
+	}
+	if len(bucket.Tags) != 2 || bucket.Note != "Launch assets" {
+		t.Fatalf("unexpected persisted metadata: %+v", bucket)
+	}
+
+	object, err := store.StatObject(ctx, "archive", "notes/a.txt")
+	if err != nil {
+		t.Fatalf("StatObject archive failed: %v", err)
+	}
+	if object.Bucket != "archive" {
+		t.Fatalf("unexpected moved object bucket: %s", object.Bucket)
+	}
+
+	history, err := store.ListBucketUsageHistory(ctx, "archive", 10)
+	if err != nil {
+		t.Fatalf("ListBucketUsageHistory failed: %v", err)
+	}
+	if len(history) < 2 {
+		t.Fatalf("expected usage history entries, got %+v", history)
+	}
+	last := history[len(history)-1]
+	if last.QuotaBytes != 20*1024 || last.UsedBytes != int64(len("hello")) || last.ObjectCount != 1 {
+		t.Fatalf("unexpected latest usage history sample: %+v", last)
+	}
+}
+
+func TestBucketUsageHistoryTracksMutations(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	ctx := context.Background()
+	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	if _, err := store.PutObject(ctx, PutObjectInput{
+		Bucket: "gallery",
+		Key:    "notes/a.txt",
+		Body:   bytes.NewBufferString("abc"),
+	}); err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+	if err := store.DeleteObject(ctx, "gallery", "notes/a.txt"); err != nil {
+		t.Fatalf("DeleteObject failed: %v", err)
+	}
+
+	history, err := store.ListBucketUsageHistory(ctx, "gallery", 10)
+	if err != nil {
+		t.Fatalf("ListBucketUsageHistory failed: %v", err)
+	}
+	if len(history) != 3 {
+		t.Fatalf("expected 3 usage history entries, got %+v", history)
+	}
+	if history[0].UsedBytes != 0 || history[0].ObjectCount != 0 {
+		t.Fatalf("unexpected initial history sample: %+v", history[0])
+	}
+	if history[1].UsedBytes != 3 || history[1].ObjectCount != 1 {
+		t.Fatalf("unexpected upload history sample: %+v", history[1])
+	}
+	if history[2].UsedBytes != 0 || history[2].ObjectCount != 0 {
+		t.Fatalf("unexpected delete history sample: %+v", history[2])
+	}
+}
+
 func TestPutObjectEnforcesBucketQuota(t *testing.T) {
 	t.Parallel()
 
