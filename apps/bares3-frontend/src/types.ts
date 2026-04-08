@@ -1,3 +1,5 @@
+import type { BucketAccessMode } from './api/storage';
+
 export type MetricItem = {
   label: string;
   value: string;
@@ -24,12 +26,14 @@ export type SizeUnit = 'MB' | 'GB' | 'TB';
 
 export type BucketCreateValues = {
   name: string;
+  accessMode: BucketAccessMode;
   quotaValue?: number;
   quotaUnit: SizeUnit;
 };
 
 export type BucketEditValues = {
   name: string;
+  accessMode: BucketAccessMode;
   quotaValue?: number;
   quotaUnit: SizeUnit;
   tags: string[];

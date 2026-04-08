@@ -17,6 +17,7 @@ export {
   updateObjectMetadata,
   updateStorageLimit,
   uploadObject,
+  type BucketAccessMode,
   type BucketInfo,
   type BucketUsageSample,
   type ListObjectsOptions,

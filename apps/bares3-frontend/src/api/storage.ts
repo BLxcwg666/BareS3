@@ -46,12 +46,15 @@ export type RuntimeInfo = {
   };
 };
 
+export type BucketAccessMode = 'private' | 'public';
+
 export type BucketInfo = {
   name: string;
   path: string;
   metadata_path: string;
   created_at: string;
   metadata_layout: string;
+  access_mode: BucketAccessMode;
   quota_bytes: number;
   tags?: string[];
   note?: string;
@@ -68,6 +71,7 @@ export type BucketUsageSample = {
 
 export type UpdateBucketPayload = {
   name: string;
+  access_mode: BucketAccessMode;
   quota_bytes: number;
   tags: string[];
   note: string;
@@ -155,13 +159,13 @@ export async function listBuckets() {
   return payload.items;
 }
 
-export function createBucket(name: string, quotaBytes = 0) {
+export function createBucket(name: string, quotaBytes = 0, accessMode: BucketAccessMode = 'private') {
   return request<BucketInfo>('/api/v1/buckets', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ name, quota_bytes: quotaBytes }),
+    body: JSON.stringify({ name, access_mode: accessMode, quota_bytes: quotaBytes }),
   });
 }
 

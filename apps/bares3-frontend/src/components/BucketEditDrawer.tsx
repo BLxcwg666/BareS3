@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { App as AntApp, Button, Drawer, Form, Input, InputNumber, Select, Skeleton, Space } from 'antd';
 import { listBucketUsageHistory, updateBucket, type BucketInfo, type BucketUsageSample } from '../api';
-import { sizeUnitOptions } from '../constants';
+import { bucketAccessModeOptions, sizeUnitOptions } from '../constants';
 import type { BucketEditValues } from '../types';
-import { bytesToSizeInput, formatBytes, formatCount, formatDateTime, normalizeApiError, sizeInputToBytes } from '../utils';
+import { bucketAccessModeLabel, bytesToSizeInput, formatBytes, formatCount, formatDateTime, normalizeApiError, sizeInputToBytes } from '../utils';
 import { BucketUsageTrend } from './BucketUsageTrend';
 
 function normalizeTags(tags: string[] | undefined) {
@@ -49,6 +49,7 @@ export function BucketEditDrawer({
     const nextQuota = bytesToSizeInput(bucket.quota_bytes);
     form.setFieldsValue({
       name: bucket.name,
+      accessMode: bucket.access_mode,
       quotaValue: nextQuota.value,
       quotaUnit: nextQuota.unit,
       tags: bucket.tags ?? [],
@@ -117,6 +118,7 @@ export function BucketEditDrawer({
     try {
       const updated = await updateBucket(bucket.name, {
         name: values.name.trim(),
+        access_mode: values.accessMode,
         quota_bytes: sizeInputToBytes(values.quotaValue, values.quotaUnit),
         tags: normalizeTags(values.tags),
         note: values.note.trim(),
@@ -188,30 +190,43 @@ export function BucketEditDrawer({
                 <span className="path-label">Metadata</span>
                 <strong className="bucket-stat-value">{bucket.metadata_layout}</strong>
               </div>
+              <div className="bucket-stat">
+                <span className="path-label">Access</span>
+                <strong className="bucket-stat-value">{bucketAccessModeLabel(bucket.access_mode)}</strong>
+              </div>
             </div>
 
             <div className="row-note">{bucket.path}</div>
           </div>
 
-            <Form form={form} initialValues={{ note: '', quotaUnit: 'GB', tags: [] }} layout="vertical">
+            <Form form={form} initialValues={{ accessMode: 'private', note: '', quotaUnit: 'GB', tags: [] }} layout="vertical">
               <Form.Item label="Bucket name" name="name" rules={[{ required: true, whitespace: true, message: 'Bucket name is required' }]}>
                 <Input placeholder="gallery" />
               </Form.Item>
 
-            <Form.Item extra="Leave empty or 0 for unlimited." label="Bucket limit">
-              <Space.Compact block>
-                <Form.Item name="quotaValue" noStyle>
-                  <InputNumber min={0} placeholder="Unlimited" precision={1} style={{ width: '100%' }} />
-                </Form.Item>
-                <Form.Item name="quotaUnit" noStyle>
-                  <Select options={sizeUnitOptions.map((option) => ({ label: option.label, value: option.value }))} style={{ width: 96 }} />
-                </Form.Item>
-              </Space.Compact>
-            </Form.Item>
+              <Form.Item
+                extra="Public buckets expose files at /pub/<bucket>/<key>. Private buckets stay behind share links or signed URLs."
+                label="Access mode"
+                name="accessMode"
+                rules={[{ required: true, message: 'Access mode is required' }]}
+              >
+                <Select options={bucketAccessModeOptions} />
+              </Form.Item>
 
-            <Form.Item extra="Press Enter or comma to add a label." label="Labels" name="tags">
-              <Select mode="tags" open={false} placeholder="media, launch" tokenSeparators={[',']} />
-            </Form.Item>
+              <Form.Item extra="Leave empty or 0 for unlimited." label="Bucket limit">
+                <Space.Compact block>
+                  <Form.Item name="quotaValue" noStyle>
+                    <InputNumber min={0} placeholder="Unlimited" precision={1} style={{ width: '100%' }} />
+                  </Form.Item>
+                  <Form.Item name="quotaUnit" noStyle>
+                    <Select options={sizeUnitOptions.map((option) => ({ label: option.label, value: option.value }))} style={{ width: 96 }} />
+                  </Form.Item>
+                </Space.Compact>
+              </Form.Item>
+
+              <Form.Item extra="Press Enter or comma to add a label." label="Labels" name="tags">
+                <Select mode="tags" open={false} placeholder="media, launch" tokenSeparators={[',']} />
+              </Form.Item>
 
               <Form.Item extra="Helpful context for teammates scanning this bucket list." label="Note" name="note">
                 <Input.TextArea autoSize={{ minRows: 3, maxRows: 6 }} placeholder="Launch files mirrored from the CDN build." />

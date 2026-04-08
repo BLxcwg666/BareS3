@@ -1,5 +1,5 @@
 import type { DescriptionsProps } from 'antd';
-import { ApiError, type BucketInfo } from './api';
+import { ApiError, type BucketAccessMode, type BucketInfo } from './api';
 import { sizeUnitOptions } from './constants';
 import type { BucketDisplayRow, SizeUnit } from './types';
 
@@ -68,6 +68,14 @@ export function formatCount(value: number) {
 
 export function quotaLabel(bytes: number) {
   return bytes > 0 ? formatBytes(bytes) : 'Unlimited';
+}
+
+export function normalizeBucketAccessMode(value?: string): BucketAccessMode {
+  return value === 'public' ? 'public' : 'private';
+}
+
+export function bucketAccessModeLabel(value?: string) {
+  return normalizeBucketAccessMode(value) === 'public' ? 'Public' : 'Private';
 }
 
 export function usagePercentLabel(usedBytes: number, quotaBytes: number) {
@@ -161,7 +169,7 @@ export function buildBucketDisplayRows(buckets: BucketInfo[]): BucketDisplayRow[
       tags: bucket.tags ?? [],
       note,
       root: bucket.path,
-      mode: bucket.quota_bytes > 0 ? 'Limited' : 'Unlimited',
+      mode: bucketAccessModeLabel(bucket.access_mode),
       size: formatBytes(bucket.used_bytes),
       objects: formatCount(bucket.object_count),
       fill: usagePercentLabel(bucket.used_bytes, bucket.quota_bytes),

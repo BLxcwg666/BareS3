@@ -1,3 +1,4 @@
+import type { BucketAccessMode } from './api';
 import type { SizeUnit } from './types';
 
 export const themeStorageKey = 'bares3-theme-mode';
@@ -6,6 +7,11 @@ export const sizeUnitOptions: Array<{ label: SizeUnit; value: SizeUnit; bytes: n
   { label: 'MB', value: 'MB', bytes: 1024 ** 2 },
   { label: 'GB', value: 'GB', bytes: 1024 ** 3 },
   { label: 'TB', value: 'TB', bytes: 1024 ** 4 },
+];
+
+export const bucketAccessModeOptions: Array<{ label: string; value: BucketAccessMode }> = [
+  { label: 'Private', value: 'private' },
+  { label: 'Public', value: 'public' },
 ];
 
 export const pageMeta: Record<string, { title: string; note: string }> = {

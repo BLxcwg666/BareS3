@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { App as AntApp, Form, Input, InputNumber, Modal, Select, Space } from 'antd';
 import { createBucket } from '../api';
-import { sizeUnitOptions } from '../constants';
+import { bucketAccessModeOptions, sizeUnitOptions } from '../constants';
 import type { BucketCreateValues } from '../types';
 import { normalizeApiError, sizeInputToBytes } from '../utils';
 
@@ -25,6 +25,7 @@ export function BucketCreateModal({
 
     form.setFieldsValue({
       name: '',
+      accessMode: 'private',
       quotaValue: undefined,
       quotaUnit: 'GB',
     });
@@ -34,7 +35,7 @@ export function BucketCreateModal({
     const values = await form.validateFields();
     setSubmitting(true);
     try {
-      const bucket = await createBucket(values.name.trim(), sizeInputToBytes(values.quotaValue, values.quotaUnit));
+      const bucket = await createBucket(values.name.trim(), sizeInputToBytes(values.quotaValue, values.quotaUnit), values.accessMode);
       message.success(`Bucket ${bucket.name} created`);
       form.resetFields();
       onCancel();
@@ -61,9 +62,18 @@ export function BucketCreateModal({
       open={open}
       title="New bucket"
     >
-      <Form form={form} initialValues={{ quotaUnit: 'GB' }} layout="vertical">
+      <Form form={form} initialValues={{ accessMode: 'private', quotaUnit: 'GB' }} layout="vertical">
         <Form.Item label="Bucket name" name="name" rules={[{ required: true, whitespace: true, message: 'Bucket name is required' }]}>
           <Input placeholder="gallery" />
+        </Form.Item>
+
+        <Form.Item
+          extra="Public buckets expose files at /pub/<bucket>/<key>. Private buckets stay behind share links or signed URLs."
+          label="Access mode"
+          name="accessMode"
+          rules={[{ required: true, message: 'Access mode is required' }]}
+        >
+          <Select options={bucketAccessModeOptions} />
         </Form.Item>
 
         <Form.Item extra="Leave empty or 0 for unlimited." label="Bucket limit">
