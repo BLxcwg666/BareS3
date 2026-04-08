@@ -267,6 +267,101 @@ func TestDeleteObjectRemovesDataAndMetadata(t *testing.T) {
 	}
 }
 
+func TestMoveObjectRenamesAcrossBuckets(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket gallery failed: %v", err)
+	}
+	if _, err := store.CreateBucket(context.Background(), "archive", 0); err != nil {
+		t.Fatalf("CreateBucket archive failed: %v", err)
+	}
+	if _, err := store.PutObject(context.Background(), PutObjectInput{
+		Bucket:      "gallery",
+		Key:         "notes/readme.txt",
+		Body:        bytes.NewBufferString("hello"),
+		ContentType: "text/plain",
+	}); err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	moved, err := store.MoveObject(context.Background(), MoveObjectInput{
+		SourceBucket:      "gallery",
+		SourceKey:         "notes/readme.txt",
+		DestinationBucket: "archive",
+		DestinationKey:    "moved/readme.txt",
+	})
+	if err != nil {
+		t.Fatalf("MoveObject failed: %v", err)
+	}
+	if moved.Bucket != "archive" || moved.Key != "moved/readme.txt" {
+		t.Fatalf("unexpected moved object: %+v", moved)
+	}
+	if _, err := store.StatObject(context.Background(), "gallery", "notes/readme.txt"); !errors.Is(err, ErrObjectNotFound) {
+		t.Fatalf("expected old object to be gone, got %v", err)
+	}
+	stated, err := store.StatObject(context.Background(), "archive", "moved/readme.txt")
+	if err != nil {
+		t.Fatalf("StatObject moved failed: %v", err)
+	}
+	if stated.ContentType != "text/plain" {
+		t.Fatalf("unexpected moved content type: %s", stated.ContentType)
+	}
+}
+
+func TestMovePrefixMovesFolderContents(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket gallery failed: %v", err)
+	}
+	if _, err := store.CreateBucket(context.Background(), "archive", 0); err != nil {
+		t.Fatalf("CreateBucket archive failed: %v", err)
+	}
+	fixtures := []string{"2026/launch/mock-01.png", "2026/launch/mock-02.png"}
+	for _, key := range fixtures {
+		if _, err := store.PutObject(context.Background(), PutObjectInput{
+			Bucket: "gallery",
+			Key:    key,
+			Body:   bytes.NewBufferString(key),
+		}); err != nil {
+			t.Fatalf("PutObject(%s) failed: %v", key, err)
+		}
+	}
+
+	result, err := store.MovePrefix(context.Background(), MovePrefixInput{
+		SourceBucket:      "gallery",
+		SourcePrefix:      "2026/launch/",
+		DestinationBucket: "archive",
+		DestinationPrefix: "imports/launch/",
+	})
+	if err != nil {
+		t.Fatalf("MovePrefix failed: %v", err)
+	}
+	if result.MovedCount != len(fixtures) {
+		t.Fatalf("unexpected moved count: %d", result.MovedCount)
+	}
+	items, err := store.ListObjects(context.Background(), "archive", ListObjectsOptions{Prefix: "imports/launch/"})
+	if err != nil {
+		t.Fatalf("ListObjects archive failed: %v", err)
+	}
+	if len(items) != len(fixtures) {
+		t.Fatalf("expected %d moved items, got %d", len(fixtures), len(items))
+	}
+	sourceItems, err := store.ListObjects(context.Background(), "gallery", ListObjectsOptions{Prefix: "2026/launch/"})
+	if err != nil {
+		t.Fatalf("ListObjects source after move failed: %v", err)
+	}
+	if len(sourceItems) != 0 {
+		t.Fatalf("expected moved source prefix to be empty, got %d items", len(sourceItems))
+	}
+	if _, err := store.StatObject(context.Background(), "gallery", "2026/launch/mock-01.png"); !errors.Is(err, ErrObjectNotFound) {
+		t.Fatalf("expected source object removed, got %v", err)
+	}
+}
+
 func TestDeleteBucketRequiresEmptyBucket(t *testing.T) {
 	t.Parallel()
 

@@ -16,6 +16,7 @@ import (
 	"bares3-server/internal/buildinfo"
 	"bares3-server/internal/config"
 	"bares3-server/internal/httpx"
+	"bares3-server/internal/sharelink"
 	"bares3-server/internal/sigv4"
 	"bares3-server/internal/storage"
 	"go.uber.org/zap"
@@ -136,6 +137,10 @@ type listResponseItem struct {
 
 func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) http.Handler {
 	verifier := sigv4.NewVerifier(cfg.Auth.S3.AccessKeyID, cfg.Auth.S3.SecretAccessKey, cfg.Storage.Region, "s3")
+	shareLinks, err := sharelink.New(cfg.Paths.DataDir, logger.Named("sharelink"))
+	if err != nil {
+		panic(fmt.Sprintf("initialize share link store: %v", err))
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -149,13 +154,13 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 	})
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		handleS3Request(w, r, cfg, store, verifier)
+		handleS3Request(w, r, cfg, store, shareLinks, verifier)
 	})
 
 	return httpx.RequestLogger(logger, "s3")(mux)
 }
 
-func handleS3Request(w http.ResponseWriter, r *http.Request, cfg config.Config, store *storage.Store, verifier *sigv4.Verifier) {
+func handleS3Request(w http.ResponseWriter, r *http.Request, cfg config.Config, store *storage.Store, shareLinks *sharelink.Store, verifier *sigv4.Verifier) {
 	if _, err := verifier.Authenticate(r); err != nil {
 		writeAuthError(w, r, err)
 		return
@@ -175,11 +180,11 @@ func handleS3Request(w http.ResponseWriter, r *http.Request, cfg config.Config, 
 	w.Header().Set("X-Amz-Bucket-Region", cfg.Storage.Region)
 
 	if key == "" {
-		handleBucketRequest(w, r, store, bucket)
+		handleBucketRequest(w, r, store, shareLinks, bucket)
 		return
 	}
 
-	handleObjectRequest(w, r, cfg, store, bucket, key)
+	handleObjectRequest(w, r, cfg, store, shareLinks, bucket, key)
 }
 
 func handleServiceRoot(w http.ResponseWriter, r *http.Request, store *storage.Store) {
@@ -209,7 +214,7 @@ func handleServiceRoot(w http.ResponseWriter, r *http.Request, store *storage.St
 	})
 }
 
-func handleBucketRequest(w http.ResponseWriter, r *http.Request, store *storage.Store, bucket string) {
+func handleBucketRequest(w http.ResponseWriter, r *http.Request, store *storage.Store, shareLinks *sharelink.Store, bucket string) {
 	switch r.Method {
 	case http.MethodHead:
 		if _, err := store.GetBucket(r.Context(), bucket); err != nil {
@@ -236,6 +241,10 @@ func handleBucketRequest(w http.ResponseWriter, r *http.Request, store *storage.
 	case http.MethodDelete:
 		if err := store.DeleteBucket(r.Context(), bucket); err != nil {
 			writeStorageAsS3Error(w, r, err)
+			return
+		}
+		if _, err := shareLinks.RemoveByBucket(r.Context(), bucket); err != nil {
+			writeS3Error(w, r, http.StatusInternalServerError, "InternalError", err.Error())
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -283,7 +292,7 @@ func handleListObjectsV2(w http.ResponseWriter, r *http.Request, store *storage.
 	writeS3XML(w, http.StatusOK, result)
 }
 
-func handleObjectRequest(w http.ResponseWriter, r *http.Request, cfg config.Config, store *storage.Store, bucket, key string) {
+func handleObjectRequest(w http.ResponseWriter, r *http.Request, cfg config.Config, store *storage.Store, shareLinks *sharelink.Store, bucket, key string) {
 	if hasQueryValue(r, "uploadId") {
 		handleMultipartUploadRequest(w, r, cfg, store, bucket, key)
 		return
@@ -330,6 +339,10 @@ func handleObjectRequest(w http.ResponseWriter, r *http.Request, cfg config.Conf
 	case http.MethodDelete:
 		if err := store.DeleteObject(r.Context(), bucket, key); err != nil && !errors.Is(err, storage.ErrObjectNotFound) {
 			writeStorageAsS3Error(w, r, err)
+			return
+		}
+		if _, err := shareLinks.RemoveByObject(r.Context(), bucket, key); err != nil {
+			writeS3Error(w, r, http.StatusInternalServerError, "InternalError", err.Error())
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)

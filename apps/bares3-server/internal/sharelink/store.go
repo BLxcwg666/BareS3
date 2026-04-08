@@ -164,6 +164,197 @@ func (s *Store) List(ctx context.Context) ([]Link, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	return s.listLocked(ctx)
+}
+
+func (s *Store) ReassignObject(ctx context.Context, sourceBucket, sourceKey, destinationBucket, destinationKey string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	sourceBucket = strings.TrimSpace(sourceBucket)
+	sourceKey = strings.TrimSpace(sourceKey)
+	destinationBucket = strings.TrimSpace(destinationBucket)
+	destinationKey = strings.TrimSpace(destinationKey)
+	if sourceBucket == "" || sourceKey == "" || destinationBucket == "" || destinationKey == "" {
+		return 0, fmt.Errorf("share link source and destination are required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	links, err := s.listLocked(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	updated := 0
+	for _, link := range links {
+		if link.Bucket != sourceBucket || link.Key != sourceKey {
+			continue
+		}
+		link.Bucket = destinationBucket
+		link.Key = destinationKey
+		link.Filename = path.Base(destinationKey)
+		if err := s.writeLink(link); err != nil {
+			return updated, err
+		}
+		updated += 1
+	}
+
+	if updated > 0 {
+		s.logger.Info(
+			"share links reassigned for object move",
+			zap.String("source_bucket", sourceBucket),
+			zap.String("source_key", sourceKey),
+			zap.String("destination_bucket", destinationBucket),
+			zap.String("destination_key", destinationKey),
+			zap.Int("count", updated),
+		)
+	}
+
+	return updated, nil
+}
+
+func (s *Store) RemoveByObject(ctx context.Context, bucket, key string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	bucket = strings.TrimSpace(bucket)
+	key = strings.TrimSpace(key)
+	if bucket == "" || key == "" {
+		return 0, fmt.Errorf("share link bucket and key are required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	links, err := s.listLocked(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	removed := 0
+	for _, link := range links {
+		if link.Bucket != bucket || link.Key != key {
+			continue
+		}
+		if err := os.Remove(s.linkPath(link.ID)); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return removed, fmt.Errorf("remove share link for object: %w", err)
+		}
+		removed += 1
+	}
+
+	if removed > 0 {
+		s.logger.Info(
+			"share links removed for deleted object",
+			zap.String("bucket", bucket),
+			zap.String("key", key),
+			zap.Int("count", removed),
+		)
+	}
+
+	return removed, nil
+}
+
+func (s *Store) RemoveByBucket(ctx context.Context, bucket string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	bucket = strings.TrimSpace(bucket)
+	if bucket == "" {
+		return 0, fmt.Errorf("share link bucket is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	links, err := s.listLocked(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	removed := 0
+	for _, link := range links {
+		if link.Bucket != bucket {
+			continue
+		}
+		if err := os.Remove(s.linkPath(link.ID)); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return removed, fmt.Errorf("remove share link for bucket: %w", err)
+		}
+		removed += 1
+	}
+
+	if removed > 0 {
+		s.logger.Info(
+			"share links removed for deleted bucket",
+			zap.String("bucket", bucket),
+			zap.Int("count", removed),
+		)
+	}
+
+	return removed, nil
+}
+
+func (s *Store) ReassignPrefix(ctx context.Context, sourceBucket, sourcePrefix, destinationBucket, destinationPrefix string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	sourceBucket = strings.TrimSpace(sourceBucket)
+	destinationBucket = strings.TrimSpace(destinationBucket)
+	sourcePrefix = normalizePrefix(sourcePrefix)
+	destinationPrefix = normalizePrefix(destinationPrefix)
+	if sourceBucket == "" || destinationBucket == "" || sourcePrefix == "" {
+		return 0, fmt.Errorf("share link source prefix and destination bucket are required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	links, err := s.listLocked(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	updated := 0
+	for _, link := range links {
+		if link.Bucket != sourceBucket || !strings.HasPrefix(link.Key, sourcePrefix) {
+			continue
+		}
+		relative := strings.TrimPrefix(link.Key, sourcePrefix)
+		link.Bucket = destinationBucket
+		link.Key = destinationPrefix + relative
+		link.Filename = path.Base(link.Key)
+		if err := s.writeLink(link); err != nil {
+			return updated, err
+		}
+		updated += 1
+	}
+
+	if updated > 0 {
+		s.logger.Info(
+			"share links reassigned for prefix move",
+			zap.String("source_bucket", sourceBucket),
+			zap.String("source_prefix", sourcePrefix),
+			zap.String("destination_bucket", destinationBucket),
+			zap.String("destination_prefix", destinationPrefix),
+			zap.Int("count", updated),
+		)
+	}
+
+	return updated, nil
+}
+
+func (s *Store) listLocked(ctx context.Context) ([]Link, error) {
 
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
@@ -387,4 +578,12 @@ func replaceFile(fromPath, toPath string) error {
 	}
 
 	return os.Rename(fromPath, toPath)
+}
+
+func normalizePrefix(value string) string {
+	trimmed := strings.Trim(strings.ReplaceAll(strings.TrimSpace(value), "\\", "/"), "/")
+	if trimmed == "" {
+		return ""
+	}
+	return trimmed + "/"
 }

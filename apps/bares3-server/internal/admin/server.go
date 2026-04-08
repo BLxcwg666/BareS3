@@ -364,6 +364,13 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 					writeStorageError(w, err)
 					return
 				}
+				if _, err := shareLinks.RemoveByBucket(r.Context(), bucketName); err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
 				recordAudit(logger, auditRecorder, auditlog.Entry{
 					Actor:  actorFromRequest(r),
 					Action: "bucket.delete",
@@ -467,6 +474,13 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 					writeStorageError(w, err)
 					return
 				}
+				if _, err := shareLinks.RemoveByObject(r.Context(), bucketName, key); err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
 				recordAudit(logger, auditRecorder, auditlog.Entry{
 					Actor:  actorFromRequest(r),
 					Action: "object.delete",
@@ -476,6 +490,109 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 					Status: "success",
 				})
 				w.WriteHeader(http.StatusNoContent)
+			})
+
+			protected.Post("/browser/move", func(w http.ResponseWriter, r *http.Request) {
+				payload := struct {
+					Kind              string `json:"kind"`
+					SourceBucket      string `json:"source_bucket"`
+					SourceKey         string `json:"source_key"`
+					SourcePrefix      string `json:"source_prefix"`
+					DestinationBucket string `json:"destination_bucket"`
+					DestinationKey    string `json:"destination_key"`
+					DestinationPrefix string `json:"destination_prefix"`
+				}{}
+
+				decoder := json.NewDecoder(r.Body)
+				decoder.DisallowUnknownFields()
+				if err := decoder.Decode(&payload); err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+						"status":  "error",
+						"message": "invalid request body",
+					})
+					return
+				}
+
+				kind := strings.TrimSpace(payload.Kind)
+				switch kind {
+				case "object":
+					moved, err := store.MoveObject(r.Context(), storage.MoveObjectInput{
+						SourceBucket:      payload.SourceBucket,
+						SourceKey:         payload.SourceKey,
+						DestinationBucket: payload.DestinationBucket,
+						DestinationKey:    payload.DestinationKey,
+					})
+					if err != nil {
+						writeStorageError(w, err)
+						return
+					}
+					if _, err := shareLinks.ReassignObject(r.Context(), payload.SourceBucket, payload.SourceKey, moved.Bucket, moved.Key); err != nil {
+						httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+							"status":  "error",
+							"message": err.Error(),
+						})
+						return
+					}
+
+					result := storage.MoveResult{
+						Kind:              "object",
+						SourceBucket:      payload.SourceBucket,
+						SourceKey:         payload.SourceKey,
+						DestinationBucket: moved.Bucket,
+						DestinationKey:    moved.Key,
+						MovedCount:        1,
+					}
+					recordAudit(logger, auditRecorder, auditlog.Entry{
+						Actor:  actorFromRequest(r),
+						Action: "object.move",
+						Title:  fmt.Sprintf("Moved %s/%s", payload.SourceBucket, payload.SourceKey),
+						Detail: fmt.Sprintf("to %s/%s", moved.Bucket, moved.Key),
+						Target: moved.Bucket + "/" + moved.Key,
+						Remote: requestRemote(r),
+						Status: "success",
+					})
+					httpx.WriteJSON(w, http.StatusOK, result)
+				case "prefix":
+					result, err := store.MovePrefix(r.Context(), storage.MovePrefixInput{
+						SourceBucket:      payload.SourceBucket,
+						SourcePrefix:      payload.SourcePrefix,
+						DestinationBucket: payload.DestinationBucket,
+						DestinationPrefix: payload.DestinationPrefix,
+					})
+					if err != nil {
+						writeStorageError(w, err)
+						return
+					}
+					if _, err := shareLinks.ReassignPrefix(
+						r.Context(),
+						result.SourceBucket,
+						result.SourcePrefix,
+						result.DestinationBucket,
+						result.DestinationPrefix,
+					); err != nil {
+						httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+							"status":  "error",
+							"message": err.Error(),
+						})
+						return
+					}
+
+					recordAudit(logger, auditRecorder, auditlog.Entry{
+						Actor:  actorFromRequest(r),
+						Action: "folder.move",
+						Title:  fmt.Sprintf("Moved %s/%s", result.SourceBucket, result.SourcePrefix),
+						Detail: fmt.Sprintf("to %s/%s · %d items", result.DestinationBucket, result.DestinationPrefix, result.MovedCount),
+						Target: result.DestinationBucket + "/" + result.DestinationPrefix,
+						Remote: requestRemote(r),
+						Status: "success",
+					})
+					httpx.WriteJSON(w, http.StatusOK, result)
+				default:
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+						"status":  "error",
+						"message": "kind must be object or prefix",
+					})
+				}
 			})
 
 			protected.Get("/buckets/{bucket}/objects/*", func(w http.ResponseWriter, r *http.Request) {
@@ -679,9 +796,9 @@ func requireSession(manager *consoleauth.Manager) func(http.Handler) http.Handle
 func writeStorageError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	switch {
-	case errors.Is(err, storage.ErrInvalidBucketName), errors.Is(err, storage.ErrInvalidObjectKey), errors.Is(err, storage.ErrInvalidQuota):
+	case errors.Is(err, storage.ErrInvalidBucketName), errors.Is(err, storage.ErrInvalidObjectKey), errors.Is(err, storage.ErrInvalidQuota), errors.Is(err, storage.ErrInvalidMove):
 		status = http.StatusBadRequest
-	case errors.Is(err, storage.ErrBucketExists):
+	case errors.Is(err, storage.ErrBucketExists), errors.Is(err, storage.ErrObjectExists):
 		status = http.StatusConflict
 	case errors.Is(err, storage.ErrBucketNotEmpty), errors.Is(err, storage.ErrBucketQuotaExceeded), errors.Is(err, storage.ErrInstanceQuotaExceeded):
 		status = http.StatusConflict

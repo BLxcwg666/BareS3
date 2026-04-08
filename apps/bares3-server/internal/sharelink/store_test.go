@@ -138,6 +138,158 @@ func TestRemoveRejectsActiveLinks(t *testing.T) {
 	}
 }
 
+func TestReassignObjectUpdatesExistingLinks(t *testing.T) {
+	t.Parallel()
+
+	store, now := newTestStore(t)
+	created, err := store.Create(context.Background(), CreateInput{
+		Bucket:    "gallery",
+		Key:       "notes/readme.txt",
+		Filename:  "readme.txt",
+		Expires:   time.Hour,
+		CreatedBy: "admin",
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	updated, err := store.ReassignObject(context.Background(), "gallery", "notes/readme.txt", "archive", "moved/guide.txt")
+	if err != nil {
+		t.Fatalf("ReassignObject failed: %v", err)
+	}
+	if updated != 1 {
+		t.Fatalf("expected 1 reassigned link, got %d", updated)
+	}
+
+	link, err := store.Get(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if link.Bucket != "archive" || link.Key != "moved/guide.txt" || link.Filename != "guide.txt" {
+		t.Fatalf("unexpected reassigned link: %+v", link)
+	}
+	if link.Status(*now) != "active" {
+		t.Fatalf("expected link to stay active, got %s", link.Status(*now))
+	}
+}
+
+func TestReassignPrefixUpdatesMatchingLinksOnly(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newTestStore(t)
+	first, err := store.Create(context.Background(), CreateInput{Bucket: "gallery", Key: "folder/a.txt", Expires: time.Hour})
+	if err != nil {
+		t.Fatalf("Create first failed: %v", err)
+	}
+	second, err := store.Create(context.Background(), CreateInput{Bucket: "gallery", Key: "folder/deep/b.txt", Expires: time.Hour})
+	if err != nil {
+		t.Fatalf("Create second failed: %v", err)
+	}
+	third, err := store.Create(context.Background(), CreateInput{Bucket: "gallery", Key: "other/c.txt", Expires: time.Hour})
+	if err != nil {
+		t.Fatalf("Create third failed: %v", err)
+	}
+
+	updated, err := store.ReassignPrefix(context.Background(), "gallery", "folder/", "archive", "imports/folder/")
+	if err != nil {
+		t.Fatalf("ReassignPrefix failed: %v", err)
+	}
+	if updated != 2 {
+		t.Fatalf("expected 2 reassigned links, got %d", updated)
+	}
+
+	firstLink, err := store.Get(context.Background(), first.ID)
+	if err != nil {
+		t.Fatalf("Get first failed: %v", err)
+	}
+	if firstLink.Key != "imports/folder/a.txt" || firstLink.Bucket != "archive" {
+		t.Fatalf("unexpected first reassigned link: %+v", firstLink)
+	}
+
+	secondLink, err := store.Get(context.Background(), second.ID)
+	if err != nil {
+		t.Fatalf("Get second failed: %v", err)
+	}
+	if secondLink.Key != "imports/folder/deep/b.txt" || secondLink.Bucket != "archive" {
+		t.Fatalf("unexpected second reassigned link: %+v", secondLink)
+	}
+
+	thirdLink, err := store.Get(context.Background(), third.ID)
+	if err != nil {
+		t.Fatalf("Get third failed: %v", err)
+	}
+	if thirdLink.Key != "other/c.txt" || thirdLink.Bucket != "gallery" {
+		t.Fatalf("expected unrelated link unchanged, got %+v", thirdLink)
+	}
+}
+
+func TestRemoveByObjectDeletesAllMatchingLinks(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newTestStore(t)
+	first, err := store.Create(context.Background(), CreateInput{Bucket: "gallery", Key: "notes/readme.txt", Expires: time.Hour})
+	if err != nil {
+		t.Fatalf("Create first failed: %v", err)
+	}
+	second, err := store.Create(context.Background(), CreateInput{Bucket: "gallery", Key: "notes/readme.txt", Expires: time.Hour})
+	if err != nil {
+		t.Fatalf("Create second failed: %v", err)
+	}
+	_, err = store.Create(context.Background(), CreateInput{Bucket: "gallery", Key: "notes/other.txt", Expires: time.Hour})
+	if err != nil {
+		t.Fatalf("Create third failed: %v", err)
+	}
+
+	removed, err := store.RemoveByObject(context.Background(), "gallery", "notes/readme.txt")
+	if err != nil {
+		t.Fatalf("RemoveByObject failed: %v", err)
+	}
+	if removed != 2 {
+		t.Fatalf("expected 2 removed links, got %d", removed)
+	}
+	if _, err := store.Get(context.Background(), first.ID); err == nil {
+		t.Fatalf("expected first link to be removed")
+	}
+	if _, err := store.Get(context.Background(), second.ID); err == nil {
+		t.Fatalf("expected second link to be removed")
+	}
+}
+
+func TestRemoveByBucketDeletesAllMatchingLinks(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newTestStore(t)
+	first, err := store.Create(context.Background(), CreateInput{Bucket: "gallery", Key: "notes/a.txt", Expires: time.Hour})
+	if err != nil {
+		t.Fatalf("Create first failed: %v", err)
+	}
+	second, err := store.Create(context.Background(), CreateInput{Bucket: "gallery", Key: "notes/b.txt", Expires: time.Hour})
+	if err != nil {
+		t.Fatalf("Create second failed: %v", err)
+	}
+	third, err := store.Create(context.Background(), CreateInput{Bucket: "archive", Key: "notes/c.txt", Expires: time.Hour})
+	if err != nil {
+		t.Fatalf("Create third failed: %v", err)
+	}
+
+	removed, err := store.RemoveByBucket(context.Background(), "gallery")
+	if err != nil {
+		t.Fatalf("RemoveByBucket failed: %v", err)
+	}
+	if removed != 2 {
+		t.Fatalf("expected 2 removed links, got %d", removed)
+	}
+	if _, err := store.Get(context.Background(), first.ID); err == nil {
+		t.Fatalf("expected first link to be removed")
+	}
+	if _, err := store.Get(context.Background(), second.ID); err == nil {
+		t.Fatalf("expected second link to be removed")
+	}
+	if _, err := store.Get(context.Background(), third.ID); err != nil {
+		t.Fatalf("expected other bucket link to stay, got %v", err)
+	}
+}
+
 func newTestStore(t *testing.T) (*Store, *time.Time) {
 	t.Helper()
 

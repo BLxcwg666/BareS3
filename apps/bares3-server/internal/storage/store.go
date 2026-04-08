@@ -613,6 +613,127 @@ func (s *Store) DeleteObject(ctx context.Context, bucket, key string) error {
 	return nil
 }
 
+func (s *Store) MoveObject(ctx context.Context, input MoveObjectInput) (ObjectInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return ObjectInfo{}, err
+	}
+
+	sourceBucket := strings.TrimSpace(input.SourceBucket)
+	sourceKey := strings.TrimSpace(input.SourceKey)
+	destinationBucket := strings.TrimSpace(input.DestinationBucket)
+	destinationKey := strings.TrimSpace(input.DestinationKey)
+	if sourceBucket == "" || sourceKey == "" || destinationBucket == "" || destinationKey == "" {
+		return ObjectInfo{}, fmt.Errorf("%w: source and destination are required", ErrInvalidMove)
+	}
+	if sourceBucket == destinationBucket && sourceKey == destinationKey {
+		return ObjectInfo{}, fmt.Errorf("%w: source and destination are identical", ErrInvalidMove)
+	}
+
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
+
+	object, err := s.StatObject(ctx, sourceBucket, sourceKey)
+	if err != nil {
+		return ObjectInfo{}, err
+	}
+	if err := s.ensureDestinationBucketQuota(ctx, sourceBucket, destinationBucket, object.Size); err != nil {
+		return ObjectInfo{}, err
+	}
+	if err := s.ensureDestinationAvailable(destinationBucket, destinationKey); err != nil {
+		return ObjectInfo{}, err
+	}
+
+	return s.moveObjectLocked(object, destinationBucket, destinationKey)
+}
+
+func (s *Store) MovePrefix(ctx context.Context, input MovePrefixInput) (MoveResult, error) {
+	if err := ctx.Err(); err != nil {
+		return MoveResult{}, err
+	}
+
+	sourceBucket := strings.TrimSpace(input.SourceBucket)
+	destinationBucket := strings.TrimSpace(input.DestinationBucket)
+	sourcePrefix := normalizeMovePrefix(input.SourcePrefix)
+	destinationPrefix := normalizeMovePrefix(input.DestinationPrefix)
+	if sourceBucket == "" || destinationBucket == "" || sourcePrefix == "" {
+		return MoveResult{}, fmt.Errorf("%w: source bucket, source prefix, and destination bucket are required", ErrInvalidMove)
+	}
+	if sourceBucket == destinationBucket && sourcePrefix == destinationPrefix {
+		return MoveResult{}, fmt.Errorf("%w: source and destination are identical", ErrInvalidMove)
+	}
+	if sourceBucket == destinationBucket && strings.HasPrefix(destinationPrefix, sourcePrefix) {
+		return MoveResult{}, fmt.Errorf("%w: cannot move a folder into itself", ErrInvalidMove)
+	}
+
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
+
+	objects, err := s.ListObjects(ctx, sourceBucket, ListObjectsOptions{Prefix: sourcePrefix})
+	if err != nil {
+		return MoveResult{}, err
+	}
+	if len(objects) == 0 {
+		return MoveResult{}, fmt.Errorf("%w: %s/%s", ErrObjectNotFound, sourceBucket, sourcePrefix)
+	}
+
+	type movePlan struct {
+		object         ObjectInfo
+		destinationKey string
+	}
+	plans := make([]movePlan, 0, len(objects))
+	plannedKeys := make(map[string]struct{}, len(objects))
+	totalBytes := int64(0)
+	for _, object := range objects {
+		relative := strings.TrimPrefix(object.Key, sourcePrefix)
+		destinationKey := destinationPrefix + relative
+		if destinationKey == "" {
+			return MoveResult{}, fmt.Errorf("%w: invalid destination prefix", ErrInvalidMove)
+		}
+		if _, exists := plannedKeys[destinationKey]; exists {
+			return MoveResult{}, fmt.Errorf("%w: destination contains duplicate keys", ErrInvalidMove)
+		}
+		plannedKeys[destinationKey] = struct{}{}
+		plans = append(plans, movePlan{object: object, destinationKey: destinationKey})
+		totalBytes += object.Size
+	}
+
+	if err := s.ensureDestinationBucketQuota(ctx, sourceBucket, destinationBucket, totalBytes); err != nil {
+		return MoveResult{}, err
+	}
+	for _, plan := range plans {
+		if plan.object.Bucket == destinationBucket && plan.object.Key == plan.destinationKey {
+			return MoveResult{}, fmt.Errorf("%w: source and destination are identical", ErrInvalidMove)
+		}
+		if err := s.ensureDestinationAvailable(destinationBucket, plan.destinationKey); err != nil {
+			return MoveResult{}, err
+		}
+	}
+
+	for _, plan := range plans {
+		if _, err := s.moveObjectLocked(plan.object, destinationBucket, plan.destinationKey); err != nil {
+			return MoveResult{}, err
+		}
+	}
+
+	s.logger.Info(
+		"prefix moved",
+		zap.String("source_bucket", sourceBucket),
+		zap.String("source_prefix", sourcePrefix),
+		zap.String("destination_bucket", destinationBucket),
+		zap.String("destination_prefix", destinationPrefix),
+		zap.Int("count", len(plans)),
+	)
+
+	return MoveResult{
+		Kind:              "prefix",
+		SourceBucket:      sourceBucket,
+		SourcePrefix:      sourcePrefix,
+		DestinationBucket: destinationBucket,
+		DestinationPrefix: destinationPrefix,
+		MovedCount:        len(plans),
+	}, nil
+}
+
 func (s *Store) DeleteBucket(ctx context.Context, name string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -744,6 +865,138 @@ func cloneStringMap(input map[string]string) map[string]string {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func (s *Store) ensureDestinationBucketQuota(ctx context.Context, sourceBucket, destinationBucket string, movedBytes int64) error {
+	if sourceBucket == destinationBucket {
+		return nil
+	}
+
+	buckets, err := s.ListBuckets(ctx)
+	if err != nil {
+		return err
+	}
+	for _, bucket := range buckets {
+		if bucket.Name != destinationBucket {
+			continue
+		}
+		if bucket.QuotaBytes > 0 && bucket.UsedBytes+movedBytes > bucket.QuotaBytes {
+			return fmt.Errorf("%w: %s exceeds %d bytes", ErrBucketQuotaExceeded, destinationBucket, bucket.QuotaBytes)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("%w: %s", ErrBucketNotFound, destinationBucket)
+}
+
+func (s *Store) ensureDestinationAvailable(bucket, key string) error {
+	objectPath, metadataPath, err := s.resolveObjectPaths(bucket, key)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(objectPath); err == nil {
+		return fmt.Errorf("%w: %s/%s", ErrObjectExists, bucket, key)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if _, err := os.Stat(metadataPath); err == nil {
+		return fmt.Errorf("%w: %s/%s", ErrObjectExists, bucket, key)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) moveObjectLocked(object ObjectInfo, destinationBucket, destinationKey string) (ObjectInfo, error) {
+	sourceMetadataPath := object.MetadataPath
+	if strings.TrimSpace(sourceMetadataPath) == "" {
+		_, resolvedMetadataPath, err := s.resolveObjectPaths(object.Bucket, object.Key)
+		if err != nil {
+			return ObjectInfo{}, err
+		}
+		sourceMetadataPath = resolvedMetadataPath
+	}
+
+	destinationObjectPath, destinationMetadataPath, err := s.resolveObjectPaths(destinationBucket, destinationKey)
+	if err != nil {
+		return ObjectInfo{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(destinationObjectPath), 0o755); err != nil {
+		return ObjectInfo{}, fmt.Errorf("create destination object dir: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(destinationMetadataPath), 0o755); err != nil {
+		return ObjectInfo{}, fmt.Errorf("create destination metadata dir: %w", err)
+	}
+
+	updatedAt := time.Now().UTC()
+	meta := objectMetadata{
+		Bucket:             destinationBucket,
+		Key:                destinationKey,
+		Size:               object.Size,
+		ETag:               object.ETag,
+		ContentType:        object.ContentType,
+		CacheControl:       object.CacheControl,
+		ContentDisposition: object.ContentDisposition,
+		UserMetadata:       cloneStringMap(object.UserMetadata),
+		LastModified:       updatedAt,
+	}
+	stagedMetadataPath, err := writeJSONTemp(filepath.Dir(destinationMetadataPath), "meta-*", meta)
+	if err != nil {
+		return ObjectInfo{}, fmt.Errorf("stage destination metadata: %w", err)
+	}
+	defer func() {
+		_ = os.Remove(stagedMetadataPath)
+	}()
+
+	if err := os.Rename(object.Path, destinationObjectPath); err != nil {
+		return ObjectInfo{}, fmt.Errorf("move object file: %w", err)
+	}
+	if err := replaceFile(stagedMetadataPath, destinationMetadataPath); err != nil {
+		_ = os.Rename(destinationObjectPath, object.Path)
+		return ObjectInfo{}, fmt.Errorf("write moved metadata: %w", err)
+	}
+	if err := os.Chtimes(destinationObjectPath, updatedAt, updatedAt); err == nil {
+		meta.LastModified = updatedAt
+	}
+	if filepath.Clean(sourceMetadataPath) != filepath.Clean(destinationMetadataPath) {
+		if err := os.Remove(sourceMetadataPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return ObjectInfo{}, fmt.Errorf("remove old metadata file: %w", err)
+		}
+	}
+
+	pruneEmptyParents(filepath.Dir(object.Path), s.bucketRoot(object.Bucket))
+	pruneEmptyParents(filepath.Dir(sourceMetadataPath), s.bucketMetaDir(object.Bucket))
+
+	moved := ObjectInfo{
+		Bucket:             destinationBucket,
+		Key:                destinationKey,
+		Path:               destinationObjectPath,
+		MetadataPath:       destinationMetadataPath,
+		Size:               object.Size,
+		ETag:               object.ETag,
+		ContentType:        object.ContentType,
+		CacheControl:       object.CacheControl,
+		ContentDisposition: object.ContentDisposition,
+		UserMetadata:       cloneStringMap(object.UserMetadata),
+		LastModified:       meta.LastModified,
+	}
+
+	s.logger.Info(
+		"object moved",
+		zap.String("source_bucket", object.Bucket),
+		zap.String("source_key", object.Key),
+		zap.String("destination_bucket", destinationBucket),
+		zap.String("destination_key", destinationKey),
+	)
+	return moved, nil
+}
+
+func normalizeMovePrefix(value string) string {
+	trimmed := strings.Trim(strings.ReplaceAll(strings.TrimSpace(value), "\\", "/"), "/")
+	if trimmed == "" {
+		return ""
+	}
+	return trimmed + "/"
 }
 
 func pruneEmptyParents(startPath, stopPath string) {

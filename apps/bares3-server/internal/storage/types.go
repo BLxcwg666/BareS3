@@ -12,8 +12,10 @@ var (
 	ErrBucketNotEmpty        = errors.New("bucket not empty")
 	ErrBucketQuotaExceeded   = errors.New("bucket quota exceeded")
 	ErrObjectNotFound        = errors.New("object not found")
+	ErrObjectExists          = errors.New("object already exists")
 	ErrInstanceQuotaExceeded = errors.New("instance quota exceeded")
 	ErrInvalidQuota          = errors.New("invalid quota")
+	ErrInvalidMove           = errors.New("invalid move")
 	ErrUploadNotFound        = errors.New("multipart upload not found")
 	ErrInvalidPart           = errors.New("invalid multipart part")
 	ErrInvalidPartOrder      = errors.New("invalid multipart part order")
@@ -72,6 +74,31 @@ type PutObjectInput struct {
 type ListObjectsOptions struct {
 	Prefix string
 	Limit  int
+}
+
+type MoveObjectInput struct {
+	SourceBucket      string
+	SourceKey         string
+	DestinationBucket string
+	DestinationKey    string
+}
+
+type MovePrefixInput struct {
+	SourceBucket      string
+	SourcePrefix      string
+	DestinationBucket string
+	DestinationPrefix string
+}
+
+type MoveResult struct {
+	Kind              string `json:"kind"`
+	SourceBucket      string `json:"source_bucket"`
+	SourceKey         string `json:"source_key,omitempty"`
+	SourcePrefix      string `json:"source_prefix,omitempty"`
+	DestinationBucket string `json:"destination_bucket"`
+	DestinationKey    string `json:"destination_key,omitempty"`
+	DestinationPrefix string `json:"destination_prefix,omitempty"`
+	MovedCount        int    `json:"moved_count"`
 }
 
 type InitiateMultipartUploadInput struct {
