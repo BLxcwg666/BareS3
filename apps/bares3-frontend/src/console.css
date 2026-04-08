@@ -218,6 +218,11 @@ a {
 }
 
 .shell-sider {
+  position: sticky !important;
+  top: 0;
+  align-self: flex-start;
+  height: 100vh;
+  overflow: hidden;
   border-right: 1px solid var(--line);
   background: var(--surface) !important;
 }
@@ -225,7 +230,7 @@ a {
 .sider-inner {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100vh;
 }
 
 .brand-row {
@@ -739,6 +744,16 @@ a {
   padding: 12px 14px;
   border: 1px solid var(--line);
   background: var(--surface);
+  overflow: hidden;
+  transform-origin: top center;
+}
+
+.upload-progress-card-enter {
+  animation: upload-progress-enter 180ms ease;
+}
+
+.upload-progress-card-leave {
+  animation: upload-progress-leave 220ms ease forwards;
 }
 
 .upload-progress-head {
@@ -752,6 +767,35 @@ a {
   color: var(--muted);
   font-size: 13px;
   white-space: nowrap;
+}
+
+@keyframes upload-progress-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scaleY(0.92);
+    max-height: 0;
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scaleY(1);
+    max-height: 120px;
+  }
+}
+
+@keyframes upload-progress-leave {
+  from {
+    opacity: 1;
+    transform: translateY(0) scaleY(1);
+    max-height: 120px;
+  }
+
+  to {
+    opacity: 0;
+    transform: translateY(-8px) scaleY(0.92);
+    max-height: 0;
+    margin-top: -4px;
+  }
 }
 
 .browser-table-dropzone {

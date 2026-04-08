@@ -185,7 +185,8 @@ export function BrowserPage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
-  const uploadProgressTimeoutRef = useRef<number | null>(null);
+  const uploadProgressHideTimeoutRef = useRef<number | null>(null);
+  const uploadProgressRemoveTimeoutRef = useRef<number | null>(null);
   const draggedEntryRef = useRef<Extract<BrowserEntry, { kind: 'object' | 'folder' }> | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedBucket = searchParams.get('bucket')?.trim() ?? '';
@@ -203,6 +204,7 @@ export function BrowserPage() {
   const [bucketMenuOpen, setBucketMenuOpen] = useState(false);
   const [dropTargetKey, setDropTargetKey] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<UploadProgressState | null>(null);
+  const [uploadProgressClosing, setUploadProgressClosing] = useState(false);
   const [renameState, setRenameState] = useState<RenameState | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
@@ -216,8 +218,11 @@ export function BrowserPage() {
 
   useEffect(
     () => () => {
-      if (uploadProgressTimeoutRef.current !== null) {
-        window.clearTimeout(uploadProgressTimeoutRef.current);
+      if (uploadProgressHideTimeoutRef.current !== null) {
+        window.clearTimeout(uploadProgressHideTimeoutRef.current);
+      }
+      if (uploadProgressRemoveTimeoutRef.current !== null) {
+        window.clearTimeout(uploadProgressRemoveTimeoutRef.current);
       }
     },
     [],
@@ -359,13 +364,23 @@ export function BrowserPage() {
   };
 
   const closeUploadProgressSoon = useCallback(() => {
-    if (uploadProgressTimeoutRef.current !== null) {
-      window.clearTimeout(uploadProgressTimeoutRef.current);
+    if (uploadProgressHideTimeoutRef.current !== null) {
+      window.clearTimeout(uploadProgressHideTimeoutRef.current);
     }
-    uploadProgressTimeoutRef.current = window.setTimeout(() => {
-      setUploadProgress(null);
-      uploadProgressTimeoutRef.current = null;
-    }, 2600);
+    if (uploadProgressRemoveTimeoutRef.current !== null) {
+      window.clearTimeout(uploadProgressRemoveTimeoutRef.current);
+    }
+
+    uploadProgressHideTimeoutRef.current = window.setTimeout(() => {
+      setUploadProgressClosing(true);
+      uploadProgressHideTimeoutRef.current = null;
+
+      uploadProgressRemoveTimeoutRef.current = window.setTimeout(() => {
+        setUploadProgress(null);
+        setUploadProgressClosing(false);
+        uploadProgressRemoveTimeoutRef.current = null;
+      }, 220);
+    }, 2380);
   }, []);
 
   const uploadCandidates = useCallback(
@@ -378,9 +393,13 @@ export function BrowserPage() {
         return;
       }
 
-      if (uploadProgressTimeoutRef.current !== null) {
-        window.clearTimeout(uploadProgressTimeoutRef.current);
-        uploadProgressTimeoutRef.current = null;
+      if (uploadProgressHideTimeoutRef.current !== null) {
+        window.clearTimeout(uploadProgressHideTimeoutRef.current);
+        uploadProgressHideTimeoutRef.current = null;
+      }
+      if (uploadProgressRemoveTimeoutRef.current !== null) {
+        window.clearTimeout(uploadProgressRemoveTimeoutRef.current);
+        uploadProgressRemoveTimeoutRef.current = null;
       }
 
       const resolvedCandidates = candidates
@@ -398,6 +417,7 @@ export function BrowserPage() {
       const failedKeys: string[] = [];
 
       setUploading(true);
+      setUploadProgressClosing(false);
       setUploadProgress({
         total: resolvedCandidates.length,
         completed: 0,
@@ -1048,7 +1068,7 @@ export function BrowserPage() {
             </div>
 
             {uploadProgress ? (
-              <div className="upload-progress-card">
+              <div className={uploadProgressClosing ? 'upload-progress-card upload-progress-card-leave' : 'upload-progress-card upload-progress-card-enter'}>
                 <div className="upload-progress-head">
                   <div>
                     <div className="row-title">{uploadProgress.phase === 'uploading' ? 'Uploading objects' : 'Upload complete'}</div>
@@ -1123,6 +1143,7 @@ export function BrowserPage() {
                         if (record.kind === 'folder') {
                           setSelectedKey(null);
                           setSelectedFolderPrefix(record.prefix);
+                          syncSearchParams(selectedBucket, currentPrefix, null, searchValue);
                           return;
                         }
                         setSelectedFolderPrefix(null);
