@@ -1008,6 +1008,7 @@ func TestUpdateBucketRenamesMetadataAndHistory(t *testing.T) {
 
 	updateBody, _ := json.Marshal(map[string]any{
 		"name":        "archive",
+		"access_mode": "public",
 		"quota_bytes": 1024,
 		"tags":        []string{"media", "launch"},
 		"note":        "Launch assets",
@@ -1022,6 +1023,7 @@ func TestUpdateBucketRenamesMetadataAndHistory(t *testing.T) {
 	}
 	updated := struct {
 		Name       string   `json:"name"`
+		AccessMode string   `json:"access_mode"`
 		QuotaBytes int64    `json:"quota_bytes"`
 		Tags       []string `json:"tags"`
 		Note       string   `json:"note"`
@@ -1029,7 +1031,7 @@ func TestUpdateBucketRenamesMetadataAndHistory(t *testing.T) {
 	if err := json.Unmarshal(updateRecorder.Body.Bytes(), &updated); err != nil {
 		t.Fatalf("unmarshal update bucket payload failed: %v", err)
 	}
-	if updated.Name != "archive" || updated.QuotaBytes != 1024 || updated.Note != "Launch assets" {
+	if updated.Name != "archive" || updated.AccessMode != storage.BucketAccessPublic || updated.QuotaBytes != 1024 || updated.Note != "Launch assets" {
 		t.Fatalf("unexpected updated bucket payload: %+v", updated)
 	}
 	if len(updated.Tags) != 2 || updated.Tags[0] != "media" || updated.Tags[1] != "launch" {

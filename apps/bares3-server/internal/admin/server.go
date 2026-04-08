@@ -328,6 +328,7 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 			protected.Post("/buckets", func(w http.ResponseWriter, r *http.Request) {
 				payload := struct {
 					Name       string `json:"name"`
+					AccessMode string `json:"access_mode"`
 					QuotaBytes int64  `json:"quota_bytes"`
 				}{}
 
@@ -341,7 +342,11 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 					return
 				}
 
-				bucket, err := store.CreateBucket(r.Context(), payload.Name, payload.QuotaBytes)
+				bucket, err := store.CreateBucketWithOptions(r.Context(), storage.CreateBucketInput{
+					Name:       payload.Name,
+					AccessMode: payload.AccessMode,
+					QuotaBytes: payload.QuotaBytes,
+				})
 				if err != nil {
 					writeStorageError(w, err)
 					return
@@ -350,7 +355,7 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 					Actor:  actorFromRequest(r),
 					Action: "bucket.create",
 					Title:  fmt.Sprintf("Created bucket %s", bucket.Name),
-					Detail: fmt.Sprintf("Quota %s", quotaLabel(bucket.QuotaBytes)),
+					Detail: fmt.Sprintf("Access %s · Quota %s", bucketAccessLabel(bucket.AccessMode), quotaLabel(bucket.QuotaBytes)),
 					Target: bucket.Name,
 					Remote: requestRemote(r),
 					Status: "success",
@@ -362,6 +367,7 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 			protected.Put("/buckets/{bucket}", func(w http.ResponseWriter, r *http.Request) {
 				payload := struct {
 					Name       string   `json:"name"`
+					AccessMode string   `json:"access_mode"`
 					QuotaBytes int64    `json:"quota_bytes"`
 					Tags       []string `json:"tags"`
 					Note       string   `json:"note"`
@@ -381,6 +387,7 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 				updated, err := store.UpdateBucket(r.Context(), storage.UpdateBucketInput{
 					Name:       bucketName,
 					NewName:    payload.Name,
+					AccessMode: payload.AccessMode,
 					QuotaBytes: payload.QuotaBytes,
 					Tags:       payload.Tags,
 					Note:       payload.Note,
@@ -399,7 +406,7 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 					}
 				}
 
-				detailParts := []string{fmt.Sprintf("Quota %s", quotaLabel(updated.QuotaBytes))}
+				detailParts := []string{fmt.Sprintf("Access %s", bucketAccessLabel(updated.AccessMode)), fmt.Sprintf("Quota %s", quotaLabel(updated.QuotaBytes))}
 				if bucketName != updated.Name {
 					detailParts = append([]string{fmt.Sprintf("Renamed from %s", bucketName)}, detailParts...)
 				}
@@ -1051,7 +1058,7 @@ func requireSession(manager *consoleauth.Manager) func(http.Handler) http.Handle
 func writeStorageError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	switch {
-	case errors.Is(err, storage.ErrInvalidBucketName), errors.Is(err, storage.ErrInvalidObjectKey), errors.Is(err, storage.ErrInvalidQuota), errors.Is(err, storage.ErrInvalidMove), errors.Is(err, storage.ErrInvalidMetadata):
+	case errors.Is(err, storage.ErrInvalidBucketName), errors.Is(err, storage.ErrInvalidObjectKey), errors.Is(err, storage.ErrInvalidQuota), errors.Is(err, storage.ErrInvalidMove), errors.Is(err, storage.ErrInvalidMetadata), errors.Is(err, storage.ErrInvalidBucketAccess):
 		status = http.StatusBadRequest
 	case errors.Is(err, storage.ErrBucketExists), errors.Is(err, storage.ErrObjectExists):
 		status = http.StatusConflict
@@ -1198,6 +1205,13 @@ func quotaLabel(bytes int64) string {
 		return "unlimited"
 	}
 	return formatBytes(bytes)
+}
+
+func bucketAccessLabel(value string) string {
+	if storage.IsBucketPublicAccess(value) {
+		return "public"
+	}
+	return "private"
 }
 
 func contentTypeLabel(value string) string {

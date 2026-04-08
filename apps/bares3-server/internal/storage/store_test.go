@@ -18,12 +18,19 @@ func TestCreateBucketAndList(t *testing.T) {
 
 	store := newTestStore(t)
 
-	created, err := store.CreateBucket(context.Background(), "gallery", 5*1024)
+	created, err := store.CreateBucketWithOptions(context.Background(), CreateBucketInput{
+		Name:       "gallery",
+		QuotaBytes: 5 * 1024,
+		AccessMode: BucketAccessPublic,
+	})
 	if err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
 	if created.Name != "gallery" {
 		t.Fatalf("unexpected bucket name: %s", created.Name)
+	}
+	if created.AccessMode != BucketAccessPublic {
+		t.Fatalf("unexpected bucket access mode: %s", created.AccessMode)
 	}
 	if created.QuotaBytes != 5*1024 {
 		t.Fatalf("unexpected bucket quota: %d", created.QuotaBytes)
@@ -35,6 +42,9 @@ func TestCreateBucketAndList(t *testing.T) {
 	}
 	if len(buckets) != 1 || buckets[0].Name != "gallery" {
 		t.Fatalf("unexpected buckets: %+v", buckets)
+	}
+	if buckets[0].AccessMode != BucketAccessPublic {
+		t.Fatalf("unexpected listed access mode: %s", buckets[0].AccessMode)
 	}
 	if buckets[0].QuotaBytes != 5*1024 {
 		t.Fatalf("unexpected listed quota: %d", buckets[0].QuotaBytes)
@@ -63,6 +73,7 @@ func TestUpdateBucketRenamesAndPersistsMetadata(t *testing.T) {
 	updated, err := store.UpdateBucket(ctx, UpdateBucketInput{
 		Name:       "gallery",
 		NewName:    "archive",
+		AccessMode: BucketAccessPublic,
 		QuotaBytes: 20 * 1024,
 		Tags:       []string{"media", "launch", "media"},
 		Note:       "Launch assets",
@@ -75,6 +86,9 @@ func TestUpdateBucketRenamesAndPersistsMetadata(t *testing.T) {
 	}
 	if updated.QuotaBytes != 20*1024 {
 		t.Fatalf("unexpected updated quota: %d", updated.QuotaBytes)
+	}
+	if updated.AccessMode != BucketAccessPublic {
+		t.Fatalf("unexpected updated access mode: %s", updated.AccessMode)
 	}
 	if len(updated.Tags) != 2 || updated.Tags[0] != "media" || updated.Tags[1] != "launch" {
 		t.Fatalf("unexpected updated tags: %+v", updated.Tags)
@@ -92,6 +106,9 @@ func TestUpdateBucketRenamesAndPersistsMetadata(t *testing.T) {
 	}
 	if len(bucket.Tags) != 2 || bucket.Note != "Launch assets" {
 		t.Fatalf("unexpected persisted metadata: %+v", bucket)
+	}
+	if bucket.AccessMode != BucketAccessPublic {
+		t.Fatalf("unexpected persisted access mode: %s", bucket.AccessMode)
 	}
 
 	object, err := store.StatObject(ctx, "archive", "notes/a.txt")

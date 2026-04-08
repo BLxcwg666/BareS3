@@ -46,17 +46,30 @@ func New(cfg config.Config, logger *zap.Logger) *Store {
 }
 
 func (s *Store) CreateBucket(ctx context.Context, name string, quotaBytes int64) (BucketInfo, error) {
+	return s.CreateBucketWithOptions(ctx, CreateBucketInput{
+		Name:       name,
+		QuotaBytes: quotaBytes,
+		AccessMode: BucketAccessPrivate,
+	})
+}
+
+func (s *Store) CreateBucketWithOptions(ctx context.Context, input CreateBucketInput) (BucketInfo, error) {
 	if err := ctx.Err(); err != nil {
 		return BucketInfo{}, err
 	}
+	name := strings.TrimSpace(input.Name)
 	if err := validateBucketName(name); err != nil {
 		return BucketInfo{}, err
 	}
-	if err := validateQuotaBytes(quotaBytes); err != nil {
+	if err := validateQuotaBytes(input.QuotaBytes); err != nil {
 		return BucketInfo{}, err
 	}
-	if instanceQuota := s.InstanceQuotaBytes(); instanceQuota > 0 && quotaBytes > instanceQuota {
-		return BucketInfo{}, fmt.Errorf("%w: bucket quota %d exceeds instance quota %d", ErrInvalidQuota, quotaBytes, instanceQuota)
+	if err := validateBucketAccessMode(input.AccessMode); err != nil {
+		return BucketInfo{}, err
+	}
+	accessMode := NormalizeBucketAccessMode(input.AccessMode)
+	if instanceQuota := s.InstanceQuotaBytes(); instanceQuota > 0 && input.QuotaBytes > instanceQuota {
+		return BucketInfo{}, fmt.Errorf("%w: bucket quota %d exceeds instance quota %d", ErrInvalidQuota, input.QuotaBytes, instanceQuota)
 	}
 
 	root := s.bucketRoot(name)
@@ -77,7 +90,8 @@ func (s *Store) CreateBucket(ctx context.Context, name string, quotaBytes int64)
 		Name:           name,
 		CreatedAt:      time.Now().UTC(),
 		MetadataLayout: s.metadataLayout,
-		QuotaBytes:     quotaBytes,
+		AccessMode:     accessMode,
+		QuotaBytes:     input.QuotaBytes,
 	}
 
 	if err := s.writeBucketMetadata(name, meta); err != nil {
@@ -93,6 +107,7 @@ func (s *Store) CreateBucket(ctx context.Context, name string, quotaBytes int64)
 		MetadataPath:   s.bucketMetadataPath(name),
 		CreatedAt:      meta.CreatedAt,
 		MetadataLayout: meta.MetadataLayout,
+		AccessMode:     meta.AccessMode,
 		QuotaBytes:     meta.QuotaBytes,
 		Tags:           cloneStringSlice(meta.Tags),
 		Note:           meta.Note,
@@ -129,12 +144,14 @@ func (s *Store) GetBucket(ctx context.Context, name string) (BucketInfo, error) 
 
 	createdAt := info.ModTime().UTC()
 	metadataLayout := s.metadataLayout
+	accessMode := BucketAccessPrivate
 	quotaBytes := int64(0)
 	tags := []string(nil)
 	note := ""
 	if err == nil {
 		createdAt = meta.CreatedAt
 		metadataLayout = meta.MetadataLayout
+		accessMode = NormalizeBucketAccessMode(meta.AccessMode)
 		quotaBytes = meta.QuotaBytes
 		tags = cloneStringSlice(meta.Tags)
 		note = meta.Note
@@ -146,6 +163,7 @@ func (s *Store) GetBucket(ctx context.Context, name string) (BucketInfo, error) 
 		MetadataPath:   s.bucketMetadataPath(name),
 		CreatedAt:      createdAt,
 		MetadataLayout: metadataLayout,
+		AccessMode:     accessMode,
 		QuotaBytes:     quotaBytes,
 		Tags:           tags,
 		Note:           note,
@@ -214,9 +232,6 @@ func (s *Store) UpdateBucket(ctx context.Context, input UpdateBucketInput) (Buck
 	if err := validateBucketName(nextName); err != nil {
 		return BucketInfo{}, err
 	}
-	if err := validateQuotaBytes(input.QuotaBytes); err != nil {
-		return BucketInfo{}, err
-	}
 
 	s.commitMu.Lock()
 	defer s.commitMu.Unlock()
@@ -231,6 +246,17 @@ func (s *Store) UpdateBucket(ctx context.Context, input UpdateBucketInput) (Buck
 	}
 	currentBucket.UsedBytes = usage.UsedBytes
 	currentBucket.ObjectCount = usage.ObjectCount
+	nextAccessMode := strings.TrimSpace(input.AccessMode)
+	if nextAccessMode == "" {
+		nextAccessMode = currentBucket.AccessMode
+	}
+	if err := validateBucketAccessMode(nextAccessMode); err != nil {
+		return BucketInfo{}, err
+	}
+	nextAccessMode = NormalizeBucketAccessMode(nextAccessMode)
+	if err := validateQuotaBytes(input.QuotaBytes); err != nil {
+		return BucketInfo{}, err
+	}
 
 	if input.QuotaBytes > 0 && currentBucket.UsedBytes > input.QuotaBytes {
 		return BucketInfo{}, fmt.Errorf("%w: quota %d is below current usage %d", ErrInvalidQuota, input.QuotaBytes, currentBucket.UsedBytes)
@@ -248,6 +274,7 @@ func (s *Store) UpdateBucket(ctx context.Context, input UpdateBucketInput) (Buck
 			Name:           currentBucket.Name,
 			CreatedAt:      currentBucket.CreatedAt,
 			MetadataLayout: currentBucket.MetadataLayout,
+			AccessMode:     currentBucket.AccessMode,
 			QuotaBytes:     currentBucket.QuotaBytes,
 			Tags:           cloneStringSlice(currentBucket.Tags),
 			Note:           currentBucket.Note,
@@ -256,6 +283,7 @@ func (s *Store) UpdateBucket(ctx context.Context, input UpdateBucketInput) (Buck
 
 	meta.Name = nextName
 	meta.MetadataLayout = currentBucket.MetadataLayout
+	meta.AccessMode = nextAccessMode
 	meta.QuotaBytes = input.QuotaBytes
 	meta.Tags = normalizeBucketTags(input.Tags)
 	meta.Note = strings.TrimSpace(input.Note)
@@ -297,6 +325,7 @@ func (s *Store) UpdateBucket(ctx context.Context, input UpdateBucketInput) (Buck
 	updated.Name = nextName
 	updated.Path = s.bucketRoot(nextName)
 	updated.MetadataPath = s.bucketMetadataPath(nextName)
+	updated.AccessMode = nextAccessMode
 	updated.QuotaBytes = input.QuotaBytes
 	updated.Tags = cloneStringSlice(meta.Tags)
 	updated.Note = meta.Note
@@ -305,6 +334,7 @@ func (s *Store) UpdateBucket(ctx context.Context, input UpdateBucketInput) (Buck
 		"bucket updated",
 		zap.String("bucket", name),
 		zap.String("updated_bucket", nextName),
+		zap.String("access_mode", updated.AccessMode),
 		zap.Int64("quota_bytes", updated.QuotaBytes),
 	)
 

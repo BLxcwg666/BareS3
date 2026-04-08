@@ -15,6 +15,7 @@ var (
 	ErrObjectExists          = errors.New("object already exists")
 	ErrInstanceQuotaExceeded = errors.New("instance quota exceeded")
 	ErrInvalidMetadata       = errors.New("invalid metadata")
+	ErrInvalidBucketAccess   = errors.New("invalid bucket access")
 	ErrInvalidQuota          = errors.New("invalid quota")
 	ErrInvalidMove           = errors.New("invalid move")
 	ErrUploadNotFound        = errors.New("multipart upload not found")
@@ -31,11 +32,18 @@ type BucketInfo struct {
 	MetadataPath   string    `json:"metadata_path"`
 	CreatedAt      time.Time `json:"created_at"`
 	MetadataLayout string    `json:"metadata_layout"`
+	AccessMode     string    `json:"access_mode"`
 	QuotaBytes     int64     `json:"quota_bytes,omitempty"`
 	Tags           []string  `json:"tags,omitempty"`
 	Note           string    `json:"note,omitempty"`
 	UsedBytes      int64     `json:"used_bytes"`
 	ObjectCount    int       `json:"object_count"`
+}
+
+type CreateBucketInput struct {
+	Name       string
+	QuotaBytes int64
+	AccessMode string
 }
 
 type BucketUsageSample struct {
@@ -48,6 +56,7 @@ type BucketUsageSample struct {
 type UpdateBucketInput struct {
 	Name       string
 	NewName    string
+	AccessMode string
 	QuotaBytes int64
 	Tags       []string
 	Note       string
@@ -180,6 +189,7 @@ type bucketMetadata struct {
 	Name           string    `json:"name"`
 	CreatedAt      time.Time `json:"created_at"`
 	MetadataLayout string    `json:"metadata_layout"`
+	AccessMode     string    `json:"access_mode,omitempty"`
 	QuotaBytes     int64     `json:"quota_bytes,omitempty"`
 	Tags           []string  `json:"tags,omitempty"`
 	Note           string    `json:"note,omitempty"`

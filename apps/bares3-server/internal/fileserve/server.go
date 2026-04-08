@@ -74,6 +74,28 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 func serveRouteObject(w http.ResponseWriter, r *http.Request, store *storage.Store) {
 	bucket := chi.URLParam(r, "bucket")
 	key := chi.URLParam(r, "*")
+	bucketInfo, err := store.GetBucket(r.Context(), bucket)
+	if err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, storage.ErrBucketNotFound):
+			status = http.StatusNotFound
+		case errors.Is(err, storage.ErrInvalidBucketName):
+			status = http.StatusBadRequest
+		}
+		httpx.WriteJSON(w, status, map[string]any{
+			"status":  "error",
+			"message": err.Error(),
+		})
+		return
+	}
+	if !storage.IsBucketPublicAccess(bucketInfo.AccessMode) {
+		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{
+			"status":  "error",
+			"message": "bucket does not allow public access",
+		})
+		return
+	}
 	serveObject(w, r, store, bucket, key, "")
 }
 

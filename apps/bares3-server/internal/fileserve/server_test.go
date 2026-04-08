@@ -86,3 +86,55 @@ func TestServeShareLinks(t *testing.T) {
 		t.Fatalf("unexpected revoked status: %d body=%s", revokedRecorder.Code, revokedRecorder.Body.String())
 	}
 }
+
+func TestServePublicBucketRouteHonorsAccessMode(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
+
+	store := storage.New(cfg, zap.NewNop())
+	ctx := context.Background()
+	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	if _, err := store.PutObject(ctx, storage.PutObjectInput{
+		Bucket:      "gallery",
+		Key:         "notes/readme.txt",
+		Body:        bytes.NewBufferString("public me"),
+		ContentType: "text/plain",
+	}); err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	handler := NewHandler(cfg, store, zap.NewNop())
+
+	privateRequest := httptest.NewRequest(http.MethodGet, "/pub/gallery/notes/readme.txt", nil)
+	privateRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(privateRecorder, privateRequest)
+	if privateRecorder.Code != http.StatusForbidden {
+		t.Fatalf("unexpected private access status: %d body=%s", privateRecorder.Code, privateRecorder.Body.String())
+	}
+
+	if _, err := store.UpdateBucket(ctx, storage.UpdateBucketInput{
+		Name:       "gallery",
+		AccessMode: storage.BucketAccessPublic,
+		QuotaBytes: 0,
+	}); err != nil {
+		t.Fatalf("UpdateBucket failed: %v", err)
+	}
+
+	publicRequest := httptest.NewRequest(http.MethodGet, "/pub/gallery/notes/readme.txt", nil)
+	publicRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(publicRecorder, publicRequest)
+	if publicRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected public access status: %d body=%s", publicRecorder.Code, publicRecorder.Body.String())
+	}
+	if body := strings.TrimSpace(publicRecorder.Body.String()); body != "public me" {
+		t.Fatalf("unexpected public access body: %q", body)
+	}
+}
