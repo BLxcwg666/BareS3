@@ -569,6 +569,146 @@ func TestDeleteObjectAlsoRemovesShareLinks(t *testing.T) {
 	}
 }
 
+func TestUpdateObjectMetadata(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	hash, err := consoleauth.HashPassword("secret-password")
+	if err != nil {
+		t.Fatalf("HashPassword failed: %v", err)
+	}
+	cfg.Auth.Console.PasswordHash = hash
+	cfg.Auth.Console.SessionSecret = "test-session-secret"
+
+	store := storage.New(cfg, zap.NewNop())
+	ctx := context.Background()
+	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	if _, err := store.PutObject(ctx, storage.PutObjectInput{
+		Bucket:      "gallery",
+		Key:         "notes/edit.txt",
+		Body:        bytes.NewBufferString("edit me"),
+		ContentType: "text/plain",
+	}); err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	handler := NewHandler(cfg, store, zap.NewNop())
+	cookie := loginCookie(t, handler)
+
+	body, _ := json.Marshal(map[string]any{
+		"content_type":        "text/markdown",
+		"content_disposition": "inline",
+		"cache_control":       "public, max-age=60",
+		"user_metadata": map[string]string{
+			"author": "bare",
+		},
+	})
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/buckets/gallery/metadata/notes/edit.txt", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected update metadata status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	payload := struct {
+		ContentType        string            `json:"content_type"`
+		ContentDisposition string            `json:"content_disposition"`
+		CacheControl       string            `json:"cache_control"`
+		UserMetadata       map[string]string `json:"user_metadata"`
+	}{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal metadata payload: %v", err)
+	}
+	if payload.ContentType != "text/markdown" || payload.ContentDisposition != "inline" || payload.CacheControl != "public, max-age=60" {
+		t.Fatalf("unexpected updated metadata payload: %+v", payload)
+	}
+	if payload.UserMetadata["author"] != "bare" {
+		t.Fatalf("unexpected updated user metadata: %+v", payload.UserMetadata)
+	}
+}
+
+func TestDeletePrefixAlsoRemovesShareLinks(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	hash, err := consoleauth.HashPassword("secret-password")
+	if err != nil {
+		t.Fatalf("HashPassword failed: %v", err)
+	}
+	cfg.Auth.Console.PasswordHash = hash
+	cfg.Auth.Console.SessionSecret = "test-session-secret"
+
+	store := storage.New(cfg, zap.NewNop())
+	ctx := context.Background()
+	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	for _, key := range []string{"folder/a.txt", "folder/deep/b.txt"} {
+		if _, err := store.PutObject(ctx, storage.PutObjectInput{Bucket: "gallery", Key: key, Body: bytes.NewBufferString(key)}); err != nil {
+			t.Fatalf("PutObject(%s) failed: %v", key, err)
+		}
+	}
+
+	handler := NewHandler(cfg, store, zap.NewNop())
+	cookie := loginCookie(t, handler)
+	for _, key := range []string{"folder/a.txt", "folder/deep/b.txt"} {
+		shareBody, _ := json.Marshal(map[string]any{"bucket": "gallery", "key": key, "expires_seconds": 3600})
+		shareRequest := httptest.NewRequest(http.MethodPost, "/api/v1/share-links", bytes.NewReader(shareBody))
+		shareRequest.Header.Set("Content-Type", "application/json")
+		shareRequest.AddCookie(cookie)
+		shareRecorder := httptest.NewRecorder()
+		handler.ServeHTTP(shareRecorder, shareRequest)
+		if shareRecorder.Code != http.StatusCreated {
+			t.Fatalf("unexpected share link create status: %d body=%s", shareRecorder.Code, shareRecorder.Body.String())
+		}
+	}
+
+	deleteBody, _ := json.Marshal(map[string]string{"kind": "prefix", "bucket": "gallery", "prefix": "folder/"})
+	deleteRequest := httptest.NewRequest(http.MethodPost, "/api/v1/browser/delete", bytes.NewReader(deleteBody))
+	deleteRequest.Header.Set("Content-Type", "application/json")
+	deleteRequest.AddCookie(cookie)
+	deleteRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(deleteRecorder, deleteRequest)
+	if deleteRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected delete prefix status: %d body=%s", deleteRecorder.Code, deleteRecorder.Body.String())
+	}
+
+	listRequest := httptest.NewRequest(http.MethodGet, "/api/v1/share-links", nil)
+	listRequest.AddCookie(cookie)
+	listRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(listRecorder, listRequest)
+	if listRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected share links status after prefix delete: %d body=%s", listRecorder.Code, listRecorder.Body.String())
+	}
+	listed := struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}{}
+	if err := json.Unmarshal(listRecorder.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("unmarshal share links after prefix delete failed: %v", err)
+	}
+	if len(listed.Items) != 0 {
+		t.Fatalf("expected deleted prefix share links to be removed, got %+v", listed.Items)
+	}
+}
+
 func TestDeleteBucketAlsoRemovesShareLinks(t *testing.T) {
 	t.Parallel()
 

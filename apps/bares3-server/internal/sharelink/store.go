@@ -304,6 +304,51 @@ func (s *Store) RemoveByBucket(ctx context.Context, bucket string) (int, error) 
 	return removed, nil
 }
 
+func (s *Store) RemoveByPrefix(ctx context.Context, bucket, prefix string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	bucket = strings.TrimSpace(bucket)
+	prefix = normalizePrefix(prefix)
+	if bucket == "" || prefix == "" {
+		return 0, fmt.Errorf("share link bucket and prefix are required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	links, err := s.listLocked(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	removed := 0
+	for _, link := range links {
+		if link.Bucket != bucket || !strings.HasPrefix(link.Key, prefix) {
+			continue
+		}
+		if err := os.Remove(s.linkPath(link.ID)); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return removed, fmt.Errorf("remove share link for prefix: %w", err)
+		}
+		removed += 1
+	}
+
+	if removed > 0 {
+		s.logger.Info(
+			"share links removed for deleted prefix",
+			zap.String("bucket", bucket),
+			zap.String("prefix", prefix),
+			zap.Int("count", removed),
+		)
+	}
+
+	return removed, nil
+}
+
 func (s *Store) ReassignPrefix(ctx context.Context, sourceBucket, sourcePrefix, destinationBucket, destinationPrefix string) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err

@@ -578,6 +578,110 @@ func (s *Store) DeleteObject(ctx context.Context, bucket, key string) error {
 	if _, err := s.GetBucket(ctx, bucket); err != nil {
 		return err
 	}
+	return s.deleteObjectLocked(bucket, key)
+}
+
+func (s *Store) DeletePrefix(ctx context.Context, bucket, prefix string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	bucket = strings.TrimSpace(bucket)
+	prefix = normalizeMovePrefix(prefix)
+	if bucket == "" || prefix == "" {
+		return 0, fmt.Errorf("%w: bucket and prefix are required", ErrInvalidObjectKey)
+	}
+
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
+	if _, err := s.GetBucket(ctx, bucket); err != nil {
+		return 0, err
+	}
+
+	objects, err := s.ListObjects(ctx, bucket, ListObjectsOptions{Prefix: prefix})
+	if err != nil {
+		return 0, err
+	}
+	if len(objects) == 0 {
+		return 0, fmt.Errorf("%w: %s/%s", ErrObjectNotFound, bucket, prefix)
+	}
+
+	deleted := 0
+	for _, object := range objects {
+		if err := s.deleteObjectLocked(bucket, object.Key); err != nil {
+			return deleted, err
+		}
+		deleted += 1
+	}
+
+	s.logger.Info("prefix deleted", zap.String("bucket", bucket), zap.String("prefix", prefix), zap.Int("count", deleted))
+	return deleted, nil
+}
+
+func (s *Store) UpdateObjectMetadata(ctx context.Context, input UpdateObjectMetadataInput) (ObjectInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return ObjectInfo{}, err
+	}
+	bucket := strings.TrimSpace(input.Bucket)
+	key := strings.TrimSpace(input.Key)
+	if bucket == "" || key == "" {
+		return ObjectInfo{}, fmt.Errorf("%w: bucket and key are required", ErrInvalidMetadata)
+	}
+
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
+
+	object, err := s.StatObject(ctx, bucket, key)
+	if err != nil {
+		return ObjectInfo{}, err
+	}
+
+	updatedAt := time.Now().UTC()
+	meta := objectMetadata{
+		Bucket:             bucket,
+		Key:                key,
+		Size:               object.Size,
+		ETag:               object.ETag,
+		ContentType:        strings.TrimSpace(input.ContentType),
+		CacheControl:       strings.TrimSpace(input.CacheControl),
+		ContentDisposition: strings.TrimSpace(input.ContentDisposition),
+		UserMetadata:       cloneStringMap(input.UserMetadata),
+		LastModified:       updatedAt,
+	}
+	if meta.ContentType == "" {
+		meta.ContentType = fallbackContentType(object.Path)
+	}
+
+	metadataPath := object.MetadataPath
+	if strings.TrimSpace(metadataPath) == "" {
+		_, metadataPath, err = s.resolveObjectPaths(bucket, key)
+		if err != nil {
+			return ObjectInfo{}, err
+		}
+	}
+	stagedMetadataPath, err := writeJSONTemp(filepath.Dir(metadataPath), "meta-*", meta)
+	if err != nil {
+		return ObjectInfo{}, fmt.Errorf("stage metadata file: %w", err)
+	}
+	defer func() {
+		_ = os.Remove(stagedMetadataPath)
+	}()
+	if err := replaceFile(stagedMetadataPath, metadataPath); err != nil {
+		return ObjectInfo{}, fmt.Errorf("write metadata file: %w", err)
+	}
+
+	updated := object
+	updated.MetadataPath = metadataPath
+	updated.ContentType = meta.ContentType
+	updated.CacheControl = meta.CacheControl
+	updated.ContentDisposition = meta.ContentDisposition
+	updated.UserMetadata = cloneStringMap(meta.UserMetadata)
+	updated.LastModified = meta.LastModified
+
+	s.logger.Info("object metadata updated", zap.String("bucket", bucket), zap.String("key", key))
+	return updated, nil
+}
+
+func (s *Store) deleteObjectLocked(bucket, key string) error {
 
 	objectPath, metadataPath, err := s.resolveObjectPaths(bucket, key)
 	if err != nil {

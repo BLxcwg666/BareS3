@@ -492,6 +492,98 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 				w.WriteHeader(http.StatusNoContent)
 			})
 
+			protected.Put("/buckets/{bucket}/metadata/*", func(w http.ResponseWriter, r *http.Request) {
+				payload := struct {
+					ContentType        string            `json:"content_type"`
+					ContentDisposition string            `json:"content_disposition"`
+					CacheControl       string            `json:"cache_control"`
+					UserMetadata       map[string]string `json:"user_metadata"`
+				}{}
+
+				decoder := json.NewDecoder(r.Body)
+				decoder.DisallowUnknownFields()
+				if err := decoder.Decode(&payload); err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+						"status":  "error",
+						"message": "invalid request body",
+					})
+					return
+				}
+
+				object, err := store.UpdateObjectMetadata(r.Context(), storage.UpdateObjectMetadataInput{
+					Bucket:             chi.URLParam(r, "bucket"),
+					Key:                chi.URLParam(r, "*"),
+					ContentType:        payload.ContentType,
+					ContentDisposition: payload.ContentDisposition,
+					CacheControl:       payload.CacheControl,
+					UserMetadata:       payload.UserMetadata,
+				})
+				if err != nil {
+					writeStorageError(w, err)
+					return
+				}
+
+				recordAudit(logger, auditRecorder, auditlog.Entry{
+					Actor:  actorFromRequest(r),
+					Action: "object.metadata.update",
+					Title:  fmt.Sprintf("Updated metadata for %s/%s", object.Bucket, object.Key),
+					Target: object.Bucket + "/" + object.Key,
+					Remote: requestRemote(r),
+					Status: "success",
+				})
+				httpx.WriteJSON(w, http.StatusOK, object)
+			})
+
+			protected.Post("/browser/delete", func(w http.ResponseWriter, r *http.Request) {
+				payload := struct {
+					Kind   string `json:"kind"`
+					Bucket string `json:"bucket"`
+					Prefix string `json:"prefix"`
+				}{}
+
+				decoder := json.NewDecoder(r.Body)
+				decoder.DisallowUnknownFields()
+				if err := decoder.Decode(&payload); err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+						"status":  "error",
+						"message": "invalid request body",
+					})
+					return
+				}
+
+				if strings.TrimSpace(payload.Kind) != "prefix" {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+						"status":  "error",
+						"message": "kind must be prefix",
+					})
+					return
+				}
+
+				deletedCount, err := store.DeletePrefix(r.Context(), payload.Bucket, payload.Prefix)
+				if err != nil {
+					writeStorageError(w, err)
+					return
+				}
+				if _, err := shareLinks.RemoveByPrefix(r.Context(), payload.Bucket, payload.Prefix); err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
+
+				recordAudit(logger, auditRecorder, auditlog.Entry{
+					Actor:  actorFromRequest(r),
+					Action: "folder.delete",
+					Title:  fmt.Sprintf("Deleted folder %s/%s", payload.Bucket, payload.Prefix),
+					Detail: fmt.Sprintf("Removed %d item(s)", deletedCount),
+					Target: payload.Bucket + "/" + payload.Prefix,
+					Remote: requestRemote(r),
+					Status: "success",
+				})
+				httpx.WriteJSON(w, http.StatusOK, map[string]any{"deleted_count": deletedCount})
+			})
+
 			protected.Post("/browser/move", func(w http.ResponseWriter, r *http.Request) {
 				payload := struct {
 					Kind              string `json:"kind"`
@@ -796,7 +888,7 @@ func requireSession(manager *consoleauth.Manager) func(http.Handler) http.Handle
 func writeStorageError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	switch {
-	case errors.Is(err, storage.ErrInvalidBucketName), errors.Is(err, storage.ErrInvalidObjectKey), errors.Is(err, storage.ErrInvalidQuota), errors.Is(err, storage.ErrInvalidMove):
+	case errors.Is(err, storage.ErrInvalidBucketName), errors.Is(err, storage.ErrInvalidObjectKey), errors.Is(err, storage.ErrInvalidQuota), errors.Is(err, storage.ErrInvalidMove), errors.Is(err, storage.ErrInvalidMetadata):
 		status = http.StatusBadRequest
 	case errors.Is(err, storage.ErrBucketExists), errors.Is(err, storage.ErrObjectExists):
 		status = http.StatusConflict

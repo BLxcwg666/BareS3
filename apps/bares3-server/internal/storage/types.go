@@ -14,6 +14,7 @@ var (
 	ErrObjectNotFound        = errors.New("object not found")
 	ErrObjectExists          = errors.New("object already exists")
 	ErrInstanceQuotaExceeded = errors.New("instance quota exceeded")
+	ErrInvalidMetadata       = errors.New("invalid metadata")
 	ErrInvalidQuota          = errors.New("invalid quota")
 	ErrInvalidMove           = errors.New("invalid move")
 	ErrUploadNotFound        = errors.New("multipart upload not found")
@@ -99,6 +100,15 @@ type MoveResult struct {
 	DestinationKey    string `json:"destination_key,omitempty"`
 	DestinationPrefix string `json:"destination_prefix,omitempty"`
 	MovedCount        int    `json:"moved_count"`
+}
+
+type UpdateObjectMetadataInput struct {
+	Bucket             string
+	Key                string
+	ContentType        string
+	CacheControl       string
+	ContentDisposition string
+	UserMetadata       map[string]string
 }
 
 type InitiateMultipartUploadInput struct {

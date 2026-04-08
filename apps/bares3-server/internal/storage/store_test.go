@@ -362,6 +362,79 @@ func TestMovePrefixMovesFolderContents(t *testing.T) {
 	}
 }
 
+func TestUpdateObjectMetadataPersistsChanges(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	if _, err := store.PutObject(context.Background(), PutObjectInput{
+		Bucket:      "gallery",
+		Key:         "notes/readme.txt",
+		Body:        bytes.NewBufferString("hello"),
+		ContentType: "text/plain",
+	}); err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	updated, err := store.UpdateObjectMetadata(context.Background(), UpdateObjectMetadataInput{
+		Bucket:             "gallery",
+		Key:                "notes/readme.txt",
+		ContentType:        "text/markdown",
+		ContentDisposition: "inline",
+		CacheControl:       "public, max-age=60",
+		UserMetadata:       map[string]string{"author": "bare"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateObjectMetadata failed: %v", err)
+	}
+	if updated.ContentType != "text/markdown" || updated.ContentDisposition != "inline" || updated.CacheControl != "public, max-age=60" {
+		t.Fatalf("unexpected updated object metadata: %+v", updated)
+	}
+	if updated.UserMetadata["author"] != "bare" {
+		t.Fatalf("expected updated user metadata, got %+v", updated.UserMetadata)
+	}
+
+	stated, err := store.StatObject(context.Background(), "gallery", "notes/readme.txt")
+	if err != nil {
+		t.Fatalf("StatObject failed: %v", err)
+	}
+	if stated.ContentType != "text/markdown" || stated.CacheControl != "public, max-age=60" || stated.ContentDisposition != "inline" {
+		t.Fatalf("unexpected persisted metadata: %+v", stated)
+	}
+}
+
+func TestDeletePrefixRemovesNestedObjects(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	fixtures := []string{"folder/a.txt", "folder/deep/b.txt", "other/c.txt"}
+	for _, key := range fixtures {
+		if _, err := store.PutObject(context.Background(), PutObjectInput{Bucket: "gallery", Key: key, Body: bytes.NewBufferString(key)}); err != nil {
+			t.Fatalf("PutObject(%s) failed: %v", key, err)
+		}
+	}
+
+	deleted, err := store.DeletePrefix(context.Background(), "gallery", "folder/")
+	if err != nil {
+		t.Fatalf("DeletePrefix failed: %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("expected 2 deleted objects, got %d", deleted)
+	}
+	remaining, err := store.ListObjects(context.Background(), "gallery", ListObjectsOptions{})
+	if err != nil {
+		t.Fatalf("ListObjects failed: %v", err)
+	}
+	if len(remaining) != 1 || remaining[0].Key != "other/c.txt" {
+		t.Fatalf("unexpected remaining objects: %+v", remaining)
+	}
+}
+
 func TestDeleteBucketRequiresEmptyBucket(t *testing.T) {
 	t.Parallel()
 
