@@ -477,6 +477,26 @@ a {
   font-size: 13px;
 }
 
+.inspector-fields {
+  display: grid;
+  gap: 10px;
+}
+
+.inspector-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+}
+
+.inspector-row-label {
+  color: var(--muted);
+}
+
+.inspector-row-content {
+  min-width: 0;
+}
+
 .inspector-edit-row {
   display: grid;
   gap: 8px;
@@ -495,6 +515,14 @@ a {
   overflow-wrap: anywhere;
 }
 
+.inspector-edit-controls-inline {
+  align-items: flex-start;
+}
+
+.inspector-row-display {
+  justify-content: flex-start;
+}
+
 .inspector-icon-button {
   display: inline-flex;
   align-items: center;
@@ -506,6 +534,7 @@ a {
   background: transparent;
   color: var(--muted);
   cursor: pointer;
+  vertical-align: middle;
 }
 
 .inspector-icon-button:hover {

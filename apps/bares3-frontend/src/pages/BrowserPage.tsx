@@ -4,7 +4,6 @@ import { CheckOutlined, CloseOutlined, CopyOutlined, EditOutlined, FileOutlined,
 import {
   App as AntApp,
   Button,
-  Descriptions,
   Dropdown,
   Empty,
   Input,
@@ -21,12 +20,14 @@ import {
 import type { MenuProps, TableColumnsType } from 'antd';
 import {
   createShareLink,
+  deleteBrowserPrefix,
   deleteObject,
   listShareLinks,
   moveBrowserEntry,
   presignObject,
   removeShareLink,
   revokeShareLink,
+  updateObjectMetadata,
   uploadObject,
   type ObjectInfo,
   type ShareLinkInfo,
@@ -37,7 +38,7 @@ import { Section } from '../components/Section';
 import { useBucketObjects } from '../hooks/useBucketObjects';
 import { useBucketsData } from '../hooks/useBucketsData';
 import { useObjectDetail } from '../hooks/useObjectDetail';
-import { copyText, formatBytes, formatDateTime, formatRelativeTime, nodeSummaryToItems, normalizeApiError } from '../utils';
+import { copyText, formatBytes, formatDateTime, formatRelativeTime, normalizeApiError } from '../utils';
 import { useSearchParams } from 'react-router-dom';
 
 type BrowserEntry =
@@ -85,6 +86,13 @@ type RenameState =
       parentPrefix: string;
       value: string;
     };
+
+type MetadataField = 'content_type' | 'content_disposition' | 'cache_control' | 'user_metadata';
+
+type MetadataEditState = {
+  field: MetadataField;
+  value: string;
+};
 
 function normalizePrefix(value: string | null) {
   const normalized = (value ?? '')
@@ -206,6 +214,8 @@ export function BrowserPage() {
   const [uploadProgress, setUploadProgress] = useState<UploadProgressState | null>(null);
   const [uploadProgressClosing, setUploadProgressClosing] = useState(false);
   const [renameState, setRenameState] = useState<RenameState | null>(null);
+  const [metadataEditState, setMetadataEditState] = useState<MetadataEditState | null>(null);
+  const [savingMetadata, setSavingMetadata] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [presigningKey, setPresigningKey] = useState<string | null>(null);
@@ -259,6 +269,7 @@ export function BrowserPage() {
   useEffect(() => {
     setSelectedFolderPrefix(null);
     setRenameState(null);
+    setMetadataEditState(null);
   }, [pathSignature]);
 
   const filteredObjects = useMemo(() => {
@@ -643,6 +654,7 @@ export function BrowserPage() {
   );
 
   const handleStartRename = () => {
+    setMetadataEditState(null);
     if (inspectorObject && selectedBucket) {
       setRenameState({
         kind: 'object',
@@ -714,6 +726,123 @@ export function BrowserPage() {
     }
   };
 
+  const formatUserMetadataValue = (value: Record<string, string> | undefined) => {
+    if (!value || Object.keys(value).length === 0) {
+      return 'Not set';
+    }
+    return JSON.stringify(value);
+  };
+
+  const handleStartMetadataEdit = (field: MetadataField) => {
+    if (!inspectorObject) {
+      return;
+    }
+
+    setRenameState(null);
+
+    switch (field) {
+      case 'content_type':
+        setMetadataEditState({ field, value: inspectorObject.content_type || '' });
+        return;
+      case 'content_disposition':
+        setMetadataEditState({ field, value: inspectorObject.content_disposition || '' });
+        return;
+      case 'cache_control':
+        setMetadataEditState({ field, value: inspectorObject.cache_control || '' });
+        return;
+      case 'user_metadata':
+        setMetadataEditState({
+          field,
+          value:
+            inspectorObject.user_metadata && Object.keys(inspectorObject.user_metadata).length > 0
+              ? JSON.stringify(inspectorObject.user_metadata, null, 2)
+              : '{}',
+        });
+        return;
+      default:
+        return;
+    }
+  };
+
+  const parseUserMetadataInput = (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return {} as Record<string, string>;
+    }
+
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+      throw new Error('User metadata must be a JSON object');
+    }
+
+    const result: Record<string, string> = {};
+    for (const [key, entry] of Object.entries(parsed)) {
+      if (Array.isArray(entry) || (entry !== null && typeof entry === 'object')) {
+        throw new Error('User metadata values must be strings, numbers, booleans, or null');
+      }
+      result[key] = entry == null ? '' : String(entry);
+    }
+    return result;
+  };
+
+  const handleCommitMetadataEdit = async () => {
+    if (!inspectorObject || !selectedBucket || !metadataEditState) {
+      return;
+    }
+
+    setSavingMetadata(true);
+    try {
+      const payload = {
+        content_type: inspectorObject.content_type || '',
+        content_disposition: inspectorObject.content_disposition || '',
+        cache_control: inspectorObject.cache_control || '',
+        user_metadata: inspectorObject.user_metadata ?? {},
+      };
+
+      switch (metadataEditState.field) {
+        case 'content_type':
+          payload.content_type = metadataEditState.value;
+          break;
+        case 'content_disposition':
+          payload.content_disposition = metadataEditState.value;
+          break;
+        case 'cache_control':
+          payload.cache_control = metadataEditState.value;
+          break;
+        case 'user_metadata':
+          payload.user_metadata = parseUserMetadataInput(metadataEditState.value);
+          break;
+      }
+
+      await updateObjectMetadata(selectedBucket, inspectorObject.key, payload);
+      await Promise.all([refresh(), refreshObjectDetail()]);
+      setMetadataEditState(null);
+      message.success('Updated object metadata');
+    } catch (error) {
+      message.error(normalizeApiError(error, 'Failed to update object metadata'));
+    } finally {
+      setSavingMetadata(false);
+    }
+  };
+
+  const handleDeleteFolder = async () => {
+    if (!selectedFolder) {
+      return;
+    }
+
+    try {
+      await deleteBrowserPrefix(selectedFolder.bucket, selectedFolder.prefix);
+      setSelectedFolderPrefix(null);
+      setRenameState(null);
+      setMetadataEditState(null);
+      await refresh();
+      syncSearchParams(selectedFolder.bucket, currentPrefix, null, searchValue);
+      message.success(`Deleted ${selectedFolder.prefix}`);
+    } catch (error) {
+      message.error(normalizeApiError(error, 'Failed to delete folder'));
+    }
+  };
+
   const handleRowDragStart = (entry: BrowserEntry, event: DragEvent<HTMLTableRowElement>) => {
     if (entry.kind !== 'object' && entry.kind !== 'folder') {
       return;
@@ -777,6 +906,7 @@ export function BrowserPage() {
       message.success(`Deleted ${selectedObject.key}`);
       setSelectedKey(null);
       setObjectShareLinks([]);
+      setMetadataEditState(null);
       await refresh();
       syncSearchParams(selectedBucket, currentPrefix, null, searchValue);
     } catch (error) {
@@ -912,6 +1042,49 @@ export function BrowserPage() {
       message.error(normalizeApiError(error, 'Failed to copy path'));
     }
   };
+
+  const renderInspectorRow = (
+    label: string,
+    value: string,
+    options?: {
+      editable?: boolean;
+      editing?: boolean;
+      multiline?: boolean;
+      onChange?: (value: string) => void;
+      onEdit?: () => void;
+      onCancel?: () => void;
+      onSave?: () => void;
+      saving?: boolean;
+    },
+  ) => (
+    <div className="inspector-row" key={label}>
+      <div className="inspector-row-label">{label}:</div>
+      <div className="inspector-row-content">
+        {options?.editing ? (
+          <div className="inspector-edit-controls inspector-edit-controls-inline">
+            {options.multiline ? (
+              <Input.TextArea autoSize={{ minRows: 3, maxRows: 8 }} onChange={(event) => options.onChange?.(event.target.value)} value={value} />
+            ) : (
+              <Input autoFocus onChange={(event) => options.onChange?.(event.target.value)} onPressEnter={() => void options.onSave?.()} size="small" value={value} />
+            )}
+            <Button icon={<CheckOutlined />} loading={options.saving} onClick={() => void options.onSave?.()} size="small" type="primary" />
+            <Button icon={<CloseOutlined />} onClick={options.onCancel} size="small" />
+          </div>
+        ) : (
+          <div className="inspector-edit-display inspector-row-display">
+            <span className="inspector-edit-value">{value}</span>
+            {options?.editable ? (
+              <Tooltip title={`Edit ${label.toLowerCase()}`}>
+                <button className="inspector-icon-button" onClick={options.onEdit} type="button">
+                  <EditOutlined />
+                </button>
+              </Tooltip>
+            ) : null}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 
   const browserColumns = useMemo<TableColumnsType<BrowserEntry>>(
     () => [
@@ -1140,6 +1313,7 @@ export function BrowserPage() {
                           return;
                         }
                         setRenameState(null);
+                        setMetadataEditState(null);
                         if (record.kind === 'folder') {
                           setSelectedKey(null);
                           setSelectedFolderPrefix(record.prefix);
@@ -1202,58 +1376,82 @@ export function BrowserPage() {
                 {inspectorObject || selectedFolder ? (
                   <Spin spinning={objectDetailLoading}>
                     <div className="inspector-stack">
-                      <div className="inspector-edit-row">
-                        <span className="inspector-field-label">Key</span>
-                        {renameState ? (
-                          <div className="inspector-edit-controls">
-                            <Input
-                              autoFocus
-                              onChange={(event) => setRenameState({ ...renameState, value: event.target.value })}
-                              onPressEnter={() => void handleCommitRename()}
-                              size="small"
-                              value={renameState.value}
-                            />
-                            <Button icon={<CheckOutlined />} loading={renaming} onClick={() => void handleCommitRename()} size="small" type="primary" />
-                            <Button icon={<CloseOutlined />} onClick={() => setRenameState(null)} size="small" />
-                          </div>
-                        ) : (
-                          <div className="inspector-edit-display">
-                            <span className="inspector-edit-value">{inspectorObject ? inspectorObject.key : selectedFolder?.prefix}</span>
-                            <Tooltip title="Rename">
-                              <button className="inspector-icon-button" onClick={handleStartRename} type="button">
-                                <EditOutlined />
-                              </button>
-                            </Tooltip>
-                          </div>
-                        )}
-                      </div>
+                      <div className="inspector-fields">
+                        {renderInspectorRow('Key', renameState?.value ?? (inspectorObject ? inspectorObject.key : selectedFolder?.prefix ?? 'Not set'), {
+                          editable: true,
+                          editing: Boolean(renameState),
+                          onChange: (value) => renameState && setRenameState({ ...renameState, value }),
+                          onEdit: handleStartRename,
+                          onCancel: () => setRenameState(null),
+                          onSave: () => void handleCommitRename(),
+                          saving: renaming,
+                        })}
 
-                      {inspectorObject ? (
-                        <Descriptions
-                          column={1}
-                          items={nodeSummaryToItems([
-                            { label: 'Content-Type', value: inspectorObject.content_type || 'application/octet-stream' },
-                            { label: 'Content-Disposition', value: inspectorObject.content_disposition || 'Not set' },
-                            { label: 'Size', value: formatBytes(inspectorObject.size) },
-                            { label: 'Cache-Control', value: inspectorObject.cache_control || 'private' },
-                            { label: 'ETag', value: inspectorObject.etag || 'Not set' },
-                            { label: 'User metadata', value: String(Object.keys(inspectorObject.user_metadata ?? {}).length) },
-                            { label: 'Updated', value: formatDateTime(inspectorObject.last_modified) },
-                          ])}
-                          size="small"
-                        />
-                      ) : selectedFolder ? (
-                        <Descriptions
-                          column={1}
-                          items={nodeSummaryToItems([
-                            { label: 'Bucket', value: selectedFolder.bucket },
-                            { label: 'Prefix', value: selectedFolder.prefix },
-                            { label: 'Items', value: String(selectedFolderObjectCount) },
-                            { label: 'Updated', value: selectedFolder.lastModified ? formatDateTime(selectedFolder.lastModified) : 'N/A' },
-                          ])}
-                          size="small"
-                        />
-                      ) : null}
+                        {inspectorObject
+                          ? [
+                              renderInspectorRow('Content-Type', metadataEditState?.field === 'content_type' ? metadataEditState.value : inspectorObject.content_type || 'application/octet-stream', {
+                                editable: true,
+                                editing: metadataEditState?.field === 'content_type',
+                                onChange: (value) => setMetadataEditState({ field: 'content_type', value }),
+                                onEdit: () => handleStartMetadataEdit('content_type'),
+                                onCancel: () => setMetadataEditState(null),
+                                onSave: () => void handleCommitMetadataEdit(),
+                                saving: savingMetadata,
+                              }),
+                              renderInspectorRow(
+                                'Content-Disposition',
+                                metadataEditState?.field === 'content_disposition' ? metadataEditState.value : inspectorObject.content_disposition || 'Not set',
+                                {
+                                  editable: true,
+                                  editing: metadataEditState?.field === 'content_disposition',
+                                  onChange: (value) => setMetadataEditState({ field: 'content_disposition', value }),
+                                  onEdit: () => handleStartMetadataEdit('content_disposition'),
+                                  onCancel: () => setMetadataEditState(null),
+                                  onSave: () => void handleCommitMetadataEdit(),
+                                  saving: savingMetadata,
+                                },
+                              ),
+                              renderInspectorRow('Size', formatBytes(inspectorObject.size)),
+                              renderInspectorRow(
+                                'Cache-Control',
+                                metadataEditState?.field === 'cache_control' ? metadataEditState.value : inspectorObject.cache_control || 'private',
+                                {
+                                  editable: true,
+                                  editing: metadataEditState?.field === 'cache_control',
+                                  onChange: (value) => setMetadataEditState({ field: 'cache_control', value }),
+                                  onEdit: () => handleStartMetadataEdit('cache_control'),
+                                  onCancel: () => setMetadataEditState(null),
+                                  onSave: () => void handleCommitMetadataEdit(),
+                                  saving: savingMetadata,
+                                },
+                              ),
+                              renderInspectorRow('ETag', inspectorObject.etag || 'Not set'),
+                              renderInspectorRow(
+                                'User metadata',
+                                metadataEditState?.field === 'user_metadata'
+                                  ? metadataEditState.value
+                                  : formatUserMetadataValue(inspectorObject.user_metadata),
+                                {
+                                  editable: true,
+                                  editing: metadataEditState?.field === 'user_metadata',
+                                  multiline: true,
+                                  onChange: (value) => setMetadataEditState({ field: 'user_metadata', value }),
+                                  onEdit: () => handleStartMetadataEdit('user_metadata'),
+                                  onCancel: () => setMetadataEditState(null),
+                                  onSave: () => void handleCommitMetadataEdit(),
+                                  saving: savingMetadata,
+                                },
+                              ),
+                              renderInspectorRow('Updated', formatDateTime(inspectorObject.last_modified)),
+                            ]
+                          : selectedFolder
+                            ? [
+                                renderInspectorRow('Bucket', selectedFolder.bucket),
+                                renderInspectorRow('Items', String(selectedFolderObjectCount)),
+                                renderInspectorRow('Updated', selectedFolder.lastModified ? formatDateTime(selectedFolder.lastModified) : 'N/A'),
+                              ]
+                            : null}
+                      </div>
 
                       <div className="inspector-panel">
                         <div className="inspector-panel-head">
@@ -1358,7 +1556,14 @@ export function BrowserPage() {
                             </div>
                           </>
                         ) : (
-                          <div className="inspector-folder-note">Drag this folder onto another folder, `..`, or another bucket to move it.</div>
+                          <div className="inspector-actions-row">
+                            <div className="inspector-folder-note">Drag this folder onto another folder, `..`, or another bucket to move it.</div>
+                            <Popconfirm okText="Delete" onConfirm={() => void handleDeleteFolder()} title={`Delete ${selectedFolder?.prefix}?`}>
+                              <Button danger size="small">
+                                Delete folder
+                              </Button>
+                            </Popconfirm>
+                          </div>
                         )}
                       </div>
                     </div>

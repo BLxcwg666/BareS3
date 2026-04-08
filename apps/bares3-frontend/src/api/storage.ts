@@ -104,6 +104,13 @@ export type MoveEntryResult = {
   moved_count: number;
 };
 
+export type UpdateObjectMetadataPayload = {
+  content_type: string;
+  content_disposition: string;
+  cache_control: string;
+  user_metadata: Record<string, string>;
+};
+
 export function getRuntime() {
   return request<RuntimeInfo>('/api/v1/runtime');
 }
@@ -165,6 +172,16 @@ export function deleteObject(bucket: string, key: string) {
   });
 }
 
+export function updateObjectMetadata(bucket: string, key: string, payload: UpdateObjectMetadataPayload) {
+  return request<ObjectInfo>(`/api/v1/buckets/${encodeURIComponent(bucket)}/metadata/${encodeObjectKeyPath(key)}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
 export function presignObject(bucket: string, key: string, expiresSeconds = 900, method = 'GET') {
   return request<PresignResult>('/api/v1/presign/s3', {
     method: 'POST',
@@ -200,5 +217,19 @@ export function moveBrowserEntry(payload: MoveEntryRequest) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(payload),
+  });
+}
+
+export function deleteBrowserPrefix(bucket: string, prefix: string) {
+  return request<{ deleted_count: number }>('/api/v1/browser/delete', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      kind: 'prefix',
+      bucket,
+      prefix,
+    }),
   });
 }
