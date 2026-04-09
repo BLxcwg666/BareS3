@@ -27,9 +27,9 @@ func TestLoginAndProtectedRuntime(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
-	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
-	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
 	hash, err := consoleauth.HashPassword("secret-password")
 	if err != nil {
 		t.Fatalf("HashPassword failed: %v", err)
@@ -148,9 +148,9 @@ func TestProtectedMutationsRemainAllowedWhenSyncEnabled(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
-	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
-	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
 	hash, err := consoleauth.HashPassword("secret-password")
 	if err != nil {
 		t.Fatalf("HashPassword failed: %v", err)
@@ -183,9 +183,9 @@ func TestLoginSetsSecureCookieForHTTPSRequests(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
-	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
-	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
 	hash, err := consoleauth.HashPassword("secret-password")
 	if err != nil {
 		t.Fatalf("HashPassword failed: %v", err)
@@ -219,9 +219,9 @@ func TestReadinessAndMetricsEndpoints(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
-	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
-	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
 	hash, err := consoleauth.HashPassword("secret-password")
 	if err != nil {
 		t.Fatalf("HashPassword failed: %v", err)
@@ -283,9 +283,9 @@ func TestObjectListingSupportsPaginationAndSearch(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
-	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
-	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
 	hash, err := consoleauth.HashPassword("secret-password")
 	if err != nil {
 		t.Fatalf("HashPassword failed: %v", err)
@@ -371,9 +371,9 @@ func TestGlobalSearchEndpointReturnsBucketAndObjectHits(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
-	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
-	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
 	hash, err := consoleauth.HashPassword("secret-password")
 	if err != nil {
 		t.Fatalf("HashPassword failed: %v", err)
@@ -438,21 +438,15 @@ func TestUpdateStorageSettingsPersistsAndAppliesImmediately(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
-	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
-	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
 	hash, err := consoleauth.HashPassword("secret-password")
 	if err != nil {
 		t.Fatalf("HashPassword failed: %v", err)
 	}
 	cfg.Auth.Console.PasswordHash = hash
 	cfg.Auth.Console.SessionSecret = "test-session-secret"
-	cfg.Runtime.ConfigPath = filepath.Join(root, "config.yml")
-	cfg.Runtime.ConfigUsed = true
-	if err := config.Save(cfg.Runtime.ConfigPath, cfg); err != nil {
-		t.Fatalf("Save config failed: %v", err)
-	}
-
 	store := newStorageStoreForTest(t, cfg)
 	handler := newAdminHandlerForTest(t, cfg, store, nil)
 
@@ -482,12 +476,12 @@ func TestUpdateStorageSettingsPersistsAndAppliesImmediately(t *testing.T) {
 		t.Fatalf("unexpected in-memory instance quota: %d", got)
 	}
 
-	stored, _, _, err := config.LoadEditable(cfg.Runtime.ConfigPath)
+	runtimeSettings, err := store.RuntimeSettings(context.Background())
 	if err != nil {
-		t.Fatalf("LoadEditable failed: %v", err)
+		t.Fatalf("RuntimeSettings failed: %v", err)
 	}
-	if stored.Storage.MaxBytes != 1024 {
-		t.Fatalf("unexpected stored max bytes: %d", stored.Storage.MaxBytes)
+	if runtimeSettings.MaxBytes != 1024 {
+		t.Fatalf("unexpected stored max bytes: %d", runtimeSettings.MaxBytes)
 	}
 }
 
@@ -498,9 +492,9 @@ func TestUpdateSyncSettingsPersistsToDB(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
-	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
-	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
 	hash, err := consoleauth.HashPassword("secret-password")
 	if err != nil {
 		t.Fatalf("HashPassword failed: %v", err)
@@ -555,9 +549,9 @@ func TestReplicationTokenCreateListRemoteAndDeleteFlow(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
-	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
-	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
 	hash, err := consoleauth.HashPassword("secret-password")
 	if err != nil {
 		t.Fatalf("HashPassword failed: %v", err)
@@ -665,9 +659,9 @@ func TestAddRemoteFromNowStartsAtCurrentCursor(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
-	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
-	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
 	hash, err := consoleauth.HashPassword("secret-password")
 	if err != nil {
 		t.Fatalf("HashPassword failed: %v", err)
@@ -733,9 +727,9 @@ func TestCreateListAndRevokeShareLinks(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
-	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
-	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
 	hash, err := consoleauth.HashPassword("secret-password")
 	if err != nil {
 		t.Fatalf("HashPassword failed: %v", err)
@@ -885,9 +879,9 @@ func TestMoveBrowserEntries(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
-	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
-	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
 	hash, err := consoleauth.HashPassword("secret-password")
 	if err != nil {
 		t.Fatalf("HashPassword failed: %v", err)
@@ -1029,9 +1023,9 @@ func TestDeleteObjectAlsoRemovesShareLinks(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
-	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
-	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
 	hash, err := consoleauth.HashPassword("secret-password")
 	if err != nil {
 		t.Fatalf("HashPassword failed: %v", err)
@@ -1104,9 +1098,9 @@ func TestUpdateObjectMetadata(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
-	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
-	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
 	hash, err := consoleauth.HashPassword("secret-password")
 	if err != nil {
 		t.Fatalf("HashPassword failed: %v", err)
@@ -1172,9 +1166,9 @@ func TestDeletePrefixAlsoRemovesShareLinks(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
-	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
-	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
 	hash, err := consoleauth.HashPassword("secret-password")
 	if err != nil {
 		t.Fatalf("HashPassword failed: %v", err)
@@ -1244,9 +1238,9 @@ func TestDeleteBucketAlsoRemovesShareLinks(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
-	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
-	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
 	hash, err := consoleauth.HashPassword("secret-password")
 	if err != nil {
 		t.Fatalf("HashPassword failed: %v", err)
@@ -1306,9 +1300,9 @@ func TestUpdateBucketRenamesMetadataAndHistory(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
-	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
-	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
 	hash, err := consoleauth.HashPassword("secret-password")
 	if err != nil {
 		t.Fatalf("HashPassword failed: %v", err)
@@ -1421,9 +1415,9 @@ func TestBucketAccessPolicyCRUD(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
-	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
-	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
 	hash, err := consoleauth.HashPassword("secret-password")
 	if err != nil {
 		t.Fatalf("HashPassword failed: %v", err)
@@ -1495,9 +1489,9 @@ func TestS3CredentialCRUD(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
-	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
-	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
 	hash, err := consoleauth.HashPassword("secret-password")
 	if err != nil {
 		t.Fatalf("HashPassword failed: %v", err)

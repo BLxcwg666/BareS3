@@ -240,13 +240,13 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 			panic(fmt.Sprintf("initialize s3 credential store: %v", err))
 		}
 	}
-	verifier := sigv4.NewVerifierWithLookup(func(accessKeyID string) (string, bool) {
+	lookupSecret := func(accessKeyID string) (string, bool) {
 		secret, err := credentials.LookupSecret(context.Background(), accessKeyID)
 		if err != nil {
 			return "", false
 		}
 		return secret, true
-	}, cfg.Auth.S3.AccessKeyID, cfg.Auth.S3.SecretAccessKey, cfg.Storage.Region, "s3")
+	}
 	if shareLinks == nil {
 		var err error
 		shareLinks, err = sharelink.New(cfg.Paths.DataDir, logger.Named("sharelink"))
@@ -257,10 +257,15 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		runtimeSettings, err := store.RuntimeSettings(r.Context())
+		if err != nil {
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": err.Error()})
+			return
+		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"status":  "ok",
 			"service": "s3",
-			"region":  cfg.Storage.Region,
+			"region":  runtimeSettings.Region,
 			"version": buildinfo.Current(),
 			"time":    time.Now().UTC().Format(time.RFC3339),
 		})
@@ -272,12 +277,19 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 	))
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		runtimeSettings, err := store.RuntimeSettings(r.Context())
+		if err != nil {
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": err.Error()})
+			return
+		}
+		verifier := sigv4.NewVerifierWithLookup(lookupSecret, cfg.Auth.S3.AccessKeyID, cfg.Auth.S3.SecretAccessKey, runtimeSettings.Region, "s3")
 		handleS3Request(w, r, cfg, store, shareLinks, credentials, verifier)
 	})
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.TrimSpace(cfg.Storage.Region) != "" {
-			w.Header().Set("X-Amz-Bucket-Region", cfg.Storage.Region)
+		runtimeSettings, err := store.RuntimeSettings(r.Context())
+		if err == nil && strings.TrimSpace(runtimeSettings.Region) != "" {
+			w.Header().Set("X-Amz-Bucket-Region", runtimeSettings.Region)
 		}
 		mux.ServeHTTP(w, r)
 	})
@@ -1157,8 +1169,13 @@ func handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Request, cfg c
 		return
 	}
 
-	location := cfg.Storage.S3BaseURL
-	if parsed, err := url.Parse(cfg.Storage.S3BaseURL); err == nil {
+	runtimeSettings, err := store.RuntimeSettings(r.Context())
+	if err != nil {
+		writeS3Error(w, r, http.StatusInternalServerError, "InternalError", err.Error())
+		return
+	}
+	location := runtimeSettings.S3BaseURL
+	if parsed, err := url.Parse(runtimeSettings.S3BaseURL); err == nil {
 		parsed.Path = joinURLPath(parsed.Path, bucket, key)
 		location = parsed.String()
 	}

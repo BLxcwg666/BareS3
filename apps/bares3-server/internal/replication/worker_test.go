@@ -350,15 +350,15 @@ func newSyncConfig(t *testing.T, root string) config.Config {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
-	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
-	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
 	return cfg
 }
 
 func newStoreForTest(t *testing.T, cfg config.Config) *storage.Store {
 	t.Helper()
-	for _, dir := range []string{cfg.Paths.DataDir, cfg.Paths.LogDir, cfg.Storage.TmpDir} {
+	for _, dir := range []string{cfg.Paths.DataDir, cfg.Paths.LogDir, cfg.Paths.TmpDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("MkdirAll(%s) failed: %v", dir, err)
 		}

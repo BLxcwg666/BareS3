@@ -4,6 +4,7 @@ app:
 paths:
   data_dir: ./data
   log_dir: ./logs
+  tmp_dir: ./data/.bares3/tmp
 
 listen:
   admin: 127.0.0.1:19080
@@ -16,14 +17,6 @@ auth:
     password_hash: ""
     session_secret: ""
     session_ttl_minutes: 10080
-
-storage:
-  public_base_url: http://127.0.0.1:9001
-  s3_base_url: http://127.0.0.1:9000
-  region: home-lab-1
-  tmp_dir: ./data/.bares3/tmp
-  metadata_layout: hidden-dir
-  max_bytes: 0
 
 logging:
   level: info

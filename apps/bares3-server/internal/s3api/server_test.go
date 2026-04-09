@@ -209,7 +209,7 @@ func TestUnsignedRequestIsRejected(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
-	assertS3Error(t, recorder, http.StatusForbidden, "AccessDenied", config.Default().Storage.Region, "")
+	assertS3Error(t, recorder, http.StatusForbidden, "AccessDenied", config.Default().Settings.Region, "")
 }
 
 func TestManagedS3CredentialWorksWithoutConfigKey(t *testing.T) {
@@ -219,7 +219,7 @@ func TestManagedS3CredentialWorksWithoutConfigKey(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
 	cfg.Auth.S3.AccessKeyID = ""
 	cfg.Auth.S3.SecretAccessKey = ""
 
@@ -270,7 +270,7 @@ func TestScopedReadOnlyCredentialRestrictsBucketsAndWrites(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
 	cfg.Auth.S3.AccessKeyID = ""
 	cfg.Auth.S3.SecretAccessKey = ""
 
@@ -316,14 +316,14 @@ func TestScopedReadOnlyCredentialRestrictsBucketsAndWrites(t *testing.T) {
 	signHeaderRequest(t, blockedBucketRequest, signedCfg, nil)
 	blockedBucketRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(blockedBucketRecorder, blockedBucketRequest)
-	assertS3Error(t, blockedBucketRecorder, http.StatusForbidden, "AccessDenied", cfg.Storage.Region, "archive")
+	assertS3Error(t, blockedBucketRecorder, http.StatusForbidden, "AccessDenied", cfg.Settings.Region, "archive")
 
 	writeBody := []byte("nope")
 	blockedWriteRequest := httptest.NewRequest(http.MethodPut, "/gallery/new.txt", bytes.NewReader(writeBody))
 	signHeaderRequest(t, blockedWriteRequest, signedCfg, writeBody)
 	blockedWriteRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(blockedWriteRecorder, blockedWriteRequest)
-	assertS3Error(t, blockedWriteRecorder, http.StatusForbidden, "AccessDenied", cfg.Storage.Region, "gallery")
+	assertS3Error(t, blockedWriteRecorder, http.StatusForbidden, "AccessDenied", cfg.Settings.Region, "gallery")
 }
 
 func TestPresignedGetObject(t *testing.T) {
@@ -398,7 +398,7 @@ func TestCustomBucketAccessCanDenySignedReads(t *testing.T) {
 	signHeaderRequest(t, deniedRequest, config.Default(), nil)
 	deniedRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(deniedRecorder, deniedRequest)
-	assertS3Error(t, deniedRecorder, http.StatusForbidden, "AccessDenied", config.Default().Storage.Region, "gallery")
+	assertS3Error(t, deniedRecorder, http.StatusForbidden, "AccessDenied", config.Default().Settings.Region, "gallery")
 }
 
 func TestDeleteObjectAndBucket(t *testing.T) {
@@ -463,7 +463,7 @@ func TestGetBucketLocationAndDeleteObjects(t *testing.T) {
 	if err := xml.Unmarshal(locationRecorder.Body.Bytes(), &locationResult); err != nil {
 		t.Fatalf("unmarshal location result: %v", err)
 	}
-	if locationResult.Value != config.Default().Storage.Region {
+	if locationResult.Value != config.Default().Settings.Region {
 		t.Fatalf("unexpected location constraint: %q", locationResult.Value)
 	}
 
@@ -497,7 +497,7 @@ func TestGetBucketLocationAndDeleteObjects(t *testing.T) {
 	if _, err := store.StatObject(context.Background(), "gallery", "notes/b.txt"); err != nil {
 		t.Fatalf("expected remaining object to stay available, got %v", err)
 	}
-	if got := deleteRecorder.Header().Get("X-Amz-Bucket-Region"); got != config.Default().Storage.Region {
+	if got := deleteRecorder.Header().Get("X-Amz-Bucket-Region"); got != config.Default().Settings.Region {
 		t.Fatalf("unexpected region header after delete objects: %q", got)
 	}
 }
@@ -619,7 +619,7 @@ func TestCopyObjectRequiresSourceBucketAccess(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
 	cfg.Auth.S3.AccessKeyID = ""
 	cfg.Auth.S3.SecretAccessKey = ""
 
@@ -657,7 +657,7 @@ func TestCopyObjectRequiresSourceBucketAccess(t *testing.T) {
 	signHeaderRequest(t, request, signedCfg, nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
-	assertS3Error(t, recorder, http.StatusForbidden, "AccessDenied", cfg.Storage.Region, "archive")
+	assertS3Error(t, recorder, http.StatusForbidden, "AccessDenied", cfg.Settings.Region, "archive")
 	if _, err := store.StatObject(context.Background(), "archive", "copied.txt"); err == nil {
 		t.Fatalf("expected denied copy to leave destination untouched")
 	}
@@ -699,7 +699,7 @@ func TestCopyObjectSourceConditionalHeaders(t *testing.T) {
 	signHeaderRequest(t, ifNoneMatchRequest, config.Default(), nil)
 	ifNoneMatchRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(ifNoneMatchRecorder, ifNoneMatchRequest)
-	assertS3Error(t, ifNoneMatchRecorder, http.StatusPreconditionFailed, "PreconditionFailed", config.Default().Storage.Region, "archive")
+	assertS3Error(t, ifNoneMatchRecorder, http.StatusPreconditionFailed, "PreconditionFailed", config.Default().Settings.Region, "archive")
 
 	ifModifiedSinceRequest := httptest.NewRequest(http.MethodPut, "/archive/copied-if-modified-since.txt", nil)
 	ifModifiedSinceRequest.Header.Set("X-Amz-Copy-Source", "/gallery/notes/source-conditional.txt")
@@ -707,7 +707,7 @@ func TestCopyObjectSourceConditionalHeaders(t *testing.T) {
 	signHeaderRequest(t, ifModifiedSinceRequest, config.Default(), nil)
 	ifModifiedSinceRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(ifModifiedSinceRecorder, ifModifiedSinceRequest)
-	assertS3Error(t, ifModifiedSinceRecorder, http.StatusPreconditionFailed, "PreconditionFailed", config.Default().Storage.Region, "archive")
+	assertS3Error(t, ifModifiedSinceRecorder, http.StatusPreconditionFailed, "PreconditionFailed", config.Default().Settings.Region, "archive")
 
 	invalidTimeRequest := httptest.NewRequest(http.MethodPut, "/archive/copied-invalid-time.txt", nil)
 	invalidTimeRequest.Header.Set("X-Amz-Copy-Source", "/gallery/notes/source-conditional.txt")
@@ -715,7 +715,7 @@ func TestCopyObjectSourceConditionalHeaders(t *testing.T) {
 	signHeaderRequest(t, invalidTimeRequest, config.Default(), nil)
 	invalidTimeRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(invalidTimeRecorder, invalidTimeRequest)
-	assertS3Error(t, invalidTimeRecorder, http.StatusBadRequest, "InvalidArgument", config.Default().Storage.Region, "archive")
+	assertS3Error(t, invalidTimeRecorder, http.StatusBadRequest, "InvalidArgument", config.Default().Settings.Region, "archive")
 }
 
 func TestS3ReadinessEndpoint(t *testing.T) {
@@ -948,7 +948,7 @@ func TestSyncEnabledDoesNotShortCircuitS3Writes(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
 	cfg.Sync.Enabled = true
 
 	store := storage.New(cfg, zap.NewNop())
@@ -962,7 +962,7 @@ func TestSyncEnabledDoesNotShortCircuitS3Writes(t *testing.T) {
 	signHeaderRequest(t, request, cfg, body)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
-	assertS3Error(t, recorder, http.StatusNotFound, "NoSuchBucket", cfg.Storage.Region, "gallery")
+	assertS3Error(t, recorder, http.StatusNotFound, "NoSuchBucket", cfg.Settings.Region, "gallery")
 }
 
 func TestUploadPartCopyLifecycle(t *testing.T) {
@@ -1082,7 +1082,7 @@ func TestUploadPartCopyRejectsInvalidRange(t *testing.T) {
 	signHeaderRequest(t, request, config.Default(), nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
-	assertS3Error(t, recorder, http.StatusBadRequest, "InvalidArgument", config.Default().Storage.Region, "archive")
+	assertS3Error(t, recorder, http.StatusBadRequest, "InvalidArgument", config.Default().Settings.Region, "archive")
 }
 
 func TestUploadPartCopyRequiresSourceBucketAccess(t *testing.T) {
@@ -1092,7 +1092,7 @@ func TestUploadPartCopyRequiresSourceBucketAccess(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
 	cfg.Auth.S3.AccessKeyID = ""
 	cfg.Auth.S3.SecretAccessKey = ""
 
@@ -1142,7 +1142,7 @@ func TestUploadPartCopyRequiresSourceBucketAccess(t *testing.T) {
 	signHeaderRequest(t, request, signedCfg, nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
-	assertS3Error(t, recorder, http.StatusForbidden, "AccessDenied", cfg.Storage.Region, "archive")
+	assertS3Error(t, recorder, http.StatusForbidden, "AccessDenied", cfg.Settings.Region, "archive")
 }
 
 func TestListMultipartUploadsSupportsMarkers(t *testing.T) {
@@ -1268,7 +1268,7 @@ func newTestHandler(t *testing.T) (*storage.Store, http.Handler) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
 
 	store := storage.New(cfg, zap.NewNop())
 	t.Cleanup(func() {
@@ -1345,10 +1345,10 @@ func signHeaderRequest(t *testing.T, request *http.Request, cfg config.Config, b
 
 	signedHeaders := collectSignedHeaders(request)
 	canonicalRequest := buildCanonicalRequest(t, request, signedHeaders, payloadHash, true)
-	stringToSign := buildStringToSign(timestamp, cfg.Storage.Region, canonicalRequest)
-	signature := signSignature(cfg.Auth.S3.SecretAccessKey, timestamp, cfg.Storage.Region, stringToSign)
+	stringToSign := buildStringToSign(timestamp, cfg.Settings.Region, canonicalRequest)
+	signature := signSignature(cfg.Auth.S3.SecretAccessKey, timestamp, cfg.Settings.Region, stringToSign)
 	request.Header.Set("Authorization", strings.Join([]string{
-		sigv4.Algorithm + " Credential=" + cfg.Auth.S3.AccessKeyID + "/" + timestamp.Format("20060102") + "/" + cfg.Storage.Region + "/s3/aws4_request",
+		sigv4.Algorithm + " Credential=" + cfg.Auth.S3.AccessKeyID + "/" + timestamp.Format("20060102") + "/" + cfg.Settings.Region + "/s3/aws4_request",
 		"SignedHeaders=" + strings.Join(signedHeaders, ";"),
 		"Signature=" + signature,
 	}, ", "))
@@ -1359,15 +1359,15 @@ func signPresignedRequest(t *testing.T, request *http.Request, cfg config.Config
 	timestamp := time.Now().UTC()
 	query := request.URL.Query()
 	query.Set("X-Amz-Algorithm", sigv4.Algorithm)
-	query.Set("X-Amz-Credential", cfg.Auth.S3.AccessKeyID+"/"+timestamp.Format("20060102")+"/"+cfg.Storage.Region+"/s3/aws4_request")
+	query.Set("X-Amz-Credential", cfg.Auth.S3.AccessKeyID+"/"+timestamp.Format("20060102")+"/"+cfg.Settings.Region+"/s3/aws4_request")
 	query.Set("X-Amz-Date", timestamp.Format("20060102T150405Z"))
 	query.Set("X-Amz-Expires", strconv.Itoa(int(expires.Seconds())))
 	query.Set("X-Amz-SignedHeaders", "host")
 	request.URL.RawQuery = query.Encode()
 
 	canonicalRequest := buildCanonicalRequest(t, request, []string{"host"}, "UNSIGNED-PAYLOAD", false)
-	stringToSign := buildStringToSign(timestamp, cfg.Storage.Region, canonicalRequest)
-	query.Set("X-Amz-Signature", signSignature(cfg.Auth.S3.SecretAccessKey, timestamp, cfg.Storage.Region, stringToSign))
+	stringToSign := buildStringToSign(timestamp, cfg.Settings.Region, canonicalRequest)
+	query.Set("X-Amz-Signature", signSignature(cfg.Auth.S3.SecretAccessKey, timestamp, cfg.Settings.Region, stringToSign))
 	request.URL.RawQuery = query.Encode()
 }
 

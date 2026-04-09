@@ -59,8 +59,8 @@ func (a *App) Run(ctx context.Context) error {
 		zap.String("config_path", a.configPathForLog()),
 		zap.String("data_dir", a.cfg.Paths.DataDir),
 		zap.String("log_dir", a.cfg.Paths.LogDir),
-		zap.String("tmp_dir", a.cfg.Storage.TmpDir),
-		zap.String("metadata_layout", a.cfg.Storage.MetadataLayout),
+		zap.String("tmp_dir", a.cfg.Paths.TmpDir),
+		zap.String("metadata_layout", a.store.MetadataLayout()),
 	)
 
 	specs := []serverSpec{
@@ -117,7 +117,7 @@ func (a *App) Run(ctx context.Context) error {
 }
 
 func (a *App) prepareRuntimeDirs() error {
-	for _, dir := range []string{a.cfg.Paths.DataDir, a.cfg.Paths.LogDir, a.cfg.Storage.TmpDir} {
+	for _, dir := range []string{a.cfg.Paths.DataDir, a.cfg.Paths.LogDir, a.cfg.Paths.TmpDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("create runtime dir %s: %w", dir, err)
 		}

@@ -40,8 +40,9 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 	router.Use(chiMiddleware.Recoverer)
 	router.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if strings.TrimSpace(cfg.Storage.Region) != "" {
-				w.Header().Set("X-Amz-Bucket-Region", cfg.Storage.Region)
+			runtimeSettings, err := store.RuntimeSettings(r.Context())
+			if err == nil && strings.TrimSpace(runtimeSettings.Region) != "" {
+				w.Header().Set("X-Amz-Bucket-Region", runtimeSettings.Region)
 			}
 			next.ServeHTTP(w, r)
 		})
@@ -54,14 +55,24 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 	})
 
 	router.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		httpx.WriteText(w, http.StatusOK, fmt.Sprintf("%s file service\nversion: %s\nregion: %s\npublic base URL: %s\n", config.ProductName, buildinfo.Current().Version, cfg.Storage.Region, cfg.Storage.PublicBaseURL))
+		runtimeSettings, err := store.RuntimeSettings(r.Context())
+		if err != nil {
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": err.Error()})
+			return
+		}
+		httpx.WriteText(w, http.StatusOK, fmt.Sprintf("%s file service\nversion: %s\nregion: %s\npublic base URL: %s\n", config.ProductName, buildinfo.Current().Version, runtimeSettings.Region, runtimeSettings.PublicBaseURL))
 	})
 
 	router.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		runtimeSettings, err := store.RuntimeSettings(r.Context())
+		if err != nil {
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": err.Error()})
+			return
+		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"status":  "ok",
 			"service": "file",
-			"region":  cfg.Storage.Region,
+			"region":  runtimeSettings.Region,
 			"version": buildinfo.Current(),
 			"time":    time.Now().UTC().Format(time.RFC3339),
 		})

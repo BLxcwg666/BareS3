@@ -25,15 +25,16 @@ import (
 )
 
 type Store struct {
-	dataDir        string
-	tmpDir         string
-	metadataLayout string
-	commitMu       sync.Mutex
-	instanceQuota  atomic.Int64
-	metadata       *metadataStore
-	syncEvents     *syncEventHub
-	syncSettings   *syncSettingsHub
-	logger         *zap.Logger
+	dataDir         string
+	tmpDir          string
+	metadataLayout  string
+	commitMu        sync.Mutex
+	instanceQuota   atomic.Int64
+	runtimeSettings atomic.Value
+	metadata        *metadataStore
+	syncEvents      *syncEventHub
+	syncSettings    *syncSettingsHub
+	logger          *zap.Logger
 }
 
 const bucketUsageHistoryLimit = 60
@@ -48,14 +49,18 @@ func New(cfg config.Config, logger *zap.Logger) *Store {
 	}
 	store := &Store{
 		dataDir:        cfg.Paths.DataDir,
-		tmpDir:         cfg.Storage.TmpDir,
-		metadataLayout: cfg.Storage.MetadataLayout,
+		tmpDir:         cfg.Paths.TmpDir,
+		metadataLayout: cfg.Settings.MetadataLayout,
 		metadata:       metadata,
 		syncEvents:     newSyncEventHub(),
 		syncSettings:   newSyncSettingsHub(),
 		logger:         logger,
 	}
-	store.instanceQuota.Store(cfg.Storage.MaxBytes)
+	store.runtimeSettings.Store(DefaultRuntimeSettings(cfg))
+	store.instanceQuota.Store(cfg.Settings.MaxBytes)
+	if err := store.bootstrapRuntimeSettings(cfg); err != nil {
+		panic(fmt.Sprintf("bootstrap runtime settings: %v", err))
+	}
 	if err := store.bootstrapSyncSettings(cfg); err != nil {
 		panic(fmt.Sprintf("bootstrap sync settings: %v", err))
 	}
@@ -534,12 +539,18 @@ func (s *Store) InstanceQuotaBytes() int64 {
 	return s.instanceQuota.Load()
 }
 
+func (s *Store) MetadataLayout() string {
+	return s.metadataLayout
+}
+
 func (s *Store) SetInstanceQuotaBytes(value int64) error {
-	if err := validateQuotaBytes(value); err != nil {
+	settings, err := s.RuntimeSettings(context.Background())
+	if err != nil {
 		return err
 	}
-	s.instanceQuota.Store(value)
-	return nil
+	settings.MaxBytes = value
+	_, err = s.SetRuntimeSettings(context.Background(), settings)
+	return err
 }
 
 func (s *Store) UsageSummary(ctx context.Context) (int64, int, error) {
@@ -1648,5 +1659,21 @@ func (s *Store) bootstrapSyncSettings(cfg config.Config) error {
 	_, err := s.SetSyncSettings(ctx, SyncSettings{
 		Enabled: cfg.Sync.Enabled,
 	})
+	return err
+}
+
+func (s *Store) bootstrapRuntimeSettings(cfg config.Config) error {
+	ctx := context.Background()
+	settings, err := s.RuntimeSettings(ctx)
+	if err == nil {
+		s.metadataLayout = settings.MetadataLayout
+		s.instanceQuota.Store(settings.MaxBytes)
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	settings = DefaultRuntimeSettings(cfg)
+	_, err = s.SetRuntimeSettings(ctx, settings)
 	return err
 }

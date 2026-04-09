@@ -868,9 +868,9 @@ func TestMultipartLegacySessionIgnoresLegacyFiles(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
 
-	for _, dir := range []string{cfg.Paths.DataDir, cfg.Paths.LogDir, cfg.Storage.TmpDir} {
+	for _, dir := range []string{cfg.Paths.DataDir, cfg.Paths.LogDir, cfg.Paths.TmpDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("MkdirAll(%s) failed: %v", dir, err)
 		}
@@ -929,9 +929,9 @@ func newTestStoreAt(t *testing.T, root string) *Store {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
 
-	for _, dir := range []string{cfg.Paths.DataDir, cfg.Paths.LogDir, cfg.Storage.TmpDir} {
+	for _, dir := range []string{cfg.Paths.DataDir, cfg.Paths.LogDir, cfg.Paths.TmpDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("MkdirAll(%s) failed: %v", dir, err)
 		}

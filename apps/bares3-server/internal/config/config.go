@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,14 +19,14 @@ const (
 )
 
 type Config struct {
-	App     AppConfig     `yaml:"app"`
-	Paths   PathsConfig   `yaml:"paths"`
-	Listen  ListenConfig  `yaml:"listen"`
-	Auth    AuthConfig    `yaml:"auth"`
-	Storage StorageConfig `yaml:"storage"`
-	Logging LoggingConfig `yaml:"logging"`
-	Sync    SyncConfig    `yaml:"sync"`
-	Runtime RuntimeConfig `yaml:"-"`
+	App      AppConfig      `yaml:"app"`
+	Paths    PathsConfig    `yaml:"paths"`
+	Listen   ListenConfig   `yaml:"listen"`
+	Auth     AuthConfig     `yaml:"auth"`
+	Settings SettingsConfig `yaml:"-"`
+	Logging  LoggingConfig  `yaml:"logging"`
+	Sync     SyncConfig     `yaml:"sync"`
+	Runtime  RuntimeConfig  `yaml:"-"`
 }
 
 type AppConfig struct {
@@ -37,6 +36,7 @@ type AppConfig struct {
 type PathsConfig struct {
 	DataDir string `yaml:"data_dir"`
 	LogDir  string `yaml:"log_dir"`
+	TmpDir  string `yaml:"tmp_dir"`
 }
 
 type ListenConfig struct {
@@ -62,11 +62,10 @@ type S3AuthConfig struct {
 	SecretAccessKey string `yaml:"secret_access_key"`
 }
 
-type StorageConfig struct {
+type SettingsConfig struct {
 	PublicBaseURL  string `yaml:"public_base_url"`
 	S3BaseURL      string `yaml:"s3_base_url"`
 	Region         string `yaml:"region"`
-	TmpDir         string `yaml:"tmp_dir"`
 	MetadataLayout string `yaml:"metadata_layout"`
 	MaxBytes       int64  `yaml:"max_bytes"`
 }
@@ -96,6 +95,7 @@ func Default() Config {
 		Paths: PathsConfig{
 			DataDir: "./data",
 			LogDir:  "./logs",
+			TmpDir:  "./data/.bares3/tmp",
 		},
 		Listen: ListenConfig{
 			Admin: "127.0.0.1:19080",
@@ -112,7 +112,7 @@ func Default() Config {
 				SecretAccessKey: defaultDevSecretKey,
 			},
 		},
-		Storage: StorageConfig{
+		Settings: SettingsConfig{
 			Region:         "home-lab-1",
 			MetadataLayout: "hidden-dir",
 		},
@@ -157,17 +157,17 @@ func Load(explicitPath string) (Config, error) {
 	cfg.Paths.DataDir = resolvePath(baseDir, cfg.Paths.DataDir, "data")
 	cfg.Paths.LogDir = resolvePath(baseDir, cfg.Paths.LogDir, "logs")
 
-	if strings.TrimSpace(cfg.Storage.TmpDir) == "" {
-		cfg.Storage.TmpDir = filepath.Join(cfg.Paths.DataDir, ".bares3", "tmp")
+	if strings.TrimSpace(cfg.Paths.TmpDir) == "" {
+		cfg.Paths.TmpDir = filepath.Join(cfg.Paths.DataDir, ".bares3", "tmp")
 	} else {
-		cfg.Storage.TmpDir = resolvePath(baseDir, cfg.Storage.TmpDir, "")
+		cfg.Paths.TmpDir = resolvePath(baseDir, cfg.Paths.TmpDir, "")
 	}
 
-	if strings.TrimSpace(cfg.Storage.PublicBaseURL) == "" {
-		cfg.Storage.PublicBaseURL = derivePublicBaseURL(cfg.Listen.File)
+	if strings.TrimSpace(cfg.Settings.PublicBaseURL) == "" {
+		cfg.Settings.PublicBaseURL = derivePublicBaseURL(cfg.Listen.File)
 	}
-	if strings.TrimSpace(cfg.Storage.S3BaseURL) == "" {
-		cfg.Storage.S3BaseURL = derivePublicBaseURL(cfg.Listen.S3)
+	if strings.TrimSpace(cfg.Settings.S3BaseURL) == "" {
+		cfg.Settings.S3BaseURL = derivePublicBaseURL(cfg.Listen.S3)
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -201,17 +201,8 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Paths.LogDir) == "" {
 		return errors.New("paths.log_dir must not be empty")
 	}
-	if strings.TrimSpace(c.Storage.TmpDir) == "" {
-		return errors.New("storage.tmp_dir must not be empty")
-	}
-	if strings.TrimSpace(c.Storage.PublicBaseURL) == "" {
-		return errors.New("storage.public_base_url must not be empty")
-	}
-	if strings.TrimSpace(c.Storage.S3BaseURL) == "" {
-		return errors.New("storage.s3_base_url must not be empty")
-	}
-	if c.Storage.MaxBytes < 0 {
-		return errors.New("storage.max_bytes must not be negative")
+	if strings.TrimSpace(c.Paths.TmpDir) == "" {
+		return errors.New("paths.tmp_dir must not be empty")
 	}
 	if strings.TrimSpace(c.Auth.Console.Username) == "" {
 		return errors.New("auth.console.username must not be empty")
@@ -233,12 +224,8 @@ func (c Config) Validate() error {
 	if accessKeyID != "" && !isDevelopmentEnv(c.App.Env) && usesDefaultDevelopmentS3Credentials(c.Auth.S3) {
 		return errors.New("auth.s3 credentials must be changed from the bundled development defaults outside development")
 	}
-	layout := strings.ToLower(strings.TrimSpace(c.Storage.MetadataLayout))
-	if layout != "" && layout != "hidden-dir" {
-		return fmt.Errorf("storage.metadata_layout must be hidden-dir, got %q", c.Storage.MetadataLayout)
-	}
-	if dataVolume, tmpVolume := strings.ToLower(filepath.VolumeName(c.Paths.DataDir)), strings.ToLower(filepath.VolumeName(c.Storage.TmpDir)); dataVolume != "" && tmpVolume != "" && dataVolume != tmpVolume {
-		return fmt.Errorf("storage.tmp_dir must be on the same volume as paths.data_dir for atomic moves (%s != %s)", c.Paths.DataDir, c.Storage.TmpDir)
+	if dataVolume, tmpVolume := strings.ToLower(filepath.VolumeName(c.Paths.DataDir)), strings.ToLower(filepath.VolumeName(c.Paths.TmpDir)); dataVolume != "" && tmpVolume != "" && dataVolume != tmpVolume {
+		return fmt.Errorf("paths.tmp_dir must be on the same volume as paths.data_dir for atomic moves (%s != %s)", c.Paths.DataDir, c.Paths.TmpDir)
 	}
 
 	format := strings.ToLower(strings.TrimSpace(c.Logging.Format))
@@ -315,7 +302,7 @@ func derivePublicBaseURL(listenAddr string) string {
 	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
 		host = "127.0.0.1"
 	}
-	return (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, port)}).String()
+	return "http://" + net.JoinHostPort(host, port)
 }
 
 func usesDefaultDevelopmentS3Credentials(auth S3AuthConfig) bool {

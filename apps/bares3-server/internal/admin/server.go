@@ -288,6 +288,14 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 			})
 
 			protected.Get("/runtime", func(w http.ResponseWriter, r *http.Request) {
+				runtimeSettings, err := store.RuntimeSettings(r.Context())
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
 				buckets, err := store.ListBuckets(r.Context())
 				if err != nil {
 					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
@@ -334,7 +342,7 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 					"paths": map[string]any{
 						"data_dir": cfg.Paths.DataDir,
 						"log_dir":  cfg.Paths.LogDir,
-						"tmp_dir":  cfg.Storage.TmpDir,
+						"tmp_dir":  cfg.Paths.TmpDir,
 					},
 					"listen": map[string]any{
 						"admin": cfg.Listen.Admin,
@@ -342,11 +350,11 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 						"file":  cfg.Listen.File,
 					},
 					"storage": map[string]any{
-						"region":            cfg.Storage.Region,
-						"public_base_url":   cfg.Storage.PublicBaseURL,
-						"s3_base_url":       cfg.Storage.S3BaseURL,
-						"metadata_layout":   cfg.Storage.MetadataLayout,
-						"max_bytes":         store.InstanceQuotaBytes(),
+						"region":            runtimeSettings.Region,
+						"public_base_url":   runtimeSettings.PublicBaseURL,
+						"s3_base_url":       runtimeSettings.S3BaseURL,
+						"metadata_layout":   runtimeSettings.MetadataLayout,
+						"max_bytes":         runtimeSettings.MaxBytes,
 						"used_bytes":        usedBytes,
 						"bucket_count":      len(buckets),
 						"active_link_count": activeLinkCount,
@@ -864,8 +872,34 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 			})
 
 			protected.Get("/settings/storage", func(w http.ResponseWriter, r *http.Request) {
+				runtimeSettings, err := store.RuntimeSettings(r.Context())
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
 				httpx.WriteJSON(w, http.StatusOK, map[string]any{
-					"max_bytes": store.InstanceQuotaBytes(),
+					"max_bytes": runtimeSettings.MaxBytes,
+				})
+			})
+
+			protected.Get("/settings/system", func(w http.ResponseWriter, r *http.Request) {
+				runtimeSettings, err := store.RuntimeSettings(r.Context())
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
+				httpx.WriteJSON(w, http.StatusOK, map[string]any{
+					"public_base_url": runtimeSettings.PublicBaseURL,
+					"s3_base_url":     runtimeSettings.S3BaseURL,
+					"region":          runtimeSettings.Region,
+					"metadata_layout": runtimeSettings.MetadataLayout,
+					"tmp_dir":         cfg.Paths.TmpDir,
 				})
 			})
 
@@ -1002,6 +1036,75 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 					})
 					return
 				}
+				runtimeSettings, err := store.RuntimeSettings(r.Context())
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
+				runtimeSettings.MaxBytes = payload.MaxBytes
+				if _, err := store.SetRuntimeSettings(r.Context(), runtimeSettings); err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
+				recordAudit(logger, auditRecorder, auditlog.Entry{
+					Actor:  actorFromRequest(r),
+					Action: "settings.storage.update",
+					Title:  "Updated instance storage limit",
+					Detail: fmt.Sprintf("Limit set to %s", quotaLabel(payload.MaxBytes)),
+					Remote: requestRemote(r),
+					Status: "success",
+				})
+				httpx.WriteJSON(w, http.StatusOK, map[string]any{
+					"max_bytes": payload.MaxBytes,
+				})
+			})
+
+			protected.Put("/settings/system", func(w http.ResponseWriter, r *http.Request) {
+				payload := struct {
+					PublicBaseURL  string `json:"public_base_url"`
+					S3BaseURL      string `json:"s3_base_url"`
+					Region         string `json:"region"`
+					MetadataLayout string `json:"metadata_layout"`
+					TmpDir         string `json:"tmp_dir"`
+				}{}
+
+				decoder := json.NewDecoder(r.Body)
+				decoder.DisallowUnknownFields()
+				if err := decoder.Decode(&payload); err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+						"status":  "error",
+						"message": "invalid request body",
+					})
+					return
+				}
+
+				runtimeSettings, err := store.RuntimeSettings(r.Context())
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
+				runtimeSettings.PublicBaseURL = payload.PublicBaseURL
+				runtimeSettings.S3BaseURL = payload.S3BaseURL
+				runtimeSettings.Region = payload.Region
+				runtimeSettings.MetadataLayout = payload.MetadataLayout
+				updated, err := store.SetRuntimeSettings(r.Context(), runtimeSettings)
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
+
 				nextConfig, path, _, err := config.LoadEditable(cfg.Runtime.ConfigPath)
 				if err != nil {
 					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
@@ -1010,16 +1113,7 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 					})
 					return
 				}
-				if strings.TrimSpace(nextConfig.Storage.TmpDir) == "" {
-					nextConfig.Storage.TmpDir = cfg.Storage.TmpDir
-				}
-				if strings.TrimSpace(nextConfig.Storage.PublicBaseURL) == "" {
-					nextConfig.Storage.PublicBaseURL = cfg.Storage.PublicBaseURL
-				}
-				if strings.TrimSpace(nextConfig.Storage.S3BaseURL) == "" {
-					nextConfig.Storage.S3BaseURL = cfg.Storage.S3BaseURL
-				}
-				nextConfig.Storage.MaxBytes = payload.MaxBytes
+				nextConfig.Paths.TmpDir = strings.TrimSpace(payload.TmpDir)
 				if err := nextConfig.Validate(); err != nil {
 					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
 						"status":  "error",
@@ -1034,22 +1128,22 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 					})
 					return
 				}
-				if err := store.SetInstanceQuotaBytes(payload.MaxBytes); err != nil {
-					writeStorageError(w, err)
-					return
-				}
 
-				cfg.Storage.MaxBytes = payload.MaxBytes
+				cfg.Paths.TmpDir = nextConfig.Paths.TmpDir
 				recordAudit(logger, auditRecorder, auditlog.Entry{
 					Actor:  actorFromRequest(r),
-					Action: "settings.storage.update",
-					Title:  "Updated instance storage limit",
-					Detail: fmt.Sprintf("Limit set to %s", quotaLabel(payload.MaxBytes)),
+					Action: "settings.system.update",
+					Title:  "Updated system settings",
+					Detail: fmt.Sprintf("Region %s · Temp dir %s", updated.Region, nextConfig.Paths.TmpDir),
 					Remote: requestRemote(r),
 					Status: "success",
 				})
 				httpx.WriteJSON(w, http.StatusOK, map[string]any{
-					"max_bytes": payload.MaxBytes,
+					"public_base_url": updated.PublicBaseURL,
+					"s3_base_url":     updated.S3BaseURL,
+					"region":          updated.Region,
+					"metadata_layout": updated.MetadataLayout,
+					"tmp_dir":         nextConfig.Paths.TmpDir,
 				})
 			})
 
@@ -1420,6 +1514,11 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 			})
 
 			protected.Get("/share-links", func(w http.ResponseWriter, r *http.Request) {
+				runtimeSettings, err := store.RuntimeSettings(r.Context())
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": err.Error()})
+					return
+				}
 				items, err := shareLinks.List(r.Context())
 				if err != nil {
 					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
@@ -1432,13 +1531,18 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 				response := make([]shareLinkResponse, 0, len(items))
 				now := time.Now().UTC()
 				for _, item := range items {
-					response = append(response, makeShareLinkResponse(cfg.Storage.PublicBaseURL, item, now))
+					response = append(response, makeShareLinkResponse(runtimeSettings.PublicBaseURL, item, now))
 				}
 
 				httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": response})
 			})
 
 			protected.Post("/share-links", func(w http.ResponseWriter, r *http.Request) {
+				runtimeSettings, err := store.RuntimeSettings(r.Context())
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": err.Error()})
+					return
+				}
 				payload := struct {
 					Bucket         string `json:"bucket"`
 					Key            string `json:"key"`
@@ -1489,10 +1593,15 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 					Remote: requestRemote(r),
 					Status: "success",
 				})
-				httpx.WriteJSON(w, http.StatusCreated, makeShareLinkResponse(cfg.Storage.PublicBaseURL, link, time.Now().UTC()))
+				httpx.WriteJSON(w, http.StatusCreated, makeShareLinkResponse(runtimeSettings.PublicBaseURL, link, time.Now().UTC()))
 			})
 
 			protected.Delete("/share-links/{id}", func(w http.ResponseWriter, r *http.Request) {
+				runtimeSettings, err := store.RuntimeSettings(r.Context())
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": err.Error()})
+					return
+				}
 				link, err := shareLinks.Revoke(r.Context(), chi.URLParam(r, "id"))
 				if err != nil {
 					writeShareLinkError(w, err)
@@ -1507,7 +1616,7 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 					Remote: requestRemote(r),
 					Status: "success",
 				})
-				httpx.WriteJSON(w, http.StatusOK, makeShareLinkResponse(cfg.Storage.PublicBaseURL, link, time.Now().UTC()))
+				httpx.WriteJSON(w, http.StatusOK, makeShareLinkResponse(runtimeSettings.PublicBaseURL, link, time.Now().UTC()))
 			})
 
 			protected.Delete("/share-links/{id}/remove", func(w http.ResponseWriter, r *http.Request) {
@@ -1546,11 +1655,16 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 					return
 				}
 
-				baseURL, err := url.Parse(cfg.Storage.S3BaseURL)
+				runtimeSettings, err := store.RuntimeSettings(r.Context())
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": err.Error()})
+					return
+				}
+				baseURL, err := url.Parse(runtimeSettings.S3BaseURL)
 				if err != nil {
 					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
 						"status":  "error",
-						"message": "invalid storage.s3_base_url configuration",
+						"message": "invalid settings.s3_base_url configuration",
 					})
 					return
 				}
@@ -1567,7 +1681,7 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 					writeS3CredentialError(w, err)
 					return
 				}
-				verifier := sigv4.NewVerifier(credential.AccessKeyID, credential.SecretAccessKey, cfg.Storage.Region, "s3")
+				verifier := sigv4.NewVerifier(credential.AccessKeyID, credential.SecretAccessKey, runtimeSettings.Region, "s3")
 				result, err := verifier.Presign(sigv4.PresignInput{
 					Method:  payload.Method,
 					URL:     baseURL,

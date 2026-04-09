@@ -23,8 +23,8 @@ func TestServeShareLinks(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
-	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
 
 	store := newStorageStoreForTest(t, cfg)
 	ctx := context.Background()
@@ -79,7 +79,7 @@ func TestServeShareLinks(t *testing.T) {
 	revokedRequest := httptest.NewRequest(http.MethodGet, "/s/"+link.ID, nil)
 	revokedRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(revokedRecorder, revokedRequest)
-	assertS3XMLError(t, revokedRecorder, http.StatusGone, "AccessDenied", cfg.Storage.Region, "")
+	assertS3XMLError(t, revokedRecorder, http.StatusGone, "AccessDenied", cfg.Settings.Region, "")
 }
 
 func TestServePublicBucketRouteHonorsAccessMode(t *testing.T) {
@@ -89,8 +89,8 @@ func TestServePublicBucketRouteHonorsAccessMode(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
-	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
 
 	store := newStorageStoreForTest(t, cfg)
 	ctx := context.Background()
@@ -111,7 +111,7 @@ func TestServePublicBucketRouteHonorsAccessMode(t *testing.T) {
 	privateRequest := httptest.NewRequest(http.MethodGet, "/pub/gallery/notes/readme.txt", nil)
 	privateRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(privateRecorder, privateRequest)
-	assertS3XMLError(t, privateRecorder, http.StatusForbidden, "AccessDenied", cfg.Storage.Region, "gallery")
+	assertS3XMLError(t, privateRecorder, http.StatusForbidden, "AccessDenied", cfg.Settings.Region, "gallery")
 
 	if _, err := store.UpdateBucket(ctx, storage.UpdateBucketInput{
 		Name:       "gallery",
@@ -127,7 +127,7 @@ func TestServePublicBucketRouteHonorsAccessMode(t *testing.T) {
 	if publicRecorder.Code != http.StatusOK {
 		t.Fatalf("unexpected public access status: %d body=%s", publicRecorder.Code, publicRecorder.Body.String())
 	}
-	if got := publicRecorder.Header().Get("X-Amz-Bucket-Region"); got != cfg.Storage.Region {
+	if got := publicRecorder.Header().Get("X-Amz-Bucket-Region"); got != cfg.Settings.Region {
 		t.Fatalf("unexpected region header: %q", got)
 	}
 	if body := strings.TrimSpace(publicRecorder.Body.String()); body != "public me" {
@@ -142,8 +142,8 @@ func TestServeMissingPublicObjectReturnsS3StyleXML(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
-	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
 
 	store := newStorageStoreForTest(t, cfg)
 	ctx := context.Background()
@@ -164,7 +164,7 @@ func TestServeMissingPublicObjectReturnsS3StyleXML(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 
-	assertS3XMLError(t, recorder, http.StatusNotFound, "NoSuchKey", cfg.Storage.Region, "gallery")
+	assertS3XMLError(t, recorder, http.StatusNotFound, "NoSuchKey", cfg.Settings.Region, "gallery")
 }
 
 func TestServeCustomBucketAccessRules(t *testing.T) {
@@ -174,8 +174,8 @@ func TestServeCustomBucketAccessRules(t *testing.T) {
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
-	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
-	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
 
 	store := newStorageStoreForTest(t, cfg)
 	ctx := context.Background()
@@ -252,7 +252,7 @@ func TestServeCustomBucketAccessRules(t *testing.T) {
 	denyLinkRequest := httptest.NewRequest(http.MethodGet, "/s/"+denyLink.ID, nil)
 	denyLinkRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(denyLinkRecorder, denyLinkRequest)
-	assertS3XMLError(t, denyLinkRecorder, http.StatusForbidden, "AccessDenied", cfg.Storage.Region, "gallery")
+	assertS3XMLError(t, denyLinkRecorder, http.StatusForbidden, "AccessDenied", cfg.Settings.Region, "gallery")
 }
 
 func assertS3XMLError(t *testing.T, recorder *httptest.ResponseRecorder, wantStatus int, wantCode, wantRegion, wantBucket string) {
