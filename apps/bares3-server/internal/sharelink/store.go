@@ -125,6 +125,23 @@ func (s *Store) Close() error {
 	return err
 }
 
+func (s *Store) Check(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	db, err := s.openDB()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = db.Close()
+	}()
+	if _, err := db.NewRaw("SELECT 1").Exec(ctx); err != nil {
+		return fmt.Errorf("check share link db: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) Create(ctx context.Context, input CreateInput) (Link, error) {
 	if err := ctx.Err(); err != nil {
 		return Link{}, err

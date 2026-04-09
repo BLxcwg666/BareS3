@@ -62,6 +62,26 @@ func (s *Store) Close() error {
 	return err
 }
 
+func (s *Store) Check(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s == nil || s.metadata == nil {
+		return fmt.Errorf("check storage: store is closed")
+	}
+	db, err := s.metadata.openDB()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = db.Close()
+	}()
+	if _, err := db.NewRaw("SELECT 1").Exec(ctx); err != nil {
+		return fmt.Errorf("check storage metadata db: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) CreateBucket(ctx context.Context, name string, quotaBytes int64) (BucketInfo, error) {
 	return s.CreateBucketWithOptions(ctx, CreateBucketInput{
 		Name:         name,

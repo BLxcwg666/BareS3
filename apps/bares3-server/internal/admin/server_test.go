@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -173,6 +174,70 @@ func TestLoginSetsSecureCookieForHTTPSRequests(t *testing.T) {
 	}
 	if !loginRecorder.Result().Cookies()[0].Secure {
 		t.Fatalf("expected HTTPS login to set a secure cookie")
+	}
+}
+
+func TestReadinessAndMetricsEndpoints(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	hash, err := consoleauth.HashPassword("secret-password")
+	if err != nil {
+		t.Fatalf("HashPassword failed: %v", err)
+	}
+	cfg.Auth.Console.PasswordHash = hash
+	cfg.Auth.Console.SessionSecret = "test-session-secret"
+
+	handler := newAdminHandlerForTest(t, cfg, newStorageStoreForTest(t, cfg), nil)
+
+	readyRequest := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	readyRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(readyRecorder, readyRequest)
+	if readyRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected readiness status: %d body=%s", readyRecorder.Code, readyRecorder.Body.String())
+	}
+	readyPayload := struct {
+		Status string            `json:"status"`
+		Checks map[string]string `json:"checks"`
+	}{}
+	if err := json.Unmarshal(readyRecorder.Body.Bytes(), &readyPayload); err != nil {
+		t.Fatalf("unmarshal readiness payload: %v", err)
+	}
+	if readyPayload.Status != "ok" {
+		t.Fatalf("unexpected readiness payload: %+v", readyPayload)
+	}
+	if readyPayload.Checks["storage"] != "ok" || readyPayload.Checks["share_links"] != "ok" || readyPayload.Checks["s3_credentials"] != "ok" {
+		t.Fatalf("unexpected readiness checks: %+v", readyPayload.Checks)
+	}
+
+	healthRequest := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	healthRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(healthRecorder, healthRequest)
+	if healthRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected health status: %d body=%s", healthRecorder.Code, healthRecorder.Body.String())
+	}
+
+	metricsRequest := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metricsRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(metricsRecorder, metricsRequest)
+	if metricsRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected metrics status: %d body=%s", metricsRecorder.Code, metricsRecorder.Body.String())
+	}
+	body := metricsRecorder.Body.String()
+	if !strings.Contains(body, "bares3_http_requests_total") {
+		t.Fatalf("expected request totals in metrics output, got %s", body)
+	}
+	if !strings.Contains(body, "service=\"admin\"") {
+		t.Fatalf("expected admin service metrics, got %s", body)
+	}
+	if !strings.Contains(body, "bares3_build_info") {
+		t.Fatalf("expected build info in metrics output, got %s", body)
 	}
 }
 

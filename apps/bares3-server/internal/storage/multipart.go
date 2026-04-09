@@ -180,6 +180,34 @@ func (s *Store) ListParts(ctx context.Context, bucket, key, uploadID string) ([]
 	return parts, nil
 }
 
+func (s *Store) ListMultipartUploads(ctx context.Context, bucket string) ([]MultipartUploadInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if _, err := s.GetBucket(ctx, bucket); err != nil {
+		return nil, err
+	}
+
+	metas, err := s.metadata.listMultipartUploads(bucket)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]MultipartUploadInfo, 0, len(metas))
+	for _, meta := range metas {
+		items = append(items, MultipartUploadInfo{
+			UploadID:           meta.UploadID,
+			Bucket:             meta.Bucket,
+			Key:                meta.Key,
+			ContentType:        meta.ContentType,
+			CacheControl:       meta.CacheControl,
+			ContentDisposition: meta.ContentDisposition,
+			UserMetadata:       cloneStringMap(meta.UserMetadata),
+			CreatedAt:          meta.CreatedAt,
+		})
+	}
+	return items, nil
+}
+
 func (s *Store) CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, completed []CompletedPart) (ObjectInfo, error) {
 	if err := ctx.Err(); err != nil {
 		return ObjectInfo{}, err

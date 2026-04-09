@@ -82,6 +82,36 @@ func (s *metadataStore) getMultipartUpload(bucket, key, uploadID string) (multip
 	return meta, nil
 }
 
+func (s *metadataStore) listMultipartUploads(bucket string) ([]multipartUploadMetadata, error) {
+	ctx := context.Background()
+	db, err := s.openDB()
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = db.Close()
+	}()
+
+	records := make([]storageMultipartUploadRecord, 0)
+	err = db.NewSelect().Model(&records).
+		Where("bucket = ?", strings.TrimSpace(bucket)).
+		OrderExpr("key ASC, created_at ASC, upload_id ASC").
+		Scan(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list multipart upload metadata: %w", err)
+	}
+
+	items := make([]multipartUploadMetadata, 0, len(records))
+	for _, record := range records {
+		meta, err := record.MultipartUploadMetadata()
+		if err != nil {
+			return nil, fmt.Errorf("scan multipart upload metadata: %w", err)
+		}
+		items = append(items, meta)
+	}
+	return items, nil
+}
+
 func (s *metadataStore) upsertMultipartUpload(meta multipartUploadMetadata) error {
 	ctx := context.Background()
 	db, err := s.openDB()

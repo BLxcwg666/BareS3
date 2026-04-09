@@ -152,6 +152,23 @@ func (s *Store) Close() error {
 	return err
 }
 
+func (s *Store) Check(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	db, err := s.openDB()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = db.Close()
+	}()
+	if _, err := db.NewRaw("SELECT 1").Exec(ctx); err != nil {
+		return fmt.Errorf("check s3 credential db: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) List(ctx context.Context) ([]PublicCredential, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

@@ -33,25 +33,31 @@ func RequestLogger(logger *zap.Logger, service string) func(http.Handler) http.H
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			startedAt := time.Now()
 			recorder := &responseRecorder{ResponseWriter: w}
+			addInFlightRequest(service, 1)
+			defer func() {
+				addInFlightRequest(service, -1)
+
+				status := recorder.status
+				if status == 0 {
+					status = http.StatusOK
+				}
+				duration := time.Since(startedAt)
+				observeRequest(service, r.Method, status, recorder.bytes, duration)
+
+				logger.Info(
+					"http request",
+					zap.String("service", service),
+					zap.String("method", r.Method),
+					zap.String("path", r.URL.Path),
+					zap.String("query", r.URL.RawQuery),
+					zap.Int("status", status),
+					zap.Int("bytes", recorder.bytes),
+					zap.Duration("duration", duration),
+					zap.String("remote", r.RemoteAddr),
+				)
+			}()
 
 			next.ServeHTTP(recorder, r)
-
-			status := recorder.status
-			if status == 0 {
-				status = http.StatusOK
-			}
-
-			logger.Info(
-				"http request",
-				zap.String("service", service),
-				zap.String("method", r.Method),
-				zap.String("path", r.URL.Path),
-				zap.String("query", r.URL.RawQuery),
-				zap.Int("status", status),
-				zap.Int("bytes", recorder.bytes),
-				zap.Duration("duration", time.Since(startedAt)),
-				zap.String("remote", r.RemoteAddr),
-			)
 		})
 	}
 }
@@ -60,12 +66,6 @@ func WriteJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
-}
-
-func WriteHTML(w http.ResponseWriter, status int, payload string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	_, _ = w.Write([]byte(payload))
 }
 
 func WriteText(w http.ResponseWriter, status int, payload string) {

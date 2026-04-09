@@ -6,9 +6,11 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/xml"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -112,6 +114,91 @@ func TestPutGetHeadAndListObjectsV2(t *testing.T) {
 	}
 	if len(result.Contents) != 1 || result.Contents[0].Key != "2026/launch/mock-02.txt" {
 		t.Fatalf("unexpected list objects payload: %+v", result.Contents)
+	}
+}
+
+func TestObjectConditionalRequests(t *testing.T) {
+	t.Parallel()
+
+	store, handler := newTestHandler(t)
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	object, err := store.PutObject(context.Background(), storage.PutObjectInput{
+		Bucket:      "gallery",
+		Key:         "notes/conditional.txt",
+		Body:        bytes.NewBufferString("hello conditional"),
+		ContentType: "text/plain",
+	})
+	if err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	notModifiedRequest := httptest.NewRequest(http.MethodGet, "/gallery/notes/conditional.txt", nil)
+	notModifiedRequest.Header.Set("If-None-Match", `"`+object.ETag+`"`)
+	signHeaderRequest(t, notModifiedRequest, config.Default(), nil)
+	notModifiedRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(notModifiedRecorder, notModifiedRequest)
+	if notModifiedRecorder.Code != http.StatusNotModified {
+		t.Fatalf("unexpected if-none-match status: %d body=%s", notModifiedRecorder.Code, notModifiedRecorder.Body.String())
+	}
+
+	ifMatchFailedRequest := httptest.NewRequest(http.MethodGet, "/gallery/notes/conditional.txt", nil)
+	ifMatchFailedRequest.Header.Set("If-Match", `"different"`)
+	signHeaderRequest(t, ifMatchFailedRequest, config.Default(), nil)
+	ifMatchFailedRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(ifMatchFailedRecorder, ifMatchFailedRequest)
+	if ifMatchFailedRecorder.Code != http.StatusPreconditionFailed {
+		t.Fatalf("unexpected if-match failure status: %d body=%s", ifMatchFailedRecorder.Code, ifMatchFailedRecorder.Body.String())
+	}
+
+	modifiedSinceRequest := httptest.NewRequest(http.MethodGet, "/gallery/notes/conditional.txt", nil)
+	modifiedSinceRequest.Header.Set("If-Modified-Since", object.LastModified.Add(time.Hour).UTC().Format(http.TimeFormat))
+	signHeaderRequest(t, modifiedSinceRequest, config.Default(), nil)
+	modifiedSinceRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(modifiedSinceRecorder, modifiedSinceRequest)
+	if modifiedSinceRecorder.Code != http.StatusNotModified {
+		t.Fatalf("unexpected if-modified-since status: %d body=%s", modifiedSinceRecorder.Code, modifiedSinceRecorder.Body.String())
+	}
+
+	unmodifiedSinceRequest := httptest.NewRequest(http.MethodHead, "/gallery/notes/conditional.txt", nil)
+	unmodifiedSinceRequest.Header.Set("If-Unmodified-Since", object.LastModified.Add(-time.Hour).UTC().Format(http.TimeFormat))
+	signHeaderRequest(t, unmodifiedSinceRequest, config.Default(), nil)
+	unmodifiedSinceRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(unmodifiedSinceRecorder, unmodifiedSinceRequest)
+	if unmodifiedSinceRecorder.Code != http.StatusPreconditionFailed {
+		t.Fatalf("unexpected if-unmodified-since status: %d", unmodifiedSinceRecorder.Code)
+	}
+}
+
+func TestListObjectsV1WithoutListTypeParameter(t *testing.T) {
+	t.Parallel()
+
+	store, handler := newTestHandler(t)
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	if _, err := store.PutObject(context.Background(), storage.PutObjectInput{Bucket: "gallery", Key: "2026/launch/mock-02.txt", Body: bytes.NewBufferString("hello s3")}); err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	listRequest := httptest.NewRequest(http.MethodGet, "/gallery?prefix=2026/launch/", nil)
+	signHeaderRequest(t, listRequest, config.Default(), nil)
+	listRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(listRecorder, listRequest)
+	if listRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected list objects v1 status: %d body=%s", listRecorder.Code, listRecorder.Body.String())
+	}
+
+	result := listObjectsResult{}
+	if err := xml.Unmarshal(listRecorder.Body.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal list objects v1 xml: %v", err)
+	}
+	if result.Name != "gallery" || result.Prefix != "2026/launch/" {
+		t.Fatalf("unexpected list objects v1 metadata: %+v", result)
+	}
+	if len(result.Contents) != 1 || result.Contents[0].Key != "2026/launch/mock-02.txt" {
+		t.Fatalf("unexpected list objects v1 payload: %+v", result.Contents)
 	}
 }
 
@@ -346,6 +433,316 @@ func TestDeleteObjectAndBucket(t *testing.T) {
 	}
 }
 
+func TestGetBucketLocationAndDeleteObjects(t *testing.T) {
+	t.Parallel()
+
+	store, handler := newTestHandler(t)
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	for _, fixture := range []struct {
+		key  string
+		body string
+	}{
+		{key: "notes/a.txt", body: "a"},
+		{key: "notes/b.txt", body: "b"},
+	} {
+		if _, err := store.PutObject(context.Background(), storage.PutObjectInput{Bucket: "gallery", Key: fixture.key, Body: bytes.NewBufferString(fixture.body)}); err != nil {
+			t.Fatalf("PutObject(%s) failed: %v", fixture.key, err)
+		}
+	}
+
+	locationRequest := httptest.NewRequest(http.MethodGet, "/gallery?location", nil)
+	signHeaderRequest(t, locationRequest, config.Default(), nil)
+	locationRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(locationRecorder, locationRequest)
+	if locationRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected bucket location status: %d body=%s", locationRecorder.Code, locationRecorder.Body.String())
+	}
+	locationResult := bucketLocationConstraint{}
+	if err := xml.Unmarshal(locationRecorder.Body.Bytes(), &locationResult); err != nil {
+		t.Fatalf("unmarshal location result: %v", err)
+	}
+	if locationResult.Value != config.Default().Storage.Region {
+		t.Fatalf("unexpected location constraint: %q", locationResult.Value)
+	}
+
+	deleteBody := []byte(`<Delete><Object><Key>notes/a.txt</Key></Object><Object><Key>notes/missing.txt</Key></Object></Delete>`)
+	deleteRequest := httptest.NewRequest(http.MethodPost, "/gallery?delete", bytes.NewReader(deleteBody))
+	deleteRequest.Header.Set("Content-Type", "application/xml")
+	signHeaderRequest(t, deleteRequest, config.Default(), deleteBody)
+	deleteRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(deleteRecorder, deleteRequest)
+	if deleteRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected delete objects status: %d body=%s", deleteRecorder.Code, deleteRecorder.Body.String())
+	}
+	deleteResult := deleteObjectsResult{}
+	if err := xml.Unmarshal(deleteRecorder.Body.Bytes(), &deleteResult); err != nil {
+		t.Fatalf("unmarshal delete objects result: %v", err)
+	}
+	deletedKeys := make([]string, 0, len(deleteResult.Deleted))
+	for _, item := range deleteResult.Deleted {
+		deletedKeys = append(deletedKeys, item.Key)
+	}
+	sort.Strings(deletedKeys)
+	if len(deleteResult.Errors) != 0 {
+		t.Fatalf("unexpected delete errors: %+v", deleteResult.Errors)
+	}
+	if len(deletedKeys) != 2 || deletedKeys[0] != "notes/a.txt" || deletedKeys[1] != "notes/missing.txt" {
+		t.Fatalf("unexpected deleted keys: %+v", deletedKeys)
+	}
+	if _, err := store.StatObject(context.Background(), "gallery", "notes/a.txt"); err == nil {
+		t.Fatalf("expected deleted object to be removed")
+	}
+	if _, err := store.StatObject(context.Background(), "gallery", "notes/b.txt"); err != nil {
+		t.Fatalf("expected remaining object to stay available, got %v", err)
+	}
+	if got := deleteRecorder.Header().Get("X-Amz-Bucket-Region"); got != config.Default().Storage.Region {
+		t.Fatalf("unexpected region header after delete objects: %q", got)
+	}
+}
+
+func TestCopyObjectPreservesBodyAndSupportsMetadataReplace(t *testing.T) {
+	t.Parallel()
+
+	store, handler := newTestHandler(t)
+	for _, bucket := range []string{"gallery", "archive"} {
+		if _, err := store.CreateBucket(context.Background(), bucket, 0); err != nil {
+			t.Fatalf("CreateBucket(%s) failed: %v", bucket, err)
+		}
+	}
+	if _, err := store.PutObject(context.Background(), storage.PutObjectInput{
+		Bucket:             "gallery",
+		Key:                "notes/source.txt",
+		Body:               bytes.NewBufferString("copy me"),
+		ContentType:        "text/plain",
+		CacheControl:       "public, max-age=60",
+		ContentDisposition: `inline; filename="source.txt"`,
+		UserMetadata:       map[string]string{"origin": "source"},
+	}); err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	copyRequest := httptest.NewRequest(http.MethodPut, "/archive/copied.txt", nil)
+	copyRequest.Header.Set("X-Amz-Copy-Source", "/gallery/notes/source.txt")
+	signHeaderRequest(t, copyRequest, config.Default(), nil)
+	copyRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(copyRecorder, copyRequest)
+	if copyRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected copy object status: %d body=%s", copyRecorder.Code, copyRecorder.Body.String())
+	}
+	copyResult := copyObjectResult{}
+	if err := xml.Unmarshal(copyRecorder.Body.Bytes(), &copyResult); err != nil {
+		t.Fatalf("unmarshal copy object result: %v", err)
+	}
+	if strings.TrimSpace(copyResult.ETag) == "" || strings.TrimSpace(copyResult.LastModified) == "" {
+		t.Fatalf("unexpected copy object result: %+v", copyResult)
+	}
+
+	getCopiedRequest := httptest.NewRequest(http.MethodGet, "/archive/copied.txt", nil)
+	signHeaderRequest(t, getCopiedRequest, config.Default(), nil)
+	getCopiedRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(getCopiedRecorder, getCopiedRequest)
+	if getCopiedRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected copied get status: %d body=%s", getCopiedRecorder.Code, getCopiedRecorder.Body.String())
+	}
+	if body := strings.TrimSpace(getCopiedRecorder.Body.String()); body != "copy me" {
+		t.Fatalf("unexpected copied body: %q", body)
+	}
+	if got := getCopiedRecorder.Header().Get("Content-Type"); got != "text/plain" {
+		t.Fatalf("unexpected copied content type: %q", got)
+	}
+	if got := getCopiedRecorder.Header().Get("Cache-Control"); got != "public, max-age=60" {
+		t.Fatalf("unexpected copied cache control: %q", got)
+	}
+	if got := getCopiedRecorder.Header().Get("Content-Disposition"); got != `inline; filename="source.txt"` {
+		t.Fatalf("unexpected copied content disposition: %q", got)
+	}
+	if got := getCopiedRecorder.Header().Get("X-Amz-Meta-origin"); got != "source" {
+		t.Fatalf("unexpected copied metadata: %q", got)
+	}
+
+	replaceRequest := httptest.NewRequest(http.MethodPut, "/archive/replaced.txt", nil)
+	replaceRequest.Header.Set("X-Amz-Copy-Source", "/gallery/notes/source.txt")
+	replaceRequest.Header.Set("X-Amz-Metadata-Directive", "REPLACE")
+	replaceRequest.Header.Set("Content-Type", "application/json")
+	replaceRequest.Header.Set("Cache-Control", "no-store")
+	replaceRequest.Header.Set("Content-Disposition", `attachment; filename="replaced.txt"`)
+	replaceRequest.Header.Set("X-Amz-Meta-origin", "replaced")
+	replaceRequest.Header.Set("X-Amz-Meta-owner", "qa")
+	signHeaderRequest(t, replaceRequest, config.Default(), nil)
+	replaceRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(replaceRecorder, replaceRequest)
+	if replaceRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected replace copy status: %d body=%s", replaceRecorder.Code, replaceRecorder.Body.String())
+	}
+
+	headReplacedRequest := httptest.NewRequest(http.MethodHead, "/archive/replaced.txt", nil)
+	signHeaderRequest(t, headReplacedRequest, config.Default(), nil)
+	headReplacedRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(headReplacedRecorder, headReplacedRequest)
+	if headReplacedRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected replaced head status: %d", headReplacedRecorder.Code)
+	}
+	if got := headReplacedRecorder.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("unexpected replaced content type: %q", got)
+	}
+	if got := headReplacedRecorder.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("unexpected replaced cache control: %q", got)
+	}
+	if got := headReplacedRecorder.Header().Get("Content-Disposition"); got != `attachment; filename="replaced.txt"` {
+		t.Fatalf("unexpected replaced content disposition: %q", got)
+	}
+	if got := headReplacedRecorder.Header().Get("X-Amz-Meta-origin"); got != "replaced" {
+		t.Fatalf("unexpected replaced origin metadata: %q", got)
+	}
+	if got := headReplacedRecorder.Header().Get("X-Amz-Meta-owner"); got != "qa" {
+		t.Fatalf("unexpected replaced owner metadata: %q", got)
+	}
+
+	getReplacedRequest := httptest.NewRequest(http.MethodGet, "/archive/replaced.txt", nil)
+	signHeaderRequest(t, getReplacedRequest, config.Default(), nil)
+	getReplacedRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(getReplacedRecorder, getReplacedRequest)
+	if getReplacedRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected replaced get status: %d body=%s", getReplacedRecorder.Code, getReplacedRecorder.Body.String())
+	}
+	if body := strings.TrimSpace(getReplacedRecorder.Body.String()); body != "copy me" {
+		t.Fatalf("unexpected replaced body: %q", body)
+	}
+}
+
+func TestCopyObjectRequiresSourceBucketAccess(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Auth.S3.AccessKeyID = ""
+	cfg.Auth.S3.SecretAccessKey = ""
+
+	store := storage.New(cfg, zap.NewNop())
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+	for _, bucket := range []string{"gallery", "archive"} {
+		if _, err := store.CreateBucket(context.Background(), bucket, 0); err != nil {
+			t.Fatalf("CreateBucket(%s) failed: %v", bucket, err)
+		}
+	}
+	if _, err := store.PutObject(context.Background(), storage.PutObjectInput{Bucket: "gallery", Key: "notes/source.txt", Body: bytes.NewBufferString("copy me")}); err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	creds, err := s3creds.New(cfg.Paths.DataDir, s3creds.BootstrapCredential{}, zap.NewNop())
+	if err != nil {
+		t.Fatalf("s3creds.New failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = creds.Close()
+	})
+	created, err := creds.Create(context.Background(), s3creds.CreateInput{Label: "archive-only", Permission: s3creds.PermissionReadWrite, Buckets: []string{"archive"}})
+	if err != nil {
+		t.Fatalf("Create credential failed: %v", err)
+	}
+	handler := newHandler(cfg, store, newShareLinksForTest(t, cfg.Paths.DataDir), creds, zap.NewNop())
+	signedCfg := cfg
+	signedCfg.Auth.S3.AccessKeyID = created.AccessKeyID
+	signedCfg.Auth.S3.SecretAccessKey = created.SecretAccessKey
+
+	request := httptest.NewRequest(http.MethodPut, "/archive/copied.txt", nil)
+	request.Header.Set("X-Amz-Copy-Source", "/gallery/notes/source.txt")
+	signHeaderRequest(t, request, signedCfg, nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	assertS3Error(t, recorder, http.StatusForbidden, "AccessDenied", cfg.Storage.Region, "archive")
+	if _, err := store.StatObject(context.Background(), "archive", "copied.txt"); err == nil {
+		t.Fatalf("expected denied copy to leave destination untouched")
+	}
+}
+
+func TestCopyObjectSourceConditionalHeaders(t *testing.T) {
+	t.Parallel()
+
+	store, handler := newTestHandler(t)
+	for _, bucket := range []string{"gallery", "archive"} {
+		if _, err := store.CreateBucket(context.Background(), bucket, 0); err != nil {
+			t.Fatalf("CreateBucket(%s) failed: %v", bucket, err)
+		}
+	}
+	sourceObject, err := store.PutObject(context.Background(), storage.PutObjectInput{
+		Bucket:      "gallery",
+		Key:         "notes/source-conditional.txt",
+		Body:        bytes.NewBufferString("copy me conditionally"),
+		ContentType: "text/plain",
+	})
+	if err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	ifMatchOverridesRequest := httptest.NewRequest(http.MethodPut, "/archive/copied-if-match.txt", nil)
+	ifMatchOverridesRequest.Header.Set("X-Amz-Copy-Source", "/gallery/notes/source-conditional.txt")
+	ifMatchOverridesRequest.Header.Set("X-Amz-Copy-Source-If-Match", `"`+sourceObject.ETag+`"`)
+	ifMatchOverridesRequest.Header.Set("X-Amz-Copy-Source-If-Unmodified-Since", sourceObject.LastModified.Add(-time.Hour).UTC().Format(http.TimeFormat))
+	signHeaderRequest(t, ifMatchOverridesRequest, config.Default(), nil)
+	ifMatchOverridesRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(ifMatchOverridesRecorder, ifMatchOverridesRequest)
+	if ifMatchOverridesRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected copy if-match override status: %d body=%s", ifMatchOverridesRecorder.Code, ifMatchOverridesRecorder.Body.String())
+	}
+
+	ifNoneMatchRequest := httptest.NewRequest(http.MethodPut, "/archive/copied-if-none-match.txt", nil)
+	ifNoneMatchRequest.Header.Set("X-Amz-Copy-Source", "/gallery/notes/source-conditional.txt")
+	ifNoneMatchRequest.Header.Set("X-Amz-Copy-Source-If-None-Match", `"`+sourceObject.ETag+`"`)
+	signHeaderRequest(t, ifNoneMatchRequest, config.Default(), nil)
+	ifNoneMatchRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(ifNoneMatchRecorder, ifNoneMatchRequest)
+	assertS3Error(t, ifNoneMatchRecorder, http.StatusPreconditionFailed, "PreconditionFailed", config.Default().Storage.Region, "archive")
+
+	ifModifiedSinceRequest := httptest.NewRequest(http.MethodPut, "/archive/copied-if-modified-since.txt", nil)
+	ifModifiedSinceRequest.Header.Set("X-Amz-Copy-Source", "/gallery/notes/source-conditional.txt")
+	ifModifiedSinceRequest.Header.Set("X-Amz-Copy-Source-If-Modified-Since", sourceObject.LastModified.Add(time.Hour).UTC().Format(http.TimeFormat))
+	signHeaderRequest(t, ifModifiedSinceRequest, config.Default(), nil)
+	ifModifiedSinceRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(ifModifiedSinceRecorder, ifModifiedSinceRequest)
+	assertS3Error(t, ifModifiedSinceRecorder, http.StatusPreconditionFailed, "PreconditionFailed", config.Default().Storage.Region, "archive")
+
+	invalidTimeRequest := httptest.NewRequest(http.MethodPut, "/archive/copied-invalid-time.txt", nil)
+	invalidTimeRequest.Header.Set("X-Amz-Copy-Source", "/gallery/notes/source-conditional.txt")
+	invalidTimeRequest.Header.Set("X-Amz-Copy-Source-If-Modified-Since", "not-a-time")
+	signHeaderRequest(t, invalidTimeRequest, config.Default(), nil)
+	invalidTimeRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(invalidTimeRecorder, invalidTimeRequest)
+	assertS3Error(t, invalidTimeRecorder, http.StatusBadRequest, "InvalidArgument", config.Default().Storage.Region, "archive")
+}
+
+func TestS3ReadinessEndpoint(t *testing.T) {
+	t.Parallel()
+
+	_, handler := newTestHandler(t)
+	request := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected readiness status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	payload := struct {
+		Status string            `json:"status"`
+		Checks map[string]string `json:"checks"`
+	}{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal readiness payload: %v", err)
+	}
+	if payload.Status != "ok" {
+		t.Fatalf("unexpected readiness payload: %+v", payload)
+	}
+	if payload.Checks["storage"] != "ok" || payload.Checks["share_links"] != "ok" || payload.Checks["s3_credentials"] != "ok" {
+		t.Fatalf("unexpected readiness checks: %+v", payload.Checks)
+	}
+}
+
 func TestListObjectsV2DelimiterAndContinuationToken(t *testing.T) {
 	t.Parallel()
 
@@ -398,6 +795,67 @@ func TestListObjectsV2DelimiterAndContinuationToken(t *testing.T) {
 	}
 	if len(secondResult.Contents) != 1 || secondResult.Contents[0].Key != "photos/raw.txt" {
 		t.Fatalf("unexpected second page contents: %+v", secondResult.Contents)
+	}
+}
+
+func TestListObjectsV1DelimiterAndMarker(t *testing.T) {
+	t.Parallel()
+
+	store, handler := newTestHandler(t)
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	fixtures := []string{
+		"photos/2024/a.jpg",
+		"photos/2024/b.jpg",
+		"photos/raw.txt",
+		"videos/clip.mp4",
+	}
+	for _, key := range fixtures {
+		if _, err := store.PutObject(context.Background(), storage.PutObjectInput{Bucket: "gallery", Key: key, Body: bytes.NewBufferString(key)}); err != nil {
+			t.Fatalf("PutObject(%s) failed: %v", key, err)
+		}
+	}
+
+	firstRequest := httptest.NewRequest(http.MethodGet, "/gallery?prefix=photos/&delimiter=/&max-keys=1", nil)
+	signHeaderRequest(t, firstRequest, config.Default(), nil)
+	firstRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(firstRecorder, firstRequest)
+	if firstRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected first list v1 status: %d body=%s", firstRecorder.Code, firstRecorder.Body.String())
+	}
+
+	firstResult := listObjectsResult{}
+	if err := xml.Unmarshal(firstRecorder.Body.Bytes(), &firstResult); err != nil {
+		t.Fatalf("unmarshal first list v1 result: %v", err)
+	}
+	if !firstResult.IsTruncated || firstResult.NextMarker == "" {
+		t.Fatalf("expected truncated first v1 page, got %+v", firstResult)
+	}
+	if len(firstResult.CommonPrefixes) != 1 || firstResult.CommonPrefixes[0].Prefix != "photos/2024/" {
+		t.Fatalf("unexpected first v1 common prefixes: %+v", firstResult.CommonPrefixes)
+	}
+	if firstResult.NextMarker != "photos/2024/" {
+		t.Fatalf("unexpected first v1 next marker: %q", firstResult.NextMarker)
+	}
+
+	secondRequest := httptest.NewRequest(http.MethodGet, "/gallery?prefix=photos/&delimiter=/&max-keys=1&marker="+url.QueryEscape(firstResult.NextMarker), nil)
+	signHeaderRequest(t, secondRequest, config.Default(), nil)
+	secondRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(secondRecorder, secondRequest)
+	if secondRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected second list v1 status: %d body=%s", secondRecorder.Code, secondRecorder.Body.String())
+	}
+
+	secondResult := listObjectsResult{}
+	if err := xml.Unmarshal(secondRecorder.Body.Bytes(), &secondResult); err != nil {
+		t.Fatalf("unmarshal second list v1 result: %v", err)
+	}
+	if len(secondResult.Contents) != 1 || secondResult.Contents[0].Key != "photos/raw.txt" {
+		t.Fatalf("unexpected second v1 page contents: %+v", secondResult.Contents)
+	}
+	if secondResult.Marker != "photos/2024/" {
+		t.Fatalf("unexpected echoed marker: %q", secondResult.Marker)
 	}
 }
 
@@ -480,6 +938,302 @@ func TestMultipartUploadLifecycle(t *testing.T) {
 	}
 	if body := strings.TrimSpace(getRecorder.Body.String()); body != "hello world" {
 		t.Fatalf("unexpected multipart object body: %q", body)
+	}
+}
+
+func TestUploadPartCopyLifecycle(t *testing.T) {
+	t.Parallel()
+
+	store, handler := newTestHandler(t)
+	for _, bucket := range []string{"gallery", "archive"} {
+		if _, err := store.CreateBucket(context.Background(), bucket, 0); err != nil {
+			t.Fatalf("CreateBucket(%s) failed: %v", bucket, err)
+		}
+	}
+	source, err := store.PutObject(context.Background(), storage.PutObjectInput{
+		Bucket:      "gallery",
+		Key:         "notes/source.txt",
+		Body:        bytes.NewBufferString("hello world"),
+		ContentType: "text/plain",
+	})
+	if err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	initiateRequest := httptest.NewRequest(http.MethodPost, "/archive/copied.txt?uploads", nil)
+	initiateRequest.Header.Set("Content-Type", "text/plain")
+	signHeaderRequest(t, initiateRequest, config.Default(), nil)
+	initiateRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(initiateRecorder, initiateRequest)
+	if initiateRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected initiate status: %d body=%s", initiateRecorder.Code, initiateRecorder.Body.String())
+	}
+	initiateResult := initiateMultipartUploadResult{}
+	if err := xml.Unmarshal(initiateRecorder.Body.Bytes(), &initiateResult); err != nil {
+		t.Fatalf("unmarshal initiate result: %v", err)
+	}
+
+	partOneRequest := httptest.NewRequest(http.MethodPut, "/archive/copied.txt?partNumber=1&uploadId="+initiateResult.UploadID, nil)
+	partOneRequest.Header.Set("X-Amz-Copy-Source", "/gallery/notes/source.txt")
+	partOneRequest.Header.Set("X-Amz-Copy-Source-Range", "bytes=0-5")
+	signHeaderRequest(t, partOneRequest, config.Default(), nil)
+	partOneRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(partOneRecorder, partOneRequest)
+	if partOneRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected upload part copy one status: %d body=%s", partOneRecorder.Code, partOneRecorder.Body.String())
+	}
+	partOneResult := copyPartResult{}
+	if err := xml.Unmarshal(partOneRecorder.Body.Bytes(), &partOneResult); err != nil {
+		t.Fatalf("unmarshal copy part one result: %v", err)
+	}
+
+	partTwoRequest := httptest.NewRequest(http.MethodPut, "/archive/copied.txt?partNumber=2&uploadId="+initiateResult.UploadID, nil)
+	partTwoRequest.Header.Set("X-Amz-Copy-Source", "/gallery/notes/source.txt")
+	partTwoRequest.Header.Set("X-Amz-Copy-Source-Range", "bytes=6-10")
+	partTwoRequest.Header.Set("X-Amz-Copy-Source-If-Match", `"`+source.ETag+`"`)
+	signHeaderRequest(t, partTwoRequest, config.Default(), nil)
+	partTwoRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(partTwoRecorder, partTwoRequest)
+	if partTwoRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected upload part copy two status: %d body=%s", partTwoRecorder.Code, partTwoRecorder.Body.String())
+	}
+	partTwoResult := copyPartResult{}
+	if err := xml.Unmarshal(partTwoRecorder.Body.Bytes(), &partTwoResult); err != nil {
+		t.Fatalf("unmarshal copy part two result: %v", err)
+	}
+	if strings.TrimSpace(partOneResult.ETag) == "" || strings.TrimSpace(partTwoResult.ETag) == "" {
+		t.Fatalf("expected copy part etags, got %+v %+v", partOneResult, partTwoResult)
+	}
+
+	completeBody := []byte("<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>" + partOneResult.ETag + "</ETag></Part><Part><PartNumber>2</PartNumber><ETag>" + partTwoResult.ETag + "</ETag></Part></CompleteMultipartUpload>")
+	completeRequest := httptest.NewRequest(http.MethodPost, "/archive/copied.txt?uploadId="+initiateResult.UploadID, bytes.NewReader(completeBody))
+	completeRequest.Header.Set("Content-Type", "application/xml")
+	signHeaderRequest(t, completeRequest, config.Default(), completeBody)
+	completeRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(completeRecorder, completeRequest)
+	if completeRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected complete copied multipart status: %d body=%s", completeRecorder.Code, completeRecorder.Body.String())
+	}
+
+	getRequest := httptest.NewRequest(http.MethodGet, "/archive/copied.txt", nil)
+	signHeaderRequest(t, getRequest, config.Default(), nil)
+	getRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(getRecorder, getRequest)
+	if getRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected get copied multipart object status: %d body=%s", getRecorder.Code, getRecorder.Body.String())
+	}
+	if body := strings.TrimSpace(getRecorder.Body.String()); body != "hello world" {
+		t.Fatalf("unexpected copied multipart object body: %q", body)
+	}
+}
+
+func TestUploadPartCopyRejectsInvalidRange(t *testing.T) {
+	t.Parallel()
+
+	store, handler := newTestHandler(t)
+	for _, bucket := range []string{"gallery", "archive"} {
+		if _, err := store.CreateBucket(context.Background(), bucket, 0); err != nil {
+			t.Fatalf("CreateBucket(%s) failed: %v", bucket, err)
+		}
+	}
+	if _, err := store.PutObject(context.Background(), storage.PutObjectInput{Bucket: "gallery", Key: "notes/source.txt", Body: bytes.NewBufferString("hello")}); err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	initiateRequest := httptest.NewRequest(http.MethodPost, "/archive/copied.txt?uploads", nil)
+	signHeaderRequest(t, initiateRequest, config.Default(), nil)
+	initiateRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(initiateRecorder, initiateRequest)
+	if initiateRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected initiate status: %d body=%s", initiateRecorder.Code, initiateRecorder.Body.String())
+	}
+	initiateResult := initiateMultipartUploadResult{}
+	if err := xml.Unmarshal(initiateRecorder.Body.Bytes(), &initiateResult); err != nil {
+		t.Fatalf("unmarshal initiate result: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPut, "/archive/copied.txt?partNumber=1&uploadId="+initiateResult.UploadID, nil)
+	request.Header.Set("X-Amz-Copy-Source", "/gallery/notes/source.txt")
+	request.Header.Set("X-Amz-Copy-Source-Range", "bytes=0-99")
+	signHeaderRequest(t, request, config.Default(), nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	assertS3Error(t, recorder, http.StatusBadRequest, "InvalidArgument", config.Default().Storage.Region, "archive")
+}
+
+func TestUploadPartCopyRequiresSourceBucketAccess(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Auth.S3.AccessKeyID = ""
+	cfg.Auth.S3.SecretAccessKey = ""
+
+	store := storage.New(cfg, zap.NewNop())
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+	for _, bucket := range []string{"gallery", "archive"} {
+		if _, err := store.CreateBucket(context.Background(), bucket, 0); err != nil {
+			t.Fatalf("CreateBucket(%s) failed: %v", bucket, err)
+		}
+	}
+	if _, err := store.PutObject(context.Background(), storage.PutObjectInput{Bucket: "gallery", Key: "notes/source.txt", Body: bytes.NewBufferString("hello world")}); err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	creds, err := s3creds.New(cfg.Paths.DataDir, s3creds.BootstrapCredential{}, zap.NewNop())
+	if err != nil {
+		t.Fatalf("s3creds.New failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = creds.Close()
+	})
+	created, err := creds.Create(context.Background(), s3creds.CreateInput{Label: "archive-only", Permission: s3creds.PermissionReadWrite, Buckets: []string{"archive"}})
+	if err != nil {
+		t.Fatalf("Create credential failed: %v", err)
+	}
+	handler := newHandler(cfg, store, newShareLinksForTest(t, cfg.Paths.DataDir), creds, zap.NewNop())
+	signedCfg := cfg
+	signedCfg.Auth.S3.AccessKeyID = created.AccessKeyID
+	signedCfg.Auth.S3.SecretAccessKey = created.SecretAccessKey
+
+	initiateRequest := httptest.NewRequest(http.MethodPost, "/archive/copied.txt?uploads", nil)
+	signHeaderRequest(t, initiateRequest, signedCfg, nil)
+	initiateRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(initiateRecorder, initiateRequest)
+	if initiateRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected scoped initiate status: %d body=%s", initiateRecorder.Code, initiateRecorder.Body.String())
+	}
+	initiateResult := initiateMultipartUploadResult{}
+	if err := xml.Unmarshal(initiateRecorder.Body.Bytes(), &initiateResult); err != nil {
+		t.Fatalf("unmarshal initiate result: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPut, "/archive/copied.txt?partNumber=1&uploadId="+initiateResult.UploadID, nil)
+	request.Header.Set("X-Amz-Copy-Source", "/gallery/notes/source.txt")
+	signHeaderRequest(t, request, signedCfg, nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	assertS3Error(t, recorder, http.StatusForbidden, "AccessDenied", cfg.Storage.Region, "archive")
+}
+
+func TestListMultipartUploadsSupportsMarkers(t *testing.T) {
+	t.Parallel()
+
+	store, handler := newTestHandler(t)
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	initiate := func(key string) initiateMultipartUploadResult {
+		request := httptest.NewRequest(http.MethodPost, "/gallery/"+key+"?uploads", nil)
+		signHeaderRequest(t, request, config.Default(), nil)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("unexpected initiate status for %s: %d body=%s", key, recorder.Code, recorder.Body.String())
+		}
+		result := initiateMultipartUploadResult{}
+		if err := xml.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+			t.Fatalf("unmarshal initiate result for %s: %v", key, err)
+		}
+		return result
+	}
+
+	first := initiate("alpha.txt")
+	second := initiate("alpha.txt")
+	third := initiate("zeta.txt")
+
+	listRequest := httptest.NewRequest(http.MethodGet, "/gallery?uploads&max-uploads=2", nil)
+	signHeaderRequest(t, listRequest, config.Default(), nil)
+	listRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(listRecorder, listRequest)
+	if listRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected list multipart uploads status: %d body=%s", listRecorder.Code, listRecorder.Body.String())
+	}
+	firstPage := listMultipartUploadsResult{}
+	if err := xml.Unmarshal(listRecorder.Body.Bytes(), &firstPage); err != nil {
+		t.Fatalf("unmarshal first multipart upload page: %v", err)
+	}
+	if !firstPage.IsTruncated {
+		t.Fatalf("expected truncated first multipart page: %+v", firstPage)
+	}
+	if len(firstPage.Uploads) != 2 || firstPage.Uploads[0].Key != "alpha.txt" || firstPage.Uploads[1].Key != "alpha.txt" {
+		t.Fatalf("unexpected first multipart page uploads: %+v", firstPage.Uploads)
+	}
+	if firstPage.NextKeyMarker != "alpha.txt" {
+		t.Fatalf("unexpected next key marker: %q", firstPage.NextKeyMarker)
+	}
+	if firstPage.NextUploadIDMarker == "" {
+		t.Fatalf("expected next upload id marker in first page")
+	}
+	if firstPage.Uploads[0].UploadID != first.UploadID || firstPage.Uploads[1].UploadID != second.UploadID {
+		t.Fatalf("unexpected first page upload ids: %+v", firstPage.Uploads)
+	}
+
+	nextRequest := httptest.NewRequest(http.MethodGet, "/gallery?uploads&max-uploads=2&key-marker="+url.QueryEscape(firstPage.NextKeyMarker)+"&upload-id-marker="+url.QueryEscape(firstPage.NextUploadIDMarker), nil)
+	signHeaderRequest(t, nextRequest, config.Default(), nil)
+	nextRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(nextRecorder, nextRequest)
+	if nextRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected second list multipart uploads status: %d body=%s", nextRecorder.Code, nextRecorder.Body.String())
+	}
+	secondPage := listMultipartUploadsResult{}
+	if err := xml.Unmarshal(nextRecorder.Body.Bytes(), &secondPage); err != nil {
+		t.Fatalf("unmarshal second multipart upload page: %v", err)
+	}
+	if len(secondPage.Uploads) != 1 || secondPage.Uploads[0].Key != "zeta.txt" || secondPage.Uploads[0].UploadID != third.UploadID {
+		t.Fatalf("unexpected second multipart page uploads: %+v", secondPage.Uploads)
+	}
+	if secondPage.IsTruncated {
+		t.Fatalf("expected second multipart page to be final: %+v", secondPage)
+	}
+}
+
+func TestListMultipartUploadsSupportsDelimiter(t *testing.T) {
+	t.Parallel()
+
+	requestKeys := []string{"sample.txt", "photos/2026/a.jpg", "videos/clip.mp4"}
+
+	store, handler := newTestHandler(t)
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	for _, key := range requestKeys {
+		request := httptest.NewRequest(http.MethodPost, "/gallery/"+key+"?uploads", nil)
+		signHeaderRequest(t, request, config.Default(), nil)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("unexpected initiate status for %s: %d body=%s", key, recorder.Code, recorder.Body.String())
+		}
+	}
+
+	listRequest := httptest.NewRequest(http.MethodGet, "/gallery?uploads&delimiter=/", nil)
+	signHeaderRequest(t, listRequest, config.Default(), nil)
+	listRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(listRecorder, listRequest)
+	if listRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected delimiter list multipart uploads status: %d body=%s", listRecorder.Code, listRecorder.Body.String())
+	}
+	result := listMultipartUploadsResult{}
+	if err := xml.Unmarshal(listRecorder.Body.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal delimiter multipart upload result: %v", err)
+	}
+	if len(result.Uploads) != 1 || result.Uploads[0].Key != "sample.txt" {
+		t.Fatalf("unexpected root uploads: %+v", result.Uploads)
+	}
+	prefixes := make([]string, 0, len(result.CommonPrefixes))
+	for _, item := range result.CommonPrefixes {
+		prefixes = append(prefixes, item.Prefix)
+	}
+	sort.Strings(prefixes)
+	if len(prefixes) != 2 || prefixes[0] != "photos/" || prefixes[1] != "videos/" {
+		t.Fatalf("unexpected multipart common prefixes: %+v", prefixes)
 	}
 }
 

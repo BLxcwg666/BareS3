@@ -36,8 +36,8 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 	router := chi.NewRouter()
 	router.Use(chiMiddleware.RequestID)
 	router.Use(chiMiddleware.RealIP)
-	router.Use(chiMiddleware.Recoverer)
 	router.Use(httpx.RequestLogger(logger, "file"))
+	router.Use(chiMiddleware.Recoverer)
 	router.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.TrimSpace(cfg.Storage.Region) != "" {
@@ -66,6 +66,10 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 			"time":    time.Now().UTC().Format(time.RFC3339),
 		})
 	})
+	router.Handle("/readyz", httpx.ReadyHandler("file",
+		httpx.ReadinessCheck{Name: "storage", Check: store.Check},
+		httpx.ReadinessCheck{Name: "share_links", Check: shareLinks.Check},
+	))
 
 	router.Route("/pub", func(r chi.Router) {
 		r.Get("/{bucket}/*", func(w http.ResponseWriter, r *http.Request) {

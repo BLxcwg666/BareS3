@@ -67,8 +67,8 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 	uiHandler := webui.NewHandler()
 	router.Use(chiMiddleware.RequestID)
 	router.Use(chiMiddleware.RealIP)
-	router.Use(chiMiddleware.Recoverer)
 	router.Use(httpx.RequestLogger(logger, "admin"))
+	router.Use(chiMiddleware.Recoverer)
 
 	router.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
@@ -78,6 +78,12 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 			"time":    time.Now().UTC().Format(time.RFC3339),
 		})
 	})
+	router.Handle("/readyz", httpx.ReadyHandler("admin",
+		httpx.ReadinessCheck{Name: "storage", Check: store.Check},
+		httpx.ReadinessCheck{Name: "share_links", Check: shareLinks.Check},
+		httpx.ReadinessCheck{Name: "s3_credentials", Check: credentials.Check},
+	))
+	router.Handle("/metrics", httpx.MetricsHandler())
 
 	router.Route("/api/v1", func(api chi.Router) {
 		api.NotFound(func(w http.ResponseWriter, r *http.Request) {
