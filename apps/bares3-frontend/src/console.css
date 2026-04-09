@@ -1330,6 +1330,110 @@ a {
   }
 }
 
+.cmdk-modal .ant-modal-content {
+  padding: 0;
+  border-radius: 12px;
+  overflow: hidden;
+  background: color-mix(in oklab, var(--surface) 80%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--line);
+  box-shadow: 0 16px 40px oklch(0% 0 0 / 0.12);
+}
+
+.cmdk-header {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.cmdk-input {
+  border: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  font-size: 16px !important;
+  padding-left: 10px !important;
+  flex: 1;
+}
+
+.cmdk-input:focus {
+  outline: none;
+}
+
+.cmdk-list {
+  max-height: 400px;
+  overflow-y: auto;
+  padding: 8px;
+  margin: 0;
+  list-style: none;
+}
+
+.cmdk-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.1s ease-in-out;
+  margin-bottom: 2px;
+}
+
+.cmdk-item-active,
+.cmdk-item:hover {
+  background: var(--row-hover);
+}
+
+.cmdk-item-icon {
+  margin-top: 2px;
+  font-size: 16px;
+  color: var(--muted);
+}
+
+.cmdk-item-active .cmdk-item-icon {
+  color: var(--accent);
+}
+
+.cmdk-item-content {
+  display: grid;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.cmdk-item-title {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cmdk-item-note {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cmdk-item-action {
+  font-size: 12px;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 0.1s ease-in-out;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cmdk-item-active .cmdk-item-action,
+.cmdk-item:hover .cmdk-item-action {
+  opacity: 1;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
