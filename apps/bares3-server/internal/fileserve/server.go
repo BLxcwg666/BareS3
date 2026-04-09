@@ -6,11 +6,13 @@ import (
 	"mime"
 	"net/http"
 	"path"
+	"strings"
 	"time"
 
 	"bares3-server/internal/buildinfo"
 	"bares3-server/internal/config"
 	"bares3-server/internal/httpx"
+	"bares3-server/internal/s3xml"
 	"bares3-server/internal/sharelink"
 	"bares3-server/internal/storage"
 	"github.com/go-chi/chi/v5"
@@ -36,15 +38,30 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 	router.Use(chiMiddleware.RealIP)
 	router.Use(chiMiddleware.Recoverer)
 	router.Use(httpx.RequestLogger(logger, "file"))
+	router.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.TrimSpace(cfg.Storage.Region) != "" {
+				w.Header().Set("X-Amz-Bucket-Region", cfg.Storage.Region)
+			}
+			next.ServeHTTP(w, r)
+		})
+	})
+	router.NotFound(func(w http.ResponseWriter, r *http.Request) {
+		writeS3Error(w, r, "", http.StatusNotFound, "NoSuchKey", "resource not found")
+	})
+	router.MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) {
+		writeS3Error(w, r, "", http.StatusMethodNotAllowed, "MethodNotAllowed", "method is not supported")
+	})
 
 	router.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		httpx.WriteText(w, http.StatusOK, fmt.Sprintf("%s file service\nversion: %s\npublic base URL: %s\n", config.ProductName, buildinfo.Current().Version, cfg.Storage.PublicBaseURL))
+		httpx.WriteText(w, http.StatusOK, fmt.Sprintf("%s file service\nversion: %s\nregion: %s\npublic base URL: %s\n", config.ProductName, buildinfo.Current().Version, cfg.Storage.Region, cfg.Storage.PublicBaseURL))
 	})
 
 	router.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"status":  "ok",
 			"service": "file",
+			"region":  cfg.Storage.Region,
 			"version": buildinfo.Current(),
 			"time":    time.Now().UTC().Format(time.RFC3339),
 		})
@@ -91,18 +108,19 @@ func serveShareLinkObject(w http.ResponseWriter, r *http.Request, store *storage
 	link, err := shareLinks.GetActive(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		status := http.StatusInternalServerError
+		code := "InternalError"
 		switch {
 		case errors.Is(err, sharelink.ErrInvalidID):
 			status = http.StatusBadRequest
+			code = "InvalidArgument"
 		case errors.Is(err, sharelink.ErrNotFound):
 			status = http.StatusNotFound
+			code = "NoSuchKey"
 		case errors.Is(err, sharelink.ErrExpired), errors.Is(err, sharelink.ErrRevoked):
 			status = http.StatusGone
+			code = "AccessDenied"
 		}
-		httpx.WriteJSON(w, status, map[string]any{
-			"status":  "error",
-			"message": err.Error(),
-		})
+		writeS3Error(w, r, "", status, code, err.Error())
 		return
 	}
 
@@ -124,17 +142,7 @@ func serveShareLinkObject(w http.ResponseWriter, r *http.Request, store *storage
 func authorizeObjectRequest(w http.ResponseWriter, r *http.Request, store *storage.Store, bucket, key string, authenticated bool) bool {
 	action, err := store.ResolveBucketObjectAccess(r.Context(), bucket, key)
 	if err != nil {
-		status := http.StatusInternalServerError
-		switch {
-		case errors.Is(err, storage.ErrBucketNotFound), errors.Is(err, storage.ErrObjectNotFound):
-			status = http.StatusNotFound
-		case errors.Is(err, storage.ErrInvalidBucketName), errors.Is(err, storage.ErrInvalidObjectKey):
-			status = http.StatusBadRequest
-		}
-		httpx.WriteJSON(w, status, map[string]any{
-			"status":  "error",
-			"message": err.Error(),
-		})
+		writeStorageAsS3Error(w, r, bucket, err)
 		return false
 	}
 
@@ -145,42 +153,23 @@ func authorizeObjectRequest(w http.ResponseWriter, r *http.Request, store *stora
 		if authenticated {
 			return true
 		}
-		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{
-			"status":  "error",
-			"message": "object requires authentication",
-		})
+		writeS3Error(w, r, bucket, http.StatusForbidden, "AccessDenied", "object requires authentication")
 		return false
 	default:
-		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{
-			"status":  "error",
-			"message": "object access denied by bucket policy",
-		})
+		writeS3Error(w, r, bucket, http.StatusForbidden, "AccessDenied", "object access denied by bucket policy")
 		return false
 	}
 }
 
 func serveObject(w http.ResponseWriter, r *http.Request, store *storage.Store, bucket, key, contentDisposition string) {
 	if bucket == "" || key == "" {
-		httpx.WriteJSON(w, http.StatusNotFound, map[string]any{
-			"status":  "error",
-			"message": "bucket and key are required",
-		})
+		writeS3Error(w, r, bucket, http.StatusBadRequest, "InvalidURI", "bucket and key are required")
 		return
 	}
 
 	file, object, err := store.OpenObject(r.Context(), bucket, key)
 	if err != nil {
-		status := http.StatusInternalServerError
-		switch {
-		case errors.Is(err, storage.ErrBucketNotFound), errors.Is(err, storage.ErrObjectNotFound):
-			status = http.StatusNotFound
-		case errors.Is(err, storage.ErrInvalidBucketName), errors.Is(err, storage.ErrInvalidObjectKey):
-			status = http.StatusBadRequest
-		}
-		httpx.WriteJSON(w, status, map[string]any{
-			"status":  "error",
-			"message": err.Error(),
-		})
+		writeStorageAsS3Error(w, r, bucket, err)
 		return
 	}
 	defer func() {
@@ -203,4 +192,28 @@ func serveObject(w http.ResponseWriter, r *http.Request, store *storage.Store, b
 	}
 
 	http.ServeContent(w, r, path.Base(object.Key), object.LastModified, file)
+}
+
+func writeStorageAsS3Error(w http.ResponseWriter, r *http.Request, bucket string, err error) {
+	switch {
+	case errors.Is(err, storage.ErrBucketNotFound):
+		writeS3Error(w, r, bucket, http.StatusNotFound, "NoSuchBucket", err.Error())
+	case errors.Is(err, storage.ErrObjectNotFound):
+		writeS3Error(w, r, bucket, http.StatusNotFound, "NoSuchKey", err.Error())
+	case errors.Is(err, storage.ErrInvalidBucketName):
+		writeS3Error(w, r, bucket, http.StatusBadRequest, "InvalidBucketName", err.Error())
+	case errors.Is(err, storage.ErrInvalidObjectKey):
+		writeS3Error(w, r, bucket, http.StatusBadRequest, "InvalidArgument", err.Error())
+	default:
+		writeS3Error(w, r, bucket, http.StatusInternalServerError, "InternalError", err.Error())
+	}
+}
+
+func writeS3Error(w http.ResponseWriter, r *http.Request, bucket string, status int, code, message string) {
+	s3xml.WriteError(w, r, status, s3xml.ErrorOptions{
+		Code:       code,
+		Message:    message,
+		Region:     w.Header().Get("X-Amz-Bucket-Region"),
+		BucketName: bucket,
+	})
 }

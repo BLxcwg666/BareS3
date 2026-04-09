@@ -18,6 +18,7 @@ import (
 	"bares3-server/internal/config"
 	"bares3-server/internal/httpx"
 	"bares3-server/internal/s3creds"
+	"bares3-server/internal/s3xml"
 	"bares3-server/internal/sharelink"
 	"bares3-server/internal/sigv4"
 	"bares3-server/internal/storage"
@@ -25,14 +26,6 @@ import (
 )
 
 const s3Namespace = "http://s3.amazonaws.com/doc/2006-03-01/"
-
-type errorResponse struct {
-	XMLName   xml.Name `xml:"Error"`
-	Code      string   `xml:"Code"`
-	Message   string   `xml:"Message"`
-	Resource  string   `xml:"Resource,omitempty"`
-	RequestID string   `xml:"RequestId"`
-}
 
 type listBucketsResult struct {
 	XMLName xml.Name     `xml:"ListAllMyBucketsResult"`
@@ -182,7 +175,14 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 		handleS3Request(w, r, cfg, store, shareLinks, credentials, verifier)
 	})
 
-	return httpx.RequestLogger(logger, "s3")(mux)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.TrimSpace(cfg.Storage.Region) != "" {
+			w.Header().Set("X-Amz-Bucket-Region", cfg.Storage.Region)
+		}
+		mux.ServeHTTP(w, r)
+	})
+
+	return httpx.RequestLogger(logger, "s3")(handler)
 }
 
 func handleS3Request(w http.ResponseWriter, r *http.Request, cfg config.Config, store *storage.Store, shareLinks *sharelink.Store, credentials *s3creds.Store, verifier *sigv4.Verifier) {
@@ -212,7 +212,6 @@ func handleS3Request(w http.ResponseWriter, r *http.Request, cfg config.Config, 
 		return
 	}
 
-	w.Header().Set("X-Amz-Bucket-Region", cfg.Storage.Region)
 	if !authorizeBucketRequest(w, r, credential, bucket, requestRequiresWrite(r, key)) {
 		return
 	}
@@ -816,10 +815,7 @@ func formatS3Time(value time.Time) string {
 }
 
 func writeS3XML(w http.ResponseWriter, status int, payload any) {
-	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
-	w.WriteHeader(status)
-	_, _ = w.Write([]byte(xml.Header))
-	_ = xml.NewEncoder(w).Encode(payload)
+	s3xml.Write(w, status, payload)
 }
 
 func writeStorageAsS3Error(w http.ResponseWriter, r *http.Request, err error) {
@@ -861,19 +857,11 @@ func writeAuthError(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 func writeS3Error(w http.ResponseWriter, r *http.Request, status int, code, message string) {
-	requestID := fmt.Sprintf("req-%d", time.Now().UnixNano())
-	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
-	w.Header().Set("X-Amz-Request-Id", requestID)
-	w.WriteHeader(status)
-
-	if r.Method == http.MethodHead {
-		return
-	}
-
-	_ = xml.NewEncoder(w).Encode(errorResponse{
-		Code:      code,
-		Message:   message,
-		Resource:  r.URL.Path,
-		RequestID: requestID,
+	bucket, _ := splitPath(r.URL.Path)
+	s3xml.WriteError(w, r, status, s3xml.ErrorOptions{
+		Code:       code,
+		Message:    message,
+		Region:     w.Header().Get("X-Amz-Bucket-Region"),
+		BucketName: bucket,
 	})
 }

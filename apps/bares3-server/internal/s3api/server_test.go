@@ -122,12 +122,7 @@ func TestUnsignedRequestIsRejected(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusForbidden {
-		t.Fatalf("unexpected status for unsigned request: %d body=%s", recorder.Code, recorder.Body.String())
-	}
-	if !strings.Contains(recorder.Body.String(), "AccessDenied") {
-		t.Fatalf("expected AccessDenied response, got %s", recorder.Body.String())
-	}
+	assertS3Error(t, recorder, http.StatusForbidden, "AccessDenied", config.Default().Storage.Region, "")
 }
 
 func TestManagedS3CredentialWorksWithoutConfigKey(t *testing.T) {
@@ -234,18 +229,14 @@ func TestScopedReadOnlyCredentialRestrictsBucketsAndWrites(t *testing.T) {
 	signHeaderRequest(t, blockedBucketRequest, signedCfg, nil)
 	blockedBucketRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(blockedBucketRecorder, blockedBucketRequest)
-	if blockedBucketRecorder.Code != http.StatusForbidden {
-		t.Fatalf("unexpected blocked bucket status: %d body=%s", blockedBucketRecorder.Code, blockedBucketRecorder.Body.String())
-	}
+	assertS3Error(t, blockedBucketRecorder, http.StatusForbidden, "AccessDenied", cfg.Storage.Region, "archive")
 
 	writeBody := []byte("nope")
 	blockedWriteRequest := httptest.NewRequest(http.MethodPut, "/gallery/new.txt", bytes.NewReader(writeBody))
 	signHeaderRequest(t, blockedWriteRequest, signedCfg, writeBody)
 	blockedWriteRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(blockedWriteRecorder, blockedWriteRequest)
-	if blockedWriteRecorder.Code != http.StatusForbidden {
-		t.Fatalf("unexpected blocked write status: %d body=%s", blockedWriteRecorder.Code, blockedWriteRecorder.Body.String())
-	}
+	assertS3Error(t, blockedWriteRecorder, http.StatusForbidden, "AccessDenied", cfg.Storage.Region, "gallery")
 }
 
 func TestPresignedGetObject(t *testing.T) {
@@ -320,12 +311,7 @@ func TestCustomBucketAccessCanDenySignedReads(t *testing.T) {
 	signHeaderRequest(t, deniedRequest, config.Default(), nil)
 	deniedRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(deniedRecorder, deniedRequest)
-	if deniedRecorder.Code != http.StatusForbidden {
-		t.Fatalf("unexpected denied status: %d body=%s", deniedRecorder.Code, deniedRecorder.Body.String())
-	}
-	if !strings.Contains(deniedRecorder.Body.String(), "AccessDenied") {
-		t.Fatalf("expected AccessDenied body, got %s", deniedRecorder.Body.String())
-	}
+	assertS3Error(t, deniedRecorder, http.StatusForbidden, "AccessDenied", config.Default().Storage.Region, "gallery")
 }
 
 func TestDeleteObjectAndBucket(t *testing.T) {
@@ -513,6 +499,36 @@ func newTestHandler(t *testing.T) (*storage.Store, http.Handler) {
 	handler := newHandler(cfg, store, newShareLinksForTest(t, cfg.Paths.DataDir), newCredentialsForTest(t, cfg), zap.NewNop())
 
 	return store, handler
+}
+
+func assertS3Error(t *testing.T, recorder *httptest.ResponseRecorder, wantStatus int, wantCode, wantRegion, wantBucket string) {
+	t.Helper()
+
+	if recorder.Code != wantStatus {
+		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if contentType := recorder.Header().Get("Content-Type"); !strings.Contains(contentType, "application/xml") {
+		t.Fatalf("unexpected content type: %q", contentType)
+	}
+	if got := recorder.Header().Get("X-Amz-Bucket-Region"); got != wantRegion {
+		t.Fatalf("unexpected region header: %q", got)
+	}
+	if requestID := recorder.Header().Get("X-Amz-Request-Id"); strings.TrimSpace(requestID) == "" {
+		t.Fatalf("expected X-Amz-Request-Id header")
+	}
+	if body := recorder.Body.String(); !strings.Contains(body, "<Code>"+wantCode+"</Code>") {
+		t.Fatalf("unexpected body: %s", body)
+	}
+	if wantRegion != "" {
+		if body := recorder.Body.String(); !strings.Contains(body, "<Region>"+wantRegion+"</Region>") {
+			t.Fatalf("unexpected body region: %s", body)
+		}
+	}
+	if wantBucket != "" {
+		if body := recorder.Body.String(); !strings.Contains(body, "<BucketName>"+wantBucket+"</BucketName>") {
+			t.Fatalf("unexpected body bucket: %s", body)
+		}
+	}
 }
 
 func newShareLinksForTest(t *testing.T, dataDir string) *sharelink.Store {
