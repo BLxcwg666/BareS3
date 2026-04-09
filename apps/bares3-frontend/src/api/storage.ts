@@ -46,7 +46,25 @@ export type RuntimeInfo = {
   };
 };
 
-export type BucketAccessMode = 'private' | 'public';
+export type BucketAccessMode = 'private' | 'public' | 'custom';
+
+export type BucketAccessAction = 'public' | 'authenticated' | 'deny';
+
+export type BucketAccessRule = {
+  prefix: string;
+  action: BucketAccessAction;
+  note?: string;
+};
+
+export type BucketAccessPolicy = {
+  default_action: BucketAccessAction;
+  rules: BucketAccessRule[];
+};
+
+export type BucketAccessConfig = {
+  mode: BucketAccessMode;
+  policy: BucketAccessPolicy;
+};
 
 export type BucketInfo = {
   name: string;
@@ -157,6 +175,20 @@ export function getRuntime() {
 export async function listBuckets() {
   const payload = await request<{ items: BucketInfo[] }>('/api/v1/buckets');
   return payload.items;
+}
+
+export function getBucketAccessConfig(bucket: string) {
+  return request<BucketAccessConfig>(`/api/v1/buckets/${encodeURIComponent(bucket)}/access`);
+}
+
+export function updateBucketAccessConfig(bucket: string, payload: BucketAccessConfig) {
+  return request<BucketAccessConfig>(`/api/v1/buckets/${encodeURIComponent(bucket)}/access`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
 }
 
 export function createBucket(name: string, quotaBytes = 0, accessMode: BucketAccessMode = 'private') {

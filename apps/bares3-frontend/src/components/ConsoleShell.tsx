@@ -25,14 +25,15 @@ type ShellProps = {
   children: ReactNode;
   actions?: ReactNode;
   showHeaderSearch?: boolean;
+  meta?: { title: string; note: string };
 };
 
-export function ConsoleShell({ children, actions, showHeaderSearch = true }: ShellProps) {
+export function ConsoleShell({ children, actions, showHeaderSearch = true, meta: metaOverride }: ShellProps) {
   const auth = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const screens = Grid.useBreakpoint();
-  const meta = pageMeta[location.pathname] ?? pageMeta['/overview'];
+  const meta = metaOverride ?? pageMeta[location.pathname] ?? pageMeta['/overview'];
 
   const handleLogout = async () => {
     await auth.logout();

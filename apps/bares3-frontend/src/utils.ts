@@ -1,5 +1,5 @@
 import type { DescriptionsProps } from 'antd';
-import { ApiError, type BucketAccessMode, type BucketInfo } from './api';
+import { ApiError, type BucketAccessAction, type BucketAccessMode, type BucketInfo } from './api';
 import { sizeUnitOptions } from './constants';
 import type { BucketDisplayRow, SizeUnit } from './types';
 
@@ -71,11 +71,45 @@ export function quotaLabel(bytes: number) {
 }
 
 export function normalizeBucketAccessMode(value?: string): BucketAccessMode {
-  return value === 'public' ? 'public' : 'private';
+  if (value === 'public') {
+    return 'public';
+  }
+  if (value === 'custom') {
+    return 'custom';
+  }
+  return 'private';
 }
 
 export function bucketAccessModeLabel(value?: string) {
-  return normalizeBucketAccessMode(value) === 'public' ? 'Public' : 'Private';
+  switch (normalizeBucketAccessMode(value)) {
+    case 'public':
+      return 'Public';
+    case 'custom':
+      return 'Custom';
+    default:
+      return 'Private';
+  }
+}
+
+export function normalizeBucketAccessAction(value?: string): BucketAccessAction {
+  if (value === 'public') {
+    return 'public';
+  }
+  if (value === 'deny') {
+    return 'deny';
+  }
+  return 'authenticated';
+}
+
+export function bucketAccessActionLabel(value?: string) {
+  switch (normalizeBucketAccessAction(value)) {
+    case 'public':
+      return 'Public';
+    case 'deny':
+      return 'Deny';
+    default:
+      return 'Require auth';
+  }
 }
 
 export function usagePercentLabel(usedBytes: number, quotaBytes: number) {

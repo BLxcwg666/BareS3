@@ -44,11 +44,14 @@ export function BucketsPage() {
       {
         key: 'actions',
         title: 'Actions',
-        width: 220,
+        width: 300,
         render: (_value, row) => (
           <Space size={8}>
             <Button onClick={() => setEditingBucketName(row.name)} size="small">
               Edit
+            </Button>
+            <Button onClick={() => navigate(`/buckets/${encodeURIComponent(row.name)}/access`)} size="small">
+              Access
             </Button>
             <Button
               onClick={() => navigate({ pathname: '/browser', search: `?bucket=${encodeURIComponent(row.name)}` })}

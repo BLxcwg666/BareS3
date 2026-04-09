@@ -68,7 +68,7 @@ export function BucketCreateModal({
         </Form.Item>
 
         <Form.Item
-          extra="Public buckets expose files at /pub/<bucket>/<key>. Private buckets stay behind share links or signed URLs."
+          extra="Private requires auth, Public enables /pub, and Custom uses the access rules page."
           label="Access mode"
           name="accessMode"
           rules={[{ required: true, message: 'Access mode is required' }]}

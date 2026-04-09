@@ -19,6 +19,11 @@ const BucketsPage = lazy(async () => {
   return { default: module.BucketsPage };
 });
 
+const BucketAccessPage = lazy(async () => {
+  const module = await import('./pages/BucketAccessPage');
+  return { default: module.BucketAccessPage };
+});
+
 const BrowserPage = lazy(async () => {
   const module = await import('./pages/BrowserPage');
   return { default: module.BrowserPage };
@@ -82,6 +87,14 @@ export default function App() {
                 element={
                   <ProtectedRoute>
                     <BucketsPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/buckets/:bucket/access"
+                element={
+                  <ProtectedRoute>
+                    <BucketAccessPage />
                   </ProtectedRoute>
                 }
               />

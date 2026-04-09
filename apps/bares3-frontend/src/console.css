@@ -307,6 +307,11 @@ a {
   color: var(--accent-ink);
 }
 
+.mode-tag-custom {
+  background: color-mix(in oklab, var(--surface-soft) 35%, var(--accent-soft));
+  color: var(--ink);
+}
+
 .mode-tag-private,
 .mode-tag-signed,
 .mode-tag-signed-only {
@@ -733,6 +738,50 @@ a {
 .bucket-trend-panel {
   display: grid;
   gap: 12px;
+}
+
+.access-page-grid {
+  align-items: start;
+}
+
+.access-mode-stack,
+.access-rules-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.access-default-row {
+  display: grid;
+  align-items: center;
+  gap: 10px;
+  grid-template-columns: 112px minmax(220px, 320px) minmax(0, 1fr);
+}
+
+.access-rule-row {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: color-mix(in oklab, var(--surface-soft) 66%, var(--surface));
+}
+
+.access-rule-fields {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(220px, 1.25fr) 180px minmax(220px, 1fr);
+}
+
+.access-rule-prefix,
+.access-rule-action,
+.access-rule-note {
+  display: grid;
+  gap: 6px;
+}
+
+.access-rule-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .bucket-panel-head {
@@ -1243,6 +1292,15 @@ a {
 
   .bucket-summary-grid {
     grid-template-columns: 1fr;
+  }
+
+  .access-default-row,
+  .access-rule-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .access-rule-actions {
+    justify-content: flex-start;
   }
 
   .bucket-trend-stats,

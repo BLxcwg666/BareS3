@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { App as AntApp, Button, Drawer, Form, Input, InputNumber, Select, Skeleton, Space } from 'antd';
+import { useNavigate } from 'react-router-dom';
 import { listBucketUsageHistory, updateBucket, type BucketInfo, type BucketUsageSample } from '../api';
 import { bucketAccessModeOptions, sizeUnitOptions } from '../constants';
 import type { BucketEditValues } from '../types';
@@ -36,6 +37,7 @@ export function BucketEditDrawer({
   onSaved: () => Promise<void> | void;
 }) {
   const { message } = AntApp.useApp();
+  const navigate = useNavigate();
   const [form] = Form.useForm<BucketEditValues>();
   const [history, setHistory] = useState<BucketUsageSample[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -205,13 +207,26 @@ export function BucketEditDrawer({
               </Form.Item>
 
               <Form.Item
-                extra="Public buckets expose files at /pub/<bucket>/<key>. Private buckets stay behind share links or signed URLs."
+                extra="Private requires auth, Public enables /pub, and Custom uses the access rules page."
                 label="Access mode"
                 name="accessMode"
                 rules={[{ required: true, message: 'Access mode is required' }]}
               >
                 <Select options={bucketAccessModeOptions} />
               </Form.Item>
+
+              {bucket ? (
+                <Button
+                  onClick={() => {
+                    onCancel();
+                    navigate(`/buckets/${encodeURIComponent(bucket.name)}/access`);
+                  }}
+                  size="small"
+                  type="link"
+                >
+                  Open access rules page
+                </Button>
+              ) : null}
 
               <Form.Item extra="Leave empty or 0 for unlimited." label="Bucket limit">
                 <Space.Compact block>
