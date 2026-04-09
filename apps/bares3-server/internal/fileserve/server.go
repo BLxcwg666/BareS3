@@ -74,26 +74,7 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 func serveRouteObject(w http.ResponseWriter, r *http.Request, store *storage.Store) {
 	bucket := chi.URLParam(r, "bucket")
 	key := chi.URLParam(r, "*")
-	bucketInfo, err := store.GetBucket(r.Context(), bucket)
-	if err != nil {
-		status := http.StatusInternalServerError
-		switch {
-		case errors.Is(err, storage.ErrBucketNotFound):
-			status = http.StatusNotFound
-		case errors.Is(err, storage.ErrInvalidBucketName):
-			status = http.StatusBadRequest
-		}
-		httpx.WriteJSON(w, status, map[string]any{
-			"status":  "error",
-			"message": err.Error(),
-		})
-		return
-	}
-	if !storage.IsBucketPublicAccess(bucketInfo.AccessMode) {
-		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{
-			"status":  "error",
-			"message": "bucket does not allow public access",
-		})
+	if !authorizeObjectRequest(w, r, store, bucket, key, false) {
 		return
 	}
 	serveObject(w, r, store, bucket, key, "")
@@ -118,6 +99,10 @@ func serveShareLinkObject(w http.ResponseWriter, r *http.Request, store *storage
 		return
 	}
 
+	if !authorizeObjectRequest(w, r, store, link.Bucket, link.Key, true) {
+		return
+	}
+
 	contentDisposition := ""
 	if forceDownload {
 		contentDisposition = mime.FormatMediaType("attachment", map[string]string{"filename": link.Filename})
@@ -127,6 +112,44 @@ func serveShareLinkObject(w http.ResponseWriter, r *http.Request, store *storage
 	}
 
 	serveObject(w, r, store, link.Bucket, link.Key, contentDisposition)
+}
+
+func authorizeObjectRequest(w http.ResponseWriter, r *http.Request, store *storage.Store, bucket, key string, authenticated bool) bool {
+	action, err := store.ResolveBucketObjectAccess(r.Context(), bucket, key)
+	if err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, storage.ErrBucketNotFound), errors.Is(err, storage.ErrObjectNotFound):
+			status = http.StatusNotFound
+		case errors.Is(err, storage.ErrInvalidBucketName), errors.Is(err, storage.ErrInvalidObjectKey):
+			status = http.StatusBadRequest
+		}
+		httpx.WriteJSON(w, status, map[string]any{
+			"status":  "error",
+			"message": err.Error(),
+		})
+		return false
+	}
+
+	switch action {
+	case storage.BucketAccessActionPublic:
+		return true
+	case storage.BucketAccessActionAuthenticated:
+		if authenticated {
+			return true
+		}
+		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{
+			"status":  "error",
+			"message": "object requires authentication",
+		})
+		return false
+	default:
+		httpx.WriteJSON(w, http.StatusForbidden, map[string]any{
+			"status":  "error",
+			"message": "object access denied by bucket policy",
+		})
+		return false
+	}
 }
 
 func serveObject(w http.ResponseWriter, r *http.Request, store *storage.Store, bucket, key, contentDisposition string) {

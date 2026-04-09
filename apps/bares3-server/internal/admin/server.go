@@ -429,6 +429,55 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 				httpx.WriteJSON(w, http.StatusOK, updated)
 			})
 
+			protected.Get("/buckets/{bucket}/access", func(w http.ResponseWriter, r *http.Request) {
+				config, err := store.GetBucketAccessConfig(r.Context(), chi.URLParam(r, "bucket"))
+				if err != nil {
+					writeStorageError(w, err)
+					return
+				}
+				httpx.WriteJSON(w, http.StatusOK, config)
+			})
+
+			protected.Put("/buckets/{bucket}/access", func(w http.ResponseWriter, r *http.Request) {
+				payload := struct {
+					Mode   string                     `json:"mode"`
+					Policy storage.BucketAccessPolicy `json:"policy"`
+				}{}
+
+				decoder := json.NewDecoder(r.Body)
+				decoder.DisallowUnknownFields()
+				if err := decoder.Decode(&payload); err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+						"status":  "error",
+						"message": "invalid request body",
+					})
+					return
+				}
+
+				bucketName := chi.URLParam(r, "bucket")
+				updated, err := store.UpdateBucketAccess(r.Context(), storage.UpdateBucketAccessInput{
+					Name:   bucketName,
+					Mode:   payload.Mode,
+					Policy: payload.Policy,
+				})
+				if err != nil {
+					writeStorageError(w, err)
+					return
+				}
+
+				recordAudit(logger, auditRecorder, auditlog.Entry{
+					Actor:  actorFromRequest(r),
+					Action: "bucket.access.update",
+					Title:  fmt.Sprintf("Updated access for bucket %s", bucketName),
+					Detail: fmt.Sprintf("Mode %s · Default %s · %d rules", bucketAccessLabel(updated.Mode), bucketAccessRuleLabel(updated.Policy.DefaultAction), len(updated.Policy.Rules)),
+					Target: bucketName,
+					Remote: requestRemote(r),
+					Status: "success",
+				})
+
+				httpx.WriteJSON(w, http.StatusOK, updated)
+			})
+
 			protected.Get("/settings/storage", func(w http.ResponseWriter, r *http.Request) {
 				httpx.WriteJSON(w, http.StatusOK, map[string]any{
 					"max_bytes": store.InstanceQuotaBytes(),
@@ -1208,10 +1257,26 @@ func quotaLabel(bytes int64) string {
 }
 
 func bucketAccessLabel(value string) string {
-	if storage.IsBucketPublicAccess(value) {
+	switch storage.NormalizeBucketAccessMode(value) {
+	case storage.BucketAccessPublic:
 		return "public"
+	case storage.BucketAccessCustom:
+		return "custom"
+	default:
+		return "private"
 	}
-	return "private"
+
+}
+
+func bucketAccessRuleLabel(value string) string {
+	switch storage.NormalizeBucketAccessAction(value) {
+	case storage.BucketAccessActionPublic:
+		return "public"
+	case storage.BucketAccessActionDeny:
+		return "deny"
+	default:
+		return "authenticated"
+	}
 }
 
 func contentTypeLabel(value string) string {

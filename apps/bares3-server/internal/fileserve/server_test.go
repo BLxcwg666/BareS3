@@ -138,3 +138,96 @@ func TestServePublicBucketRouteHonorsAccessMode(t *testing.T) {
 		t.Fatalf("unexpected public access body: %q", body)
 	}
 }
+
+func TestServeCustomBucketAccessRules(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
+
+	store := storage.New(cfg, zap.NewNop())
+	ctx := context.Background()
+	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	fixtures := []struct {
+		key  string
+		body string
+	}{
+		{key: "images/hero.txt", body: "public"},
+		{key: "notes/readme.txt", body: "auth"},
+		{key: "secret/plan.txt", body: "deny"},
+	}
+	for _, fixture := range fixtures {
+		if _, err := store.PutObject(ctx, storage.PutObjectInput{Bucket: "gallery", Key: fixture.key, Body: bytes.NewBufferString(fixture.body), ContentType: "text/plain"}); err != nil {
+			t.Fatalf("PutObject(%s) failed: %v", fixture.key, err)
+		}
+	}
+	if _, err := store.UpdateBucketAccess(ctx, storage.UpdateBucketAccessInput{
+		Name: "gallery",
+		Mode: storage.BucketAccessCustom,
+		Policy: storage.BucketAccessPolicy{
+			DefaultAction: storage.BucketAccessActionAuthenticated,
+			Rules: []storage.BucketAccessRule{
+				{Prefix: "images/", Action: storage.BucketAccessActionPublic},
+				{Prefix: "secret/", Action: storage.BucketAccessActionDeny},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("UpdateBucketAccess failed: %v", err)
+	}
+
+	links, err := sharelink.New(cfg.Paths.DataDir, zap.NewNop())
+	if err != nil {
+		t.Fatalf("sharelink.New failed: %v", err)
+	}
+	authLink, err := links.Create(ctx, sharelink.CreateInput{Bucket: "gallery", Key: "notes/readme.txt", Expires: time.Hour})
+	if err != nil {
+		t.Fatalf("Create auth link failed: %v", err)
+	}
+	denyLink, err := links.Create(ctx, sharelink.CreateInput{Bucket: "gallery", Key: "secret/plan.txt", Expires: time.Hour})
+	if err != nil {
+		t.Fatalf("Create deny link failed: %v", err)
+	}
+
+	handler := NewHandler(cfg, store, zap.NewNop())
+
+	publicRequest := httptest.NewRequest(http.MethodGet, "/pub/gallery/images/hero.txt", nil)
+	publicRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(publicRecorder, publicRequest)
+	if publicRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected public custom status: %d body=%s", publicRecorder.Code, publicRecorder.Body.String())
+	}
+
+	authRequest := httptest.NewRequest(http.MethodGet, "/pub/gallery/notes/readme.txt", nil)
+	authRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(authRecorder, authRequest)
+	if authRecorder.Code != http.StatusForbidden {
+		t.Fatalf("unexpected authenticated-only public status: %d body=%s", authRecorder.Code, authRecorder.Body.String())
+	}
+
+	denyRequest := httptest.NewRequest(http.MethodGet, "/pub/gallery/secret/plan.txt", nil)
+	denyRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(denyRecorder, denyRequest)
+	if denyRecorder.Code != http.StatusForbidden {
+		t.Fatalf("unexpected denied public status: %d body=%s", denyRecorder.Code, denyRecorder.Body.String())
+	}
+
+	authLinkRequest := httptest.NewRequest(http.MethodGet, "/s/"+authLink.ID, nil)
+	authLinkRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(authLinkRecorder, authLinkRequest)
+	if authLinkRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected authenticated share link status: %d body=%s", authLinkRecorder.Code, authLinkRecorder.Body.String())
+	}
+
+	denyLinkRequest := httptest.NewRequest(http.MethodGet, "/s/"+denyLink.ID, nil)
+	denyLinkRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(denyLinkRecorder, denyLinkRequest)
+	if denyLinkRecorder.Code != http.StatusForbidden {
+		t.Fatalf("unexpected denied share link status: %d body=%s", denyLinkRecorder.Code, denyLinkRecorder.Body.String())
+	}
+}

@@ -326,6 +326,9 @@ func handleObjectRequest(w http.ResponseWriter, r *http.Request, cfg config.Conf
 		}
 		w.WriteHeader(http.StatusOK)
 	case http.MethodGet, http.MethodHead:
+		if !authorizeObjectRead(w, r, store, bucket, key) {
+			return
+		}
 		file, object, err := store.OpenObject(r.Context(), bucket, key)
 		if err != nil {
 			writeStorageAsS3Error(w, r, err)
@@ -349,6 +352,19 @@ func handleObjectRequest(w http.ResponseWriter, r *http.Request, cfg config.Conf
 	default:
 		writeS3Error(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "method is not supported for object requests")
 	}
+}
+
+func authorizeObjectRead(w http.ResponseWriter, r *http.Request, store *storage.Store, bucket, key string) bool {
+	action, err := store.ResolveBucketObjectAccess(r.Context(), bucket, key)
+	if err != nil {
+		writeStorageAsS3Error(w, r, err)
+		return false
+	}
+	if action == storage.BucketAccessActionDeny {
+		writeS3Error(w, r, http.StatusForbidden, "AccessDenied", "object access denied by bucket policy")
+		return false
+	}
+	return true
 }
 
 func applyObjectHeaders(w http.ResponseWriter, object storage.ObjectInfo) {

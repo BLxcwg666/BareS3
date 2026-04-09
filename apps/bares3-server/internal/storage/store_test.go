@@ -132,6 +132,69 @@ func TestUpdateBucketRenamesAndPersistsMetadata(t *testing.T) {
 	}
 }
 
+func TestBucketAccessConfigEvaluatesCustomRules(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	ctx := context.Background()
+	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	updated, err := store.UpdateBucketAccess(ctx, UpdateBucketAccessInput{
+		Name: "gallery",
+		Mode: BucketAccessCustom,
+		Policy: BucketAccessPolicy{
+			DefaultAction: BucketAccessActionAuthenticated,
+			Rules: []BucketAccessRule{
+				{Prefix: "images/", Action: BucketAccessActionPublic, Note: "Public images"},
+				{Prefix: "secret/", Action: BucketAccessActionDeny, Note: "No reads"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateBucketAccess failed: %v", err)
+	}
+	if updated.Mode != BucketAccessCustom {
+		t.Fatalf("unexpected access mode: %s", updated.Mode)
+	}
+	if updated.Policy.DefaultAction != BucketAccessActionAuthenticated || len(updated.Policy.Rules) != 2 {
+		t.Fatalf("unexpected access policy: %+v", updated.Policy)
+	}
+
+	config, err := store.GetBucketAccessConfig(ctx, "gallery")
+	if err != nil {
+		t.Fatalf("GetBucketAccessConfig failed: %v", err)
+	}
+	if config.Mode != BucketAccessCustom || len(config.Policy.Rules) != 2 {
+		t.Fatalf("unexpected persisted access config: %+v", config)
+	}
+
+	publicAction, err := store.ResolveBucketObjectAccess(ctx, "gallery", "images/cover.png")
+	if err != nil {
+		t.Fatalf("ResolveBucketObjectAccess public failed: %v", err)
+	}
+	if publicAction != BucketAccessActionPublic {
+		t.Fatalf("unexpected public action: %s", publicAction)
+	}
+
+	authAction, err := store.ResolveBucketObjectAccess(ctx, "gallery", "notes/readme.txt")
+	if err != nil {
+		t.Fatalf("ResolveBucketObjectAccess auth failed: %v", err)
+	}
+	if authAction != BucketAccessActionAuthenticated {
+		t.Fatalf("unexpected auth action: %s", authAction)
+	}
+
+	denyAction, err := store.ResolveBucketObjectAccess(ctx, "gallery", "secret/plan.txt")
+	if err != nil {
+		t.Fatalf("ResolveBucketObjectAccess deny failed: %v", err)
+	}
+	if denyAction != BucketAccessActionDeny {
+		t.Fatalf("unexpected deny action: %s", denyAction)
+	}
+}
+
 func TestBucketUsageHistoryTracksMutations(t *testing.T) {
 	t.Parallel()
 

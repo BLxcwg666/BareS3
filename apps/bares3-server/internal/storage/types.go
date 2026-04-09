@@ -41,9 +41,32 @@ type BucketInfo struct {
 }
 
 type CreateBucketInput struct {
-	Name       string
-	QuotaBytes int64
-	AccessMode string
+	Name         string
+	AccessMode   string
+	AccessPolicy BucketAccessPolicy
+	QuotaBytes   int64
+}
+
+type BucketAccessRule struct {
+	Prefix string `json:"prefix"`
+	Action string `json:"action"`
+	Note   string `json:"note,omitempty"`
+}
+
+type BucketAccessPolicy struct {
+	DefaultAction string             `json:"default_action"`
+	Rules         []BucketAccessRule `json:"rules"`
+}
+
+type BucketAccessConfig struct {
+	Mode   string             `json:"mode"`
+	Policy BucketAccessPolicy `json:"policy"`
+}
+
+type UpdateBucketAccessInput struct {
+	Name   string
+	Mode   string
+	Policy BucketAccessPolicy
 }
 
 type BucketUsageSample struct {
@@ -186,13 +209,14 @@ type CompletedPart struct {
 }
 
 type bucketMetadata struct {
-	Name           string    `json:"name"`
-	CreatedAt      time.Time `json:"created_at"`
-	MetadataLayout string    `json:"metadata_layout"`
-	AccessMode     string    `json:"access_mode,omitempty"`
-	QuotaBytes     int64     `json:"quota_bytes,omitempty"`
-	Tags           []string  `json:"tags,omitempty"`
-	Note           string    `json:"note,omitempty"`
+	Name           string             `json:"name"`
+	CreatedAt      time.Time          `json:"created_at"`
+	MetadataLayout string             `json:"metadata_layout"`
+	AccessMode     string             `json:"access_mode,omitempty"`
+	AccessPolicy   BucketAccessPolicy `json:"access_policy,omitempty"`
+	QuotaBytes     int64              `json:"quota_bytes,omitempty"`
+	Tags           []string           `json:"tags,omitempty"`
+	Note           string             `json:"note,omitempty"`
 }
 
 type multipartUploadMetadata struct {

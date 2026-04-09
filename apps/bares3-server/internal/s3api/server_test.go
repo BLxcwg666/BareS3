@@ -157,6 +157,57 @@ func TestPresignedGetObject(t *testing.T) {
 	}
 }
 
+func TestCustomBucketAccessCanDenySignedReads(t *testing.T) {
+	t.Parallel()
+
+	store, handler := newTestHandler(t)
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	for _, fixture := range []struct {
+		key  string
+		body string
+	}{
+		{key: "notes/readme.txt", body: "allowed"},
+		{key: "secret/plan.txt", body: "denied"},
+	} {
+		if _, err := store.PutObject(context.Background(), storage.PutObjectInput{Bucket: "gallery", Key: fixture.key, Body: bytes.NewBufferString(fixture.body)}); err != nil {
+			t.Fatalf("PutObject(%s) failed: %v", fixture.key, err)
+		}
+	}
+	if _, err := store.UpdateBucketAccess(context.Background(), storage.UpdateBucketAccessInput{
+		Name: "gallery",
+		Mode: storage.BucketAccessCustom,
+		Policy: storage.BucketAccessPolicy{
+			DefaultAction: storage.BucketAccessActionAuthenticated,
+			Rules: []storage.BucketAccessRule{
+				{Prefix: "secret/", Action: storage.BucketAccessActionDeny},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("UpdateBucketAccess failed: %v", err)
+	}
+
+	allowedRequest := httptest.NewRequest(http.MethodGet, "/gallery/notes/readme.txt", nil)
+	signHeaderRequest(t, allowedRequest, config.Default(), nil)
+	allowedRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(allowedRecorder, allowedRequest)
+	if allowedRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected allowed status: %d body=%s", allowedRecorder.Code, allowedRecorder.Body.String())
+	}
+
+	deniedRequest := httptest.NewRequest(http.MethodGet, "/gallery/secret/plan.txt", nil)
+	signHeaderRequest(t, deniedRequest, config.Default(), nil)
+	deniedRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(deniedRecorder, deniedRequest)
+	if deniedRecorder.Code != http.StatusForbidden {
+		t.Fatalf("unexpected denied status: %d body=%s", deniedRecorder.Code, deniedRecorder.Body.String())
+	}
+	if !strings.Contains(deniedRecorder.Body.String(), "AccessDenied") {
+		t.Fatalf("expected AccessDenied body, got %s", deniedRecorder.Body.String())
+	}
+}
+
 func TestDeleteObjectAndBucket(t *testing.T) {
 	t.Parallel()
 

@@ -1084,6 +1084,80 @@ func TestUpdateBucketRenamesMetadataAndHistory(t *testing.T) {
 	}
 }
 
+func TestBucketAccessPolicyCRUD(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	hash, err := consoleauth.HashPassword("secret-password")
+	if err != nil {
+		t.Fatalf("HashPassword failed: %v", err)
+	}
+	cfg.Auth.Console.PasswordHash = hash
+	cfg.Auth.Console.SessionSecret = "test-session-secret"
+
+	store := storage.New(cfg, zap.NewNop())
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	handler := NewHandler(cfg, store, zap.NewNop())
+	cookie := loginCookie(t, handler)
+
+	updateBody, _ := json.Marshal(map[string]any{
+		"mode": "custom",
+		"policy": map[string]any{
+			"default_action": "authenticated",
+			"rules": []map[string]any{
+				{"prefix": "images/", "action": "public", "note": "Public media"},
+				{"prefix": "secret/", "action": "deny", "note": "Blocked"},
+			},
+		},
+	})
+	updateRequest := httptest.NewRequest(http.MethodPut, "/api/v1/buckets/gallery/access", bytes.NewReader(updateBody))
+	updateRequest.Header.Set("Content-Type", "application/json")
+	updateRequest.AddCookie(cookie)
+	updateRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(updateRecorder, updateRequest)
+	if updateRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected update access status: %d body=%s", updateRecorder.Code, updateRecorder.Body.String())
+	}
+
+	readRequest := httptest.NewRequest(http.MethodGet, "/api/v1/buckets/gallery/access", nil)
+	readRequest.AddCookie(cookie)
+	readRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(readRecorder, readRequest)
+	if readRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected read access status: %d body=%s", readRecorder.Code, readRecorder.Body.String())
+	}
+
+	configPayload := struct {
+		Mode   string `json:"mode"`
+		Policy struct {
+			DefaultAction string `json:"default_action"`
+			Rules         []struct {
+				Prefix string `json:"prefix"`
+				Action string `json:"action"`
+				Note   string `json:"note"`
+			} `json:"rules"`
+		} `json:"policy"`
+	}{}
+	if err := json.Unmarshal(readRecorder.Body.Bytes(), &configPayload); err != nil {
+		t.Fatalf("unmarshal access payload failed: %v", err)
+	}
+	if configPayload.Mode != storage.BucketAccessCustom || configPayload.Policy.DefaultAction != storage.BucketAccessActionAuthenticated {
+		t.Fatalf("unexpected access config payload: %+v", configPayload)
+	}
+	if len(configPayload.Policy.Rules) != 2 || configPayload.Policy.Rules[0].Prefix != "images/" || configPayload.Policy.Rules[1].Action != storage.BucketAccessActionDeny {
+		t.Fatalf("unexpected access rules payload: %+v", configPayload.Policy.Rules)
+	}
+}
+
 func loginCookie(t *testing.T, handler http.Handler) *http.Cookie {
 	t.Helper()
 

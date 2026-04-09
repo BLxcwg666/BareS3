@@ -47,9 +47,10 @@ func New(cfg config.Config, logger *zap.Logger) *Store {
 
 func (s *Store) CreateBucket(ctx context.Context, name string, quotaBytes int64) (BucketInfo, error) {
 	return s.CreateBucketWithOptions(ctx, CreateBucketInput{
-		Name:       name,
-		QuotaBytes: quotaBytes,
-		AccessMode: BucketAccessPrivate,
+		Name:         name,
+		QuotaBytes:   quotaBytes,
+		AccessMode:   BucketAccessPrivate,
+		AccessPolicy: PresetBucketAccessPolicy(BucketAccessPrivate),
 	})
 }
 
@@ -68,6 +69,13 @@ func (s *Store) CreateBucketWithOptions(ctx context.Context, input CreateBucketI
 		return BucketInfo{}, err
 	}
 	accessMode := NormalizeBucketAccessMode(input.AccessMode)
+	accessPolicy := NormalizeBucketAccessPolicy(input.AccessPolicy)
+	if accessPolicy.DefaultAction == "" && len(accessPolicy.Rules) == 0 {
+		accessPolicy = PresetBucketAccessPolicy(accessMode)
+	}
+	if err := validateBucketAccessPolicy(accessPolicy); err != nil {
+		return BucketInfo{}, err
+	}
 	if instanceQuota := s.InstanceQuotaBytes(); instanceQuota > 0 && input.QuotaBytes > instanceQuota {
 		return BucketInfo{}, fmt.Errorf("%w: bucket quota %d exceeds instance quota %d", ErrInvalidQuota, input.QuotaBytes, instanceQuota)
 	}
@@ -91,6 +99,7 @@ func (s *Store) CreateBucketWithOptions(ctx context.Context, input CreateBucketI
 		CreatedAt:      time.Now().UTC(),
 		MetadataLayout: s.metadataLayout,
 		AccessMode:     accessMode,
+		AccessPolicy:   accessPolicy,
 		QuotaBytes:     input.QuotaBytes,
 	}
 
@@ -284,6 +293,9 @@ func (s *Store) UpdateBucket(ctx context.Context, input UpdateBucketInput) (Buck
 	meta.Name = nextName
 	meta.MetadataLayout = currentBucket.MetadataLayout
 	meta.AccessMode = nextAccessMode
+	if meta.AccessPolicy.DefaultAction == "" && len(meta.AccessPolicy.Rules) == 0 {
+		meta.AccessPolicy = PresetBucketAccessPolicy(nextAccessMode)
+	}
 	meta.QuotaBytes = input.QuotaBytes
 	meta.Tags = normalizeBucketTags(input.Tags)
 	meta.Note = strings.TrimSpace(input.Note)
@@ -339,6 +351,104 @@ func (s *Store) UpdateBucket(ctx context.Context, input UpdateBucketInput) (Buck
 	)
 
 	return updated, nil
+}
+
+func (s *Store) GetBucketAccessConfig(ctx context.Context, name string) (BucketAccessConfig, error) {
+	if err := ctx.Err(); err != nil {
+		return BucketAccessConfig{}, err
+	}
+	bucket, err := s.GetBucket(ctx, name)
+	if err != nil {
+		return BucketAccessConfig{}, err
+	}
+
+	meta, err := s.readBucketMetadata(bucket.Name)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return BucketAccessConfig{}, err
+	}
+	policy := meta.AccessPolicy
+	if policy.DefaultAction == "" && len(policy.Rules) == 0 {
+		policy = PresetBucketAccessPolicy(bucket.AccessMode)
+	}
+
+	return BucketAccessConfig{
+		Mode:   bucket.AccessMode,
+		Policy: NormalizeBucketAccessPolicy(policy),
+	}, nil
+}
+
+func (s *Store) UpdateBucketAccess(ctx context.Context, input UpdateBucketAccessInput) (BucketAccessConfig, error) {
+	if err := ctx.Err(); err != nil {
+		return BucketAccessConfig{}, err
+	}
+	name := strings.TrimSpace(input.Name)
+	if err := validateBucketName(name); err != nil {
+		return BucketAccessConfig{}, err
+	}
+	if err := validateBucketAccessMode(input.Mode); err != nil {
+		return BucketAccessConfig{}, err
+	}
+	mode := NormalizeBucketAccessMode(input.Mode)
+	policy := NormalizeBucketAccessPolicy(input.Policy)
+	if policy.DefaultAction == "" && len(policy.Rules) == 0 {
+		policy = PresetBucketAccessPolicy(mode)
+	}
+	if err := validateBucketAccessPolicy(policy); err != nil {
+		return BucketAccessConfig{}, err
+	}
+
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
+
+	bucket, err := s.GetBucket(ctx, name)
+	if err != nil {
+		return BucketAccessConfig{}, err
+	}
+	meta, err := s.readBucketMetadata(bucket.Name)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return BucketAccessConfig{}, err
+		}
+		meta = bucketMetadata{
+			Name:           bucket.Name,
+			CreatedAt:      bucket.CreatedAt,
+			MetadataLayout: bucket.MetadataLayout,
+			AccessMode:     bucket.AccessMode,
+			AccessPolicy:   PresetBucketAccessPolicy(bucket.AccessMode),
+			QuotaBytes:     bucket.QuotaBytes,
+			Tags:           cloneStringSlice(bucket.Tags),
+			Note:           bucket.Note,
+		}
+	}
+
+	meta.AccessMode = mode
+	meta.AccessPolicy = policy
+	if err := s.writeBucketMetadata(bucket.Name, meta); err != nil {
+		return BucketAccessConfig{}, err
+	}
+
+	config := BucketAccessConfig{Mode: mode, Policy: policy}
+	s.logger.Info("bucket access updated", zap.String("bucket", bucket.Name), zap.String("access_mode", mode), zap.Int("rule_count", len(policy.Rules)))
+	return config, nil
+}
+
+func (s *Store) ResolveBucketObjectAccess(ctx context.Context, bucket, key string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	bucketInfo, err := s.GetBucket(ctx, bucket)
+	if err != nil {
+		return "", err
+	}
+	meta, err := s.readBucketMetadata(bucketInfo.Name)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	policy := meta.AccessPolicy
+	if policy.DefaultAction == "" && len(policy.Rules) == 0 {
+		policy = PresetBucketAccessPolicy(bucketInfo.AccessMode)
+	}
+	return EffectiveBucketAccessAction(bucketInfo.AccessMode, policy, key), nil
 }
 
 func (s *Store) ListBucketUsageHistory(ctx context.Context, name string, limit int) ([]BucketUsageSample, error) {
