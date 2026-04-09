@@ -18,6 +18,7 @@ import (
 
 	"bares3-server/internal/config"
 	"bares3-server/internal/s3creds"
+	"bares3-server/internal/sharelink"
 	"bares3-server/internal/sigv4"
 	"bares3-server/internal/storage"
 	"go.uber.org/zap"
@@ -141,15 +142,21 @@ func TestManagedS3CredentialWorksWithoutConfigKey(t *testing.T) {
 	cfg.Auth.S3.SecretAccessKey = ""
 
 	store := storage.New(cfg, zap.NewNop())
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
 	creds, err := s3creds.New(cfg.Paths.DataDir, s3creds.BootstrapCredential{}, zap.NewNop())
 	if err != nil {
 		t.Fatalf("s3creds.New failed: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = creds.Close()
+	})
 	created, err := creds.Create(context.Background(), s3creds.CreateInput{Label: "CI key"})
 	if err != nil {
 		t.Fatalf("Create credential failed: %v", err)
 	}
-	handler := NewHandler(cfg, store, creds, zap.NewNop())
+	handler := newHandler(cfg, store, newShareLinksForTest(t, cfg.Paths.DataDir), creds, zap.NewNop())
 
 	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
@@ -186,6 +193,9 @@ func TestScopedReadOnlyCredentialRestrictsBucketsAndWrites(t *testing.T) {
 	cfg.Auth.S3.SecretAccessKey = ""
 
 	store := storage.New(cfg, zap.NewNop())
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
 	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket gallery failed: %v", err)
 	}
@@ -200,11 +210,14 @@ func TestScopedReadOnlyCredentialRestrictsBucketsAndWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("s3creds.New failed: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = creds.Close()
+	})
 	created, err := creds.Create(context.Background(), s3creds.CreateInput{Label: "reader", Permission: s3creds.PermissionReadOnly, Buckets: []string{"gallery"}})
 	if err != nil {
 		t.Fatalf("Create credential failed: %v", err)
 	}
-	handler := NewHandler(cfg, store, creds, zap.NewNop())
+	handler := newHandler(cfg, store, newShareLinksForTest(t, cfg.Paths.DataDir), creds, zap.NewNop())
 	signedCfg := cfg
 	signedCfg.Auth.S3.AccessKeyID = created.AccessKeyID
 	signedCfg.Auth.S3.SecretAccessKey = created.SecretAccessKey
@@ -494,9 +507,39 @@ func newTestHandler(t *testing.T) (*storage.Store, http.Handler) {
 	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
 
 	store := storage.New(cfg, zap.NewNop())
-	handler := NewHandler(cfg, store, nil, zap.NewNop())
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+	handler := newHandler(cfg, store, newShareLinksForTest(t, cfg.Paths.DataDir), newCredentialsForTest(t, cfg), zap.NewNop())
 
 	return store, handler
+}
+
+func newShareLinksForTest(t *testing.T, dataDir string) *sharelink.Store {
+	t.Helper()
+	links, err := sharelink.New(dataDir, zap.NewNop())
+	if err != nil {
+		t.Fatalf("sharelink.New failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = links.Close()
+	})
+	return links
+}
+
+func newCredentialsForTest(t *testing.T, cfg config.Config) *s3creds.Store {
+	t.Helper()
+	creds, err := s3creds.New(cfg.Paths.DataDir, s3creds.BootstrapCredential{
+		AccessKeyID:     cfg.Auth.S3.AccessKeyID,
+		SecretAccessKey: cfg.Auth.S3.SecretAccessKey,
+	}, zap.NewNop())
+	if err != nil {
+		t.Fatalf("s3creds.New failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = creds.Close()
+	})
+	return creds
 }
 
 func signHeaderRequest(t *testing.T, request *http.Request, cfg config.Config, body []byte) {

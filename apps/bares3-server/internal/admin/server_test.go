@@ -36,7 +36,7 @@ func TestLoginAndProtectedRuntime(t *testing.T) {
 	cfg.Auth.Console.PasswordHash = hash
 	cfg.Auth.Console.SessionSecret = "test-session-secret"
 
-	store := storage.New(cfg, zap.NewNop())
+	store := newStorageStoreForTest(t, cfg)
 	ctx := context.Background()
 	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
@@ -58,7 +58,7 @@ func TestLoginAndProtectedRuntime(t *testing.T) {
 		t.Fatalf("PutObject mock-03 failed: %v", err)
 	}
 
-	handler := NewHandler(cfg, store, nil, zap.NewNop())
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
 
 	unauthorized := httptest.NewRequest(http.MethodGet, "/api/v1/runtime", nil)
 	unauthorizedRecorder := httptest.NewRecorder()
@@ -157,7 +157,7 @@ func TestLoginSetsSecureCookieForHTTPSRequests(t *testing.T) {
 	cfg.Auth.Console.PasswordHash = hash
 	cfg.Auth.Console.SessionSecret = "test-session-secret"
 
-	handler := NewHandler(cfg, storage.New(cfg, zap.NewNop()), nil, zap.NewNop())
+	handler := newAdminHandlerForTest(t, cfg, newStorageStoreForTest(t, cfg), nil)
 
 	loginBody, _ := json.Marshal(map[string]string{"username": "admin", "password": "secret-password"})
 	loginRequest := httptest.NewRequest(http.MethodPost, "https://bares3.test/api/v1/auth/login", bytes.NewReader(loginBody))
@@ -193,7 +193,7 @@ func TestObjectListingSupportsPaginationAndSearch(t *testing.T) {
 	cfg.Auth.Console.PasswordHash = hash
 	cfg.Auth.Console.SessionSecret = "test-session-secret"
 
-	store := storage.New(cfg, zap.NewNop())
+	store := newStorageStoreForTest(t, cfg)
 	ctx := context.Background()
 	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
@@ -216,7 +216,7 @@ func TestObjectListingSupportsPaginationAndSearch(t *testing.T) {
 		}
 	}
 
-	handler := NewHandler(cfg, store, nil, zap.NewNop())
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
 	cookie := loginCookie(t, handler)
 
 	listRequest := httptest.NewRequest(http.MethodGet, "/api/v1/buckets/gallery/objects?query=text/plain&limit=1", nil)
@@ -281,7 +281,7 @@ func TestGlobalSearchEndpointReturnsBucketAndObjectHits(t *testing.T) {
 	cfg.Auth.Console.PasswordHash = hash
 	cfg.Auth.Console.SessionSecret = "test-session-secret"
 
-	store := storage.New(cfg, zap.NewNop())
+	store := newStorageStoreForTest(t, cfg)
 	ctx := context.Background()
 	for _, bucket := range []string{"gallery", "readables"} {
 		if _, err := store.CreateBucket(ctx, bucket, 0); err != nil {
@@ -296,7 +296,7 @@ func TestGlobalSearchEndpointReturnsBucketAndObjectHits(t *testing.T) {
 		t.Fatalf("PutObject failed: %v", err)
 	}
 
-	handler := NewHandler(cfg, store, nil, zap.NewNop())
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
 	cookie := loginCookie(t, handler)
 
 	searchRequest := httptest.NewRequest(http.MethodGet, "/api/v1/search?query=read&limit=5", nil)
@@ -353,8 +353,8 @@ func TestUpdateStorageSettingsPersistsAndAppliesImmediately(t *testing.T) {
 		t.Fatalf("Save config failed: %v", err)
 	}
 
-	store := storage.New(cfg, zap.NewNop())
-	handler := NewHandler(cfg, store, nil, zap.NewNop())
+	store := newStorageStoreForTest(t, cfg)
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
 
 	loginBody, _ := json.Marshal(map[string]string{"username": "admin", "password": "secret-password"})
 	loginRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(loginBody))
@@ -408,7 +408,7 @@ func TestCreateListAndRevokeShareLinks(t *testing.T) {
 	cfg.Auth.Console.PasswordHash = hash
 	cfg.Auth.Console.SessionSecret = "test-session-secret"
 
-	store := storage.New(cfg, zap.NewNop())
+	store := newStorageStoreForTest(t, cfg)
 	ctx := context.Background()
 	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
@@ -422,7 +422,7 @@ func TestCreateListAndRevokeShareLinks(t *testing.T) {
 		t.Fatalf("PutObject failed: %v", err)
 	}
 
-	handler := NewHandler(cfg, store, nil, zap.NewNop())
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
 	cookie := loginCookie(t, handler)
 
 	createBody, _ := json.Marshal(map[string]any{
@@ -560,7 +560,7 @@ func TestMoveBrowserEntries(t *testing.T) {
 	cfg.Auth.Console.PasswordHash = hash
 	cfg.Auth.Console.SessionSecret = "test-session-secret"
 
-	store := storage.New(cfg, zap.NewNop())
+	store := newStorageStoreForTest(t, cfg)
 	ctx := context.Background()
 	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket gallery failed: %v", err)
@@ -578,7 +578,7 @@ func TestMoveBrowserEntries(t *testing.T) {
 		}
 	}
 
-	handler := NewHandler(cfg, store, nil, zap.NewNop())
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
 	cookie := loginCookie(t, handler)
 
 	shareOneBody, _ := json.Marshal(map[string]any{
@@ -704,7 +704,7 @@ func TestDeleteObjectAlsoRemovesShareLinks(t *testing.T) {
 	cfg.Auth.Console.PasswordHash = hash
 	cfg.Auth.Console.SessionSecret = "test-session-secret"
 
-	store := storage.New(cfg, zap.NewNop())
+	store := newStorageStoreForTest(t, cfg)
 	ctx := context.Background()
 	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
@@ -717,7 +717,7 @@ func TestDeleteObjectAlsoRemovesShareLinks(t *testing.T) {
 		t.Fatalf("PutObject failed: %v", err)
 	}
 
-	handler := NewHandler(cfg, store, nil, zap.NewNop())
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
 	cookie := loginCookie(t, handler)
 
 	shareBody, _ := json.Marshal(map[string]any{
@@ -779,7 +779,7 @@ func TestUpdateObjectMetadata(t *testing.T) {
 	cfg.Auth.Console.PasswordHash = hash
 	cfg.Auth.Console.SessionSecret = "test-session-secret"
 
-	store := storage.New(cfg, zap.NewNop())
+	store := newStorageStoreForTest(t, cfg)
 	ctx := context.Background()
 	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
@@ -793,7 +793,7 @@ func TestUpdateObjectMetadata(t *testing.T) {
 		t.Fatalf("PutObject failed: %v", err)
 	}
 
-	handler := NewHandler(cfg, store, nil, zap.NewNop())
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
 	cookie := loginCookie(t, handler)
 
 	body, _ := json.Marshal(map[string]any{
@@ -847,7 +847,7 @@ func TestDeletePrefixAlsoRemovesShareLinks(t *testing.T) {
 	cfg.Auth.Console.PasswordHash = hash
 	cfg.Auth.Console.SessionSecret = "test-session-secret"
 
-	store := storage.New(cfg, zap.NewNop())
+	store := newStorageStoreForTest(t, cfg)
 	ctx := context.Background()
 	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
@@ -858,7 +858,7 @@ func TestDeletePrefixAlsoRemovesShareLinks(t *testing.T) {
 		}
 	}
 
-	handler := NewHandler(cfg, store, nil, zap.NewNop())
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
 	cookie := loginCookie(t, handler)
 	for _, key := range []string{"folder/a.txt", "folder/deep/b.txt"} {
 		shareBody, _ := json.Marshal(map[string]any{"bucket": "gallery", "key": key, "expires_seconds": 3600})
@@ -919,15 +919,12 @@ func TestDeleteBucketAlsoRemovesShareLinks(t *testing.T) {
 	cfg.Auth.Console.PasswordHash = hash
 	cfg.Auth.Console.SessionSecret = "test-session-secret"
 
-	store := storage.New(cfg, zap.NewNop())
+	store := newStorageStoreForTest(t, cfg)
 	ctx := context.Background()
 	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
-	links, err := sharelink.New(cfg.Paths.DataDir, zap.NewNop())
-	if err != nil {
-		t.Fatalf("sharelink.New failed: %v", err)
-	}
+	links := newShareLinksForTest(t, cfg.Paths.DataDir)
 	if _, err := links.Create(ctx, sharelink.CreateInput{
 		Bucket:  "gallery",
 		Key:     "stale/orphan.txt",
@@ -936,7 +933,7 @@ func TestDeleteBucketAlsoRemovesShareLinks(t *testing.T) {
 		t.Fatalf("Create stale share link failed: %v", err)
 	}
 
-	handler := NewHandler(cfg, store, nil, zap.NewNop())
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
 	cookie := loginCookie(t, handler)
 
 	deleteRequest := httptest.NewRequest(http.MethodDelete, "/api/v1/buckets/gallery", nil)
@@ -984,7 +981,7 @@ func TestUpdateBucketRenamesMetadataAndHistory(t *testing.T) {
 	cfg.Auth.Console.PasswordHash = hash
 	cfg.Auth.Console.SessionSecret = "test-session-secret"
 
-	store := storage.New(cfg, zap.NewNop())
+	store := newStorageStoreForTest(t, cfg)
 	ctx := context.Background()
 	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
@@ -996,15 +993,12 @@ func TestUpdateBucketRenamesMetadataAndHistory(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("PutObject failed: %v", err)
 	}
-	links, err := sharelink.New(cfg.Paths.DataDir, zap.NewNop())
-	if err != nil {
-		t.Fatalf("sharelink.New failed: %v", err)
-	}
+	links := newShareLinksForTest(t, cfg.Paths.DataDir)
 	if _, err := links.Create(ctx, sharelink.CreateInput{Bucket: "gallery", Key: "notes/readme.txt", Expires: time.Hour}); err != nil {
 		t.Fatalf("Create share link failed: %v", err)
 	}
 
-	handler := NewHandler(cfg, store, nil, zap.NewNop())
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
 	cookie := loginCookie(t, handler)
 
 	updateBody, _ := json.Marshal(map[string]any{
@@ -1102,12 +1096,12 @@ func TestBucketAccessPolicyCRUD(t *testing.T) {
 	cfg.Auth.Console.PasswordHash = hash
 	cfg.Auth.Console.SessionSecret = "test-session-secret"
 
-	store := storage.New(cfg, zap.NewNop())
+	store := newStorageStoreForTest(t, cfg)
 	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
 
-	handler := NewHandler(cfg, store, nil, zap.NewNop())
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
 	cookie := loginCookie(t, handler)
 
 	updateBody, _ := json.Marshal(map[string]any{
@@ -1178,8 +1172,8 @@ func TestS3CredentialCRUD(t *testing.T) {
 	cfg.Auth.S3.AccessKeyID = ""
 	cfg.Auth.S3.SecretAccessKey = ""
 
-	store := storage.New(cfg, zap.NewNop())
-	handler := NewHandler(cfg, store, nil, zap.NewNop())
+	store := newStorageStoreForTest(t, cfg)
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
 	cookie := loginCookie(t, handler)
 
 	createBody, _ := json.Marshal(map[string]any{"label": "CI automation", "permission": "read_only", "buckets": []string{"gallery", "archive"}})
@@ -1271,6 +1265,55 @@ func loginCookie(t *testing.T, handler http.Handler) *http.Cookie {
 		t.Fatalf("expected session cookie after login")
 	}
 	return cookies[0]
+}
+
+func newStorageStoreForTest(t *testing.T, cfg config.Config) *storage.Store {
+	t.Helper()
+	store := storage.New(cfg, zap.NewNop())
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+	return store
+}
+
+func newShareLinksForTest(t *testing.T, dataDir string) *sharelink.Store {
+	t.Helper()
+	links, err := sharelink.New(dataDir, zap.NewNop())
+	if err != nil {
+		t.Fatalf("sharelink.New failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = links.Close()
+	})
+	return links
+}
+
+func newCredentialsForTest(t *testing.T, cfg config.Config) *s3creds.Store {
+	t.Helper()
+	creds, err := s3creds.New(cfg.Paths.DataDir, s3creds.BootstrapCredential{
+		AccessKeyID:     cfg.Auth.S3.AccessKeyID,
+		SecretAccessKey: cfg.Auth.S3.SecretAccessKey,
+	}, zap.NewNop())
+	if err != nil {
+		t.Fatalf("s3creds.New failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = creds.Close()
+	})
+	return creds
+}
+
+func newAdminHandlerForTest(t *testing.T, cfg config.Config, store *storage.Store, credentials *s3creds.Store) http.Handler {
+	t.Helper()
+	return newHandler(cfg, store, newShareLinksForTest(t, cfg.Paths.DataDir), credentialsOrDefault(t, cfg, credentials), zap.NewNop())
+}
+
+func credentialsOrDefault(t *testing.T, cfg config.Config, credentials *s3creds.Store) *s3creds.Store {
+	t.Helper()
+	if credentials != nil {
+		return credentials
+	}
+	return newCredentialsForTest(t, cfg)
 }
 
 func containsString(values []string, target string) bool {

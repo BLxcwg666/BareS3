@@ -2,7 +2,11 @@ package s3creds
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -14,6 +18,9 @@ func TestBootstrapCreateAndRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
 
 	items, err := store.List(context.Background())
 	if err != nil {
@@ -63,5 +70,59 @@ func TestBootstrapCreateAndRevoke(t *testing.T) {
 	}
 	if err := store.Delete(context.Background(), created.AccessKeyID); err != nil {
 		t.Fatalf("Delete failed: %v", err)
+	}
+}
+
+func TestNewIgnoresLegacyCredentialsJSON(t *testing.T) {
+	t.Parallel()
+
+	dataDir := filepath.Join(t.TempDir(), "data")
+	legacyDir := filepath.Join(dataDir, ".bares3")
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	createdAt := time.Date(2026, time.April, 9, 10, 0, 0, 0, time.UTC)
+	lastUsedAt := createdAt.Add(30 * time.Minute)
+	content, err := json.Marshal([]Credential{{
+		AccessKeyID:     "legacy-key",
+		SecretAccessKey: "legacy-secret",
+		Label:           "Legacy key",
+		Source:          credentialSourceStore,
+		Permission:      PermissionReadOnly,
+		Buckets:         []string{"gallery"},
+		CreatedAt:       createdAt,
+		LastUsedAt:      &lastUsedAt,
+	}})
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, "s3-credentials.json"), content, 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	store, err := New(dataDir, BootstrapCredential{AccessKeyID: "boot-key", SecretAccessKey: "boot-secret"}, zap.NewNop())
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	items, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(items) != 1 || items[0].AccessKeyID != "boot-key" {
+		t.Fatalf("unexpected credentials after ignoring legacy file: %+v", items)
+	}
+	secret, err := store.LookupSecret(context.Background(), "boot-key")
+	if err != nil {
+		t.Fatalf("LookupSecret failed: %v", err)
+	}
+	if secret != "boot-secret" {
+		t.Fatalf("unexpected boot secret: %q", secret)
+	}
+	if _, err := store.LookupSecret(context.Background(), "legacy-key"); err == nil {
+		t.Fatalf("expected legacy credential file to be ignored")
 	}
 }

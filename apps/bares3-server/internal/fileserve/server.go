@@ -19,9 +19,16 @@ import (
 )
 
 func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) http.Handler {
-	shareLinks, err := sharelink.New(cfg.Paths.DataDir, logger.Named("sharelink"))
-	if err != nil {
-		panic(fmt.Sprintf("initialize share link store: %v", err))
+	return newHandler(cfg, store, nil, logger)
+}
+
+func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.Store, logger *zap.Logger) http.Handler {
+	if shareLinks == nil {
+		var err error
+		shareLinks, err = sharelink.New(cfg.Paths.DataDir, logger.Named("sharelink"))
+		if err != nil {
+			panic(fmt.Sprintf("initialize share link store: %v", err))
+		}
 	}
 
 	router := chi.NewRouter()

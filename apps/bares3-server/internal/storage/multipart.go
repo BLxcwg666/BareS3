@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -149,19 +148,12 @@ func (s *Store) UploadPart(ctx context.Context, input UploadPartInput) (Multipar
 		return MultipartPartInfo{}, fmt.Errorf("create multipart parts dir: %w", err)
 	}
 
-	stagedMetaPath, err := writeJSONTemp(partsDir, "part-meta-*", meta)
-	if err != nil {
-		return MultipartPartInfo{}, fmt.Errorf("stage part metadata: %w", err)
-	}
-	defer func() {
-		_ = os.Remove(stagedMetaPath)
-	}()
-
 	if err := replaceFile(stagedPartPath, s.multipartPartPath(input.Bucket, input.UploadID, input.PartNumber)); err != nil {
 		return MultipartPartInfo{}, fmt.Errorf("commit part file: %w", err)
 	}
-	if err := replaceFile(stagedMetaPath, s.multipartPartMetaPath(input.Bucket, input.UploadID, input.PartNumber)); err != nil {
-		return MultipartPartInfo{}, fmt.Errorf("commit part metadata: %w", err)
+	if err := s.writeMultipartPartMetadata(input.Bucket, input.UploadID, meta); err != nil {
+		_ = os.Remove(s.multipartPartPath(input.Bucket, input.UploadID, input.PartNumber))
+		return MultipartPartInfo{}, err
 	}
 
 	info := MultipartPartInfo{PartNumber: meta.PartNumber, ETag: meta.ETag, Size: meta.Size, LastModified: meta.LastModified}
@@ -177,29 +169,14 @@ func (s *Store) ListParts(ctx context.Context, bucket, key, uploadID string) ([]
 		return nil, err
 	}
 
-	entries, err := os.ReadDir(s.multipartUploadPartsDir(bucket, uploadID))
+	metas, err := s.metadata.listMultipartParts(uploadID)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
 		return nil, err
 	}
-
-	parts := make([]MultipartPartInfo, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		meta := multipartPartMetadata{}
-		if err := readJSONFile(joinPath(s.multipartUploadPartsDir(bucket, uploadID), entry.Name()), &meta); err != nil {
-			return nil, err
-		}
+	parts := make([]MultipartPartInfo, 0, len(metas))
+	for _, meta := range metas {
 		parts = append(parts, MultipartPartInfo{PartNumber: meta.PartNumber, ETag: meta.ETag, Size: meta.Size, LastModified: meta.LastModified})
 	}
-
-	sort.Slice(parts, func(i, j int) bool {
-		return parts[i].PartNumber < parts[j].PartNumber
-	})
 	return parts, nil
 }
 
@@ -340,6 +317,9 @@ func (s *Store) CompleteMultipartUpload(ctx context.Context, bucket, key, upload
 	if err := os.RemoveAll(s.multipartUploadDir(bucket, uploadID)); err != nil {
 		return ObjectInfo{}, fmt.Errorf("cleanup multipart upload dir: %w", err)
 	}
+	if err := s.metadata.deleteMultipartUpload(uploadID); err != nil {
+		return ObjectInfo{}, err
+	}
 
 	s.logger.Info("multipart upload completed", zap.String("bucket", bucket), zap.String("key", key), zap.String("upload_id", uploadID), zap.Int("parts", len(completed)), zap.Int64("size", size))
 	return object, nil
@@ -354,6 +334,9 @@ func (s *Store) AbortMultipartUpload(ctx context.Context, bucket, key, uploadID 
 	}
 	if err := os.RemoveAll(s.multipartUploadDir(bucket, uploadID)); err != nil {
 		return fmt.Errorf("remove multipart upload dir: %w", err)
+	}
+	if err := s.metadata.deleteMultipartUpload(uploadID); err != nil {
+		return err
 	}
 	pruneEmptyParents(s.bucketMultipartDir(bucket), s.bucketControlDir(bucket))
 	s.logger.Info("multipart upload aborted", zap.String("bucket", bucket), zap.String("key", key), zap.String("upload_id", uploadID))
@@ -372,80 +355,28 @@ func (s *Store) multipartUploadPartsDir(bucket, uploadID string) string {
 	return joinPath(s.multipartUploadDir(bucket, uploadID), "parts")
 }
 
-func (s *Store) multipartUploadMetaPath(bucket, uploadID string) string {
-	return joinPath(s.multipartUploadDir(bucket, uploadID), "upload.json")
-}
-
 func (s *Store) multipartPartPath(bucket, uploadID string, partNumber int) string {
 	return joinPath(s.multipartUploadPartsDir(bucket, uploadID), fmt.Sprintf("%05d.part", partNumber))
 }
 
-func (s *Store) multipartPartMetaPath(bucket, uploadID string, partNumber int) string {
-	return joinPath(s.multipartUploadPartsDir(bucket, uploadID), fmt.Sprintf("%05d.json", partNumber))
-}
-
 func (s *Store) readMultipartUpload(bucket, key, uploadID string) (multipartUploadMetadata, error) {
-	meta := multipartUploadMetadata{}
-	if err := readJSONFile(s.multipartUploadMetaPath(bucket, uploadID), &meta); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return multipartUploadMetadata{}, fmt.Errorf("%w: %s", ErrUploadNotFound, uploadID)
-		}
-		return multipartUploadMetadata{}, err
-	}
-	if meta.Bucket != bucket || meta.Key != key {
+	meta, err := s.metadata.getMultipartUpload(bucket, key, uploadID)
+	if errors.Is(err, os.ErrNotExist) {
 		return multipartUploadMetadata{}, fmt.Errorf("%w: %s", ErrUploadNotFound, uploadID)
+	}
+	if err != nil {
+		return multipartUploadMetadata{}, err
 	}
 	return meta, nil
 }
 
 func (s *Store) writeMultipartUploadMetadata(bucket, uploadID string, meta multipartUploadMetadata) error {
-	path := s.multipartUploadMetaPath(bucket, uploadID)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	staged, err := writeJSONTemp(filepath.Dir(path), "upload-*", meta)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = os.Remove(staged)
-	}()
-	return replaceFile(staged, path)
+	return s.metadata.upsertMultipartUpload(meta)
 }
 
-func (s *Store) rewriteBucketMultipartMetadata(bucket string) error {
-	entries, err := os.ReadDir(s.bucketMultipartDir(bucket))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-
-		uploadID := entry.Name()
-		meta := multipartUploadMetadata{}
-		if err := readJSONFile(s.multipartUploadMetaPath(bucket, uploadID), &meta); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return err
-		}
-		if meta.Bucket == bucket {
-			continue
-		}
-
-		meta.Bucket = bucket
-		if err := s.writeMultipartUploadMetadata(bucket, uploadID, meta); err != nil {
-			return err
-		}
-	}
-
-	return nil
+func (s *Store) writeMultipartPartMetadata(bucket, uploadID string, meta multipartPartMetadata) error {
+	_ = bucket
+	return s.metadata.upsertMultipartPart(uploadID, meta)
 }
 
 func (s *Store) commitObjectWithQuota(ctx context.Context, bucket, key, stagedObjectPath string, meta objectMetadata) (ObjectInfo, error) {
@@ -519,7 +450,7 @@ func (s *Store) currentObjectSize(bucket, key string) (int64, error) {
 }
 
 func (s *Store) commitObjectFromStaged(bucket, key, stagedObjectPath string, meta objectMetadata) (ObjectInfo, error) {
-	objectPath, metadataPath, err := s.resolveObjectPaths(bucket, key)
+	objectPath, _, err := s.resolveObjectPaths(bucket, key)
 	if err != nil {
 		return ObjectInfo{}, err
 	}
@@ -527,30 +458,20 @@ func (s *Store) commitObjectFromStaged(bucket, key, stagedObjectPath string, met
 	if err := os.MkdirAll(filepath.Dir(objectPath), 0o755); err != nil {
 		return ObjectInfo{}, fmt.Errorf("create object parent dir: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(metadataPath), 0o755); err != nil {
-		return ObjectInfo{}, fmt.Errorf("create metadata parent dir: %w", err)
-	}
-
-	stagedMetadataPath, err := writeJSONTemp(filepath.Dir(metadataPath), "meta-*", meta)
-	if err != nil {
-		return ObjectInfo{}, fmt.Errorf("stage metadata file: %w", err)
-	}
-	defer func() {
-		_ = os.Remove(stagedMetadataPath)
-	}()
 
 	if err := replaceFile(stagedObjectPath, objectPath); err != nil {
 		return ObjectInfo{}, fmt.Errorf("commit object file: %w", err)
 	}
-	if err := replaceFile(stagedMetadataPath, metadataPath); err != nil {
-		return ObjectInfo{}, fmt.Errorf("commit metadata file: %w", err)
+	if err := s.writeObjectMetadata(meta); err != nil {
+		_ = os.Rename(objectPath, stagedObjectPath)
+		return ObjectInfo{}, err
 	}
 
 	return ObjectInfo{
 		Bucket:             meta.Bucket,
 		Key:                meta.Key,
 		Path:               objectPath,
-		MetadataPath:       metadataPath,
+		MetadataPath:       "",
 		Size:               meta.Size,
 		ETag:               meta.ETag,
 		ContentType:        meta.ContentType,

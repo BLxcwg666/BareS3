@@ -138,6 +138,10 @@ type listResponseItem struct {
 }
 
 func NewHandler(cfg config.Config, store *storage.Store, credentials *s3creds.Store, logger *zap.Logger) http.Handler {
+	return newHandler(cfg, store, nil, credentials, logger)
+}
+
+func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.Store, credentials *s3creds.Store, logger *zap.Logger) http.Handler {
 	if credentials == nil {
 		var err error
 		credentials, err = s3creds.New(cfg.Paths.DataDir, s3creds.BootstrapCredential{
@@ -155,9 +159,12 @@ func NewHandler(cfg config.Config, store *storage.Store, credentials *s3creds.St
 		}
 		return secret, true
 	}, cfg.Auth.S3.AccessKeyID, cfg.Auth.S3.SecretAccessKey, cfg.Storage.Region, "s3")
-	shareLinks, err := sharelink.New(cfg.Paths.DataDir, logger.Named("sharelink"))
-	if err != nil {
-		panic(fmt.Sprintf("initialize share link store: %v", err))
+	if shareLinks == nil {
+		var err error
+		shareLinks, err = sharelink.New(cfg.Paths.DataDir, logger.Named("sharelink"))
+		if err != nil {
+			panic(fmt.Sprintf("initialize share link store: %v", err))
+		}
 	}
 
 	mux := http.NewServeMux()

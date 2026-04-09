@@ -30,6 +30,10 @@ import (
 )
 
 func NewHandler(cfg config.Config, store *storage.Store, credentials *s3creds.Store, logger *zap.Logger) http.Handler {
+	return newHandler(cfg, store, nil, credentials, logger)
+}
+
+func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.Store, credentials *s3creds.Store, logger *zap.Logger) http.Handler {
 	manager, err := consoleauth.NewManager(consoleauth.Options{
 		Username:      cfg.Auth.Console.Username,
 		PasswordHash:  cfg.Auth.Console.PasswordHash,
@@ -43,9 +47,11 @@ func NewHandler(cfg config.Config, store *storage.Store, credentials *s3creds.St
 	if err != nil {
 		panic(fmt.Sprintf("initialize audit recorder: %v", err))
 	}
-	shareLinks, err := sharelink.New(cfg.Paths.DataDir, logger.Named("sharelink"))
-	if err != nil {
-		panic(fmt.Sprintf("initialize share link store: %v", err))
+	if shareLinks == nil {
+		shareLinks, err = sharelink.New(cfg.Paths.DataDir, logger.Named("sharelink"))
+		if err != nil {
+			panic(fmt.Sprintf("initialize share link store: %v", err))
+		}
 	}
 	if credentials == nil {
 		credentials, err = s3creds.New(cfg.Paths.DataDir, s3creds.BootstrapCredential{

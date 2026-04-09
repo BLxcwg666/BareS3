@@ -3,27 +3,23 @@ package sharelink
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path"
-	"path/filepath"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 
+	"bares3-server/internal/statedb"
+	"github.com/uptrace/bun"
 	"go.uber.org/zap"
 )
 
 const (
-	controlDirName = ".bares3"
-	linksDirName   = "sharelinks"
-	minExpiry      = time.Minute
-	maxExpiry      = 365 * 24 * time.Hour
-	idLengthBytes  = 16
+	minExpiry     = time.Minute
+	maxExpiry     = 365 * 24 * time.Hour
+	idLengthBytes = 16
 )
 
 var (
@@ -33,6 +29,24 @@ var (
 	ErrNotRevoked    = errors.New("share link must be revoked or expired before removal")
 	ErrExpired       = errors.New("share link expired")
 	ErrRevoked       = errors.New("share link revoked")
+
+	storeMigrations = []statedb.Migration{{
+		Name: "share_links_v1",
+		Statements: []string{`
+			CREATE TABLE IF NOT EXISTS share_links (
+				id TEXT PRIMARY KEY,
+				bucket TEXT NOT NULL,
+				key TEXT NOT NULL,
+				filename TEXT NOT NULL,
+				content_type TEXT NOT NULL DEFAULT '',
+				size INTEGER NOT NULL,
+				created_by TEXT NOT NULL DEFAULT '',
+				created_at TEXT NOT NULL,
+				expires_at TEXT NOT NULL,
+				revoked_at TEXT
+			)
+		`, `CREATE INDEX IF NOT EXISTS share_links_bucket_key_idx ON share_links (bucket, key)`},
+	}}
 )
 
 type Link struct {
@@ -59,10 +73,25 @@ type CreateInput struct {
 }
 
 type Store struct {
-	dir    string
-	logger *zap.Logger
-	now    func() time.Time
-	mu     sync.Mutex
+	dataDir string
+	db      *bun.DB
+	logger  *zap.Logger
+	now     func() time.Time
+}
+
+type linkRecord struct {
+	bun.BaseModel `bun:"table:share_links"`
+
+	ID          string         `bun:"id,pk"`
+	Bucket      string         `bun:"bucket"`
+	Key         string         `bun:"key"`
+	Filename    string         `bun:"filename"`
+	ContentType string         `bun:"content_type"`
+	Size        int64          `bun:"size"`
+	CreatedBy   string         `bun:"created_by"`
+	CreatedAt   string         `bun:"created_at"`
+	ExpiresAt   string         `bun:"expires_at"`
+	RevokedAt   sql.NullString `bun:"revoked_at"`
 }
 
 func New(dataDir string, logger *zap.Logger) (*Store, error) {
@@ -74,12 +103,26 @@ func New(dataDir string, logger *zap.Logger) (*Store, error) {
 		logger = zap.NewNop()
 	}
 
-	dir := filepath.Join(trimmed, controlDirName, linksDirName)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("create share link dir: %w", err)
+	sqlDB, err := statedb.Open(trimmed)
+	if err != nil {
+		return nil, err
 	}
+	bunDB := statedb.Wrap(sqlDB)
 
-	return &Store{dir: dir, logger: logger, now: time.Now}, nil
+	if err := statedb.EnsureMigrations(sqlDB, storeMigrations); err != nil {
+		_ = bunDB.Close()
+		return nil, fmt.Errorf("initialize share link schema: %w", err)
+	}
+	return &Store{dataDir: trimmed, db: bunDB, logger: logger, now: time.Now}, nil
+}
+
+func (s *Store) Close() error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	err := s.db.Close()
+	s.db = nil
+	return err
 }
 
 func (s *Store) Create(ctx context.Context, input CreateInput) (Link, error) {
@@ -96,48 +139,68 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (Link, error) {
 		return Link{}, fmt.Errorf("%w: expiry must be between %s and %s", ErrInvalidExpiry, minExpiry, maxExpiry)
 	}
 
-	id, err := newID()
+	db, err := s.openDB()
 	if err != nil {
 		return Link{}, err
 	}
-	createdAt := s.now().UTC()
-	filename := strings.TrimSpace(input.Filename)
-	if filename == "" {
-		filename = path.Base(key)
-	}
-	link := Link{
-		ID:          id,
-		Bucket:      bucket,
-		Key:         key,
-		Filename:    filename,
-		ContentType: strings.TrimSpace(input.ContentType),
-		Size:        input.Size,
-		CreatedBy:   strings.TrimSpace(input.CreatedBy),
-		CreatedAt:   createdAt,
-		ExpiresAt:   createdAt.Add(input.Expires),
+	defer func() {
+		_ = db.Close()
+	}()
+
+	for range 16 {
+		id, err := newID()
+		if err != nil {
+			return Link{}, err
+		}
+		createdAt := s.now().UTC()
+		filename := strings.TrimSpace(input.Filename)
+		if filename == "" {
+			filename = path.Base(key)
+		}
+		link := Link{
+			ID:          id,
+			Bucket:      bucket,
+			Key:         key,
+			Filename:    filename,
+			ContentType: strings.TrimSpace(input.ContentType),
+			Size:        input.Size,
+			CreatedBy:   strings.TrimSpace(input.CreatedBy),
+			CreatedAt:   createdAt,
+			ExpiresAt:   createdAt.Add(input.Expires),
+		}
+		record := newLinkRecord(link)
+		_, err = db.NewInsert().Model(&record).Exec(ctx)
+		if err == nil {
+			s.logger.Info(
+				"share link created",
+				zap.String("id", link.ID),
+				zap.String("bucket", link.Bucket),
+				zap.String("key", link.Key),
+				zap.Time("expires_at", link.ExpiresAt),
+			)
+			return link, nil
+		}
+		if !isUniqueConstraint(err) {
+			return Link{}, fmt.Errorf("insert share link: %w", err)
+		}
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.writeLink(link); err != nil {
-		return Link{}, err
-	}
-
-	s.logger.Info(
-		"share link created",
-		zap.String("id", link.ID),
-		zap.String("bucket", link.Bucket),
-		zap.String("key", link.Key),
-		zap.Time("expires_at", link.ExpiresAt),
-	)
-	return link, nil
+	return Link{}, fmt.Errorf("generate share link id: exhausted retries")
 }
 
 func (s *Store) Get(ctx context.Context, id string) (Link, error) {
 	if err := ctx.Err(); err != nil {
 		return Link{}, err
 	}
-	return s.readLink(id)
+
+	db, err := s.openDB()
+	if err != nil {
+		return Link{}, err
+	}
+	defer func() {
+		_ = db.Close()
+	}()
+	return s.readLink(ctx, db, id)
 }
 
 func (s *Store) GetActive(ctx context.Context, id string) (Link, error) {
@@ -145,7 +208,15 @@ func (s *Store) GetActive(ctx context.Context, id string) (Link, error) {
 		return Link{}, err
 	}
 
-	link, err := s.readLink(id)
+	db, err := s.openDB()
+	if err != nil {
+		return Link{}, err
+	}
+	defer func() {
+		_ = db.Close()
+	}()
+
+	link, err := s.readLink(ctx, db, id)
 	if err != nil {
 		return Link{}, err
 	}
@@ -164,7 +235,30 @@ func (s *Store) List(ctx context.Context) ([]Link, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return s.listLocked(ctx)
+
+	db, err := s.openDB()
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = db.Close()
+	}()
+
+	records := make([]linkRecord, 0)
+	err = db.NewSelect().Model(&records).OrderExpr("created_at DESC, id DESC").Scan(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list share links: %w", err)
+	}
+
+	links := make([]Link, 0, len(records))
+	for _, record := range records {
+		link, err := record.Link()
+		if err != nil {
+			return nil, err
+		}
+		links = append(links, link)
+	}
+	return links, nil
 }
 
 func (s *Store) ReassignObject(ctx context.Context, sourceBucket, sourceKey, destinationBucket, destinationKey string) (int, error) {
@@ -180,28 +274,28 @@ func (s *Store) ReassignObject(ctx context.Context, sourceBucket, sourceKey, des
 		return 0, fmt.Errorf("share link source and destination are required")
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	links, err := s.listLocked(ctx)
+	db, err := s.openDB()
 	if err != nil {
 		return 0, err
 	}
+	defer func() {
+		_ = db.Close()
+	}()
 
-	updated := 0
-	for _, link := range links {
-		if link.Bucket != sourceBucket || link.Key != sourceKey {
-			continue
-		}
-		link.Bucket = destinationBucket
-		link.Key = destinationKey
-		link.Filename = path.Base(destinationKey)
-		if err := s.writeLink(link); err != nil {
-			return updated, err
-		}
-		updated += 1
+	result, err := db.NewUpdate().Model((*linkRecord)(nil)).
+		Set("bucket = ?", destinationBucket).
+		Set("key = ?", destinationKey).
+		Set("filename = ?", path.Base(destinationKey)).
+		Where("bucket = ?", sourceBucket).
+		Where("key = ?", sourceKey).
+		Exec(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("reassign share links for object move: %w", err)
 	}
-
+	updated, err := rowsAffected(result, "inspect share link object reassignment")
+	if err != nil {
+		return 0, err
+	}
 	if updated > 0 {
 		s.logger.Info(
 			"share links reassigned for object move",
@@ -212,7 +306,6 @@ func (s *Store) ReassignObject(ctx context.Context, sourceBucket, sourceKey, des
 			zap.Int("count", updated),
 		)
 	}
-
 	return updated, nil
 }
 
@@ -227,26 +320,25 @@ func (s *Store) ReassignBucket(ctx context.Context, sourceBucket, destinationBuc
 		return 0, fmt.Errorf("share link source and destination buckets are required")
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	links, err := s.listLocked(ctx)
+	db, err := s.openDB()
 	if err != nil {
 		return 0, err
 	}
+	defer func() {
+		_ = db.Close()
+	}()
 
-	updated := 0
-	for _, link := range links {
-		if link.Bucket != sourceBucket {
-			continue
-		}
-		link.Bucket = destinationBucket
-		if err := s.writeLink(link); err != nil {
-			return updated, err
-		}
-		updated += 1
+	result, err := db.NewUpdate().Model((*linkRecord)(nil)).
+		Set("bucket = ?", destinationBucket).
+		Where("bucket = ?", sourceBucket).
+		Exec(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("reassign share links for bucket rename: %w", err)
 	}
-
+	updated, err := rowsAffected(result, "inspect share link bucket reassignment")
+	if err != nil {
+		return 0, err
+	}
 	if updated > 0 {
 		s.logger.Info(
 			"share links reassigned for bucket rename",
@@ -255,7 +347,6 @@ func (s *Store) ReassignBucket(ctx context.Context, sourceBucket, destinationBuc
 			zap.Int("count", updated),
 		)
 	}
-
 	return updated, nil
 }
 
@@ -270,28 +361,25 @@ func (s *Store) RemoveByObject(ctx context.Context, bucket, key string) (int, er
 		return 0, fmt.Errorf("share link bucket and key are required")
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	links, err := s.listLocked(ctx)
+	db, err := s.openDB()
 	if err != nil {
 		return 0, err
 	}
+	defer func() {
+		_ = db.Close()
+	}()
 
-	removed := 0
-	for _, link := range links {
-		if link.Bucket != bucket || link.Key != key {
-			continue
-		}
-		if err := os.Remove(s.linkPath(link.ID)); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return removed, fmt.Errorf("remove share link for object: %w", err)
-		}
-		removed += 1
+	result, err := db.NewDelete().Model((*linkRecord)(nil)).
+		Where("bucket = ?", bucket).
+		Where("key = ?", key).
+		Exec(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("remove share links for object: %w", err)
 	}
-
+	removed, err := rowsAffected(result, "inspect share link object removal")
+	if err != nil {
+		return 0, err
+	}
 	if removed > 0 {
 		s.logger.Info(
 			"share links removed for deleted object",
@@ -300,7 +388,6 @@ func (s *Store) RemoveByObject(ctx context.Context, bucket, key string) (int, er
 			zap.Int("count", removed),
 		)
 	}
-
 	return removed, nil
 }
 
@@ -314,28 +401,22 @@ func (s *Store) RemoveByBucket(ctx context.Context, bucket string) (int, error) 
 		return 0, fmt.Errorf("share link bucket is required")
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	links, err := s.listLocked(ctx)
+	db, err := s.openDB()
 	if err != nil {
 		return 0, err
 	}
+	defer func() {
+		_ = db.Close()
+	}()
 
-	removed := 0
-	for _, link := range links {
-		if link.Bucket != bucket {
-			continue
-		}
-		if err := os.Remove(s.linkPath(link.ID)); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return removed, fmt.Errorf("remove share link for bucket: %w", err)
-		}
-		removed += 1
+	result, err := db.NewDelete().Model((*linkRecord)(nil)).Where("bucket = ?", bucket).Exec(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("remove share links for bucket: %w", err)
 	}
-
+	removed, err := rowsAffected(result, "inspect share link bucket removal")
+	if err != nil {
+		return 0, err
+	}
 	if removed > 0 {
 		s.logger.Info(
 			"share links removed for deleted bucket",
@@ -343,7 +424,6 @@ func (s *Store) RemoveByBucket(ctx context.Context, bucket string) (int, error) 
 			zap.Int("count", removed),
 		)
 	}
-
 	return removed, nil
 }
 
@@ -358,28 +438,25 @@ func (s *Store) RemoveByPrefix(ctx context.Context, bucket, prefix string) (int,
 		return 0, fmt.Errorf("share link bucket and prefix are required")
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	links, err := s.listLocked(ctx)
+	db, err := s.openDB()
 	if err != nil {
 		return 0, err
 	}
+	defer func() {
+		_ = db.Close()
+	}()
 
-	removed := 0
-	for _, link := range links {
-		if link.Bucket != bucket || !strings.HasPrefix(link.Key, prefix) {
-			continue
-		}
-		if err := os.Remove(s.linkPath(link.ID)); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return removed, fmt.Errorf("remove share link for prefix: %w", err)
-		}
-		removed += 1
+	result, err := db.NewDelete().Model((*linkRecord)(nil)).
+		Where("bucket = ?", bucket).
+		Where("key LIKE ? ESCAPE '\\'", likePrefixPattern(prefix)).
+		Exec(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("remove share links for prefix: %w", err)
 	}
-
+	removed, err := rowsAffected(result, "inspect share link prefix removal")
+	if err != nil {
+		return 0, err
+	}
 	if removed > 0 {
 		s.logger.Info(
 			"share links removed for deleted prefix",
@@ -388,7 +465,6 @@ func (s *Store) RemoveByPrefix(ctx context.Context, bucket, prefix string) (int,
 			zap.Int("count", removed),
 		)
 	}
-
 	return removed, nil
 }
 
@@ -405,91 +481,82 @@ func (s *Store) ReassignPrefix(ctx context.Context, sourceBucket, sourcePrefix, 
 		return 0, fmt.Errorf("share link source prefix and destination bucket are required")
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	links, err := s.listLocked(ctx)
+	db, err := s.openDB()
 	if err != nil {
 		return 0, err
 	}
+	defer func() {
+		_ = db.Close()
+	}()
 
-	updated := 0
-	for _, link := range links {
-		if link.Bucket != sourceBucket || !strings.HasPrefix(link.Key, sourcePrefix) {
-			continue
-		}
-		relative := strings.TrimPrefix(link.Key, sourcePrefix)
-		link.Bucket = destinationBucket
-		link.Key = destinationPrefix + relative
-		link.Filename = path.Base(link.Key)
-		if err := s.writeLink(link); err != nil {
-			return updated, err
-		}
-		updated += 1
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin share link prefix reassignment: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	type pendingUpdate struct {
+		ID  string `bun:"id"`
+		Key string `bun:"key"`
+	}
+	updates := make([]pendingUpdate, 0)
+	if err := tx.NewSelect().Model((*linkRecord)(nil)).Column("id", "key").
+		Where("bucket = ?", sourceBucket).
+		Where("key LIKE ? ESCAPE '\\'", likePrefixPattern(sourcePrefix)).
+		Scan(ctx, &updates); err != nil {
+		return 0, fmt.Errorf("list share links for prefix reassignment: %w", err)
 	}
 
-	if updated > 0 {
+	for _, item := range updates {
+		relative := strings.TrimPrefix(item.Key, sourcePrefix)
+		nextKey := destinationPrefix + relative
+		if _, err := tx.NewUpdate().Model((*linkRecord)(nil)).
+			Set("bucket = ?", destinationBucket).
+			Set("key = ?", nextKey).
+			Set("filename = ?", path.Base(nextKey)).
+			Where("id = ?", item.ID).
+			Exec(ctx); err != nil {
+			return 0, fmt.Errorf("update share link for prefix reassignment: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit share link prefix reassignment: %w", err)
+	}
+
+	if len(updates) > 0 {
 		s.logger.Info(
 			"share links reassigned for prefix move",
 			zap.String("source_bucket", sourceBucket),
 			zap.String("source_prefix", sourcePrefix),
 			zap.String("destination_bucket", destinationBucket),
 			zap.String("destination_prefix", destinationPrefix),
-			zap.Int("count", updated),
+			zap.Int("count", len(updates)),
 		)
 	}
-
-	return updated, nil
-}
-
-func (s *Store) listLocked(ctx context.Context) ([]Link, error) {
-
-	entries, err := os.ReadDir(s.dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read share link dir: %w", err)
-	}
-
-	links := make([]Link, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		link := Link{}
-		if err := readJSONFile(filepath.Join(s.dir, entry.Name()), &link); err != nil {
-			return nil, err
-		}
-		links = append(links, link)
-	}
-
-	sort.Slice(links, func(i, j int) bool {
-		if links[i].CreatedAt.Equal(links[j].CreatedAt) {
-			return links[i].ID > links[j].ID
-		}
-		return links[i].CreatedAt.After(links[j].CreatedAt)
-	})
-
-	return links, nil
+	return len(updates), nil
 }
 
 func (s *Store) ActiveCount(ctx context.Context) (int, error) {
-	links, err := s.List(ctx)
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
 
-	count := 0
-	now := s.now()
-	for _, link := range links {
-		if link.Status(now) == "active" {
-			count += 1
-		}
+	db, err := s.openDB()
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		_ = db.Close()
+	}()
+
+	count, err := db.NewSelect().Model((*linkRecord)(nil)).
+		Where("revoked_at IS NULL").
+		Where("expires_at >= ?", formatTime(s.now().UTC())).
+		Count(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("count active share links: %w", err)
 	}
 	return count, nil
 }
@@ -499,29 +566,45 @@ func (s *Store) Revoke(ctx context.Context, id string) (Link, error) {
 		return Link{}, err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	link, err := s.readLink(id)
+	db, err := s.openDB()
 	if err != nil {
 		return Link{}, err
 	}
-	if link.RevokedAt != nil {
-		return link, nil
-	}
+	defer func() {
+		_ = db.Close()
+	}()
 
-	revokedAt := s.now().UTC()
-	link.RevokedAt = &revokedAt
-	if err := s.writeLink(link); err != nil {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return Link{}, fmt.Errorf("begin share link revoke: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	link, err := s.readLink(ctx, tx, id)
+	if err != nil {
 		return Link{}, err
 	}
-
-	s.logger.Info(
-		"share link revoked",
-		zap.String("id", link.ID),
-		zap.String("bucket", link.Bucket),
-		zap.String("key", link.Key),
-	)
+	if link.RevokedAt == nil {
+		revokedAt := s.now().UTC()
+		if _, err := tx.NewUpdate().Model((*linkRecord)(nil)).
+			Set("revoked_at = ?", formatTime(revokedAt)).
+			Where("id = ?", link.ID).
+			Exec(ctx); err != nil {
+			return Link{}, fmt.Errorf("revoke share link: %w", err)
+		}
+		link.RevokedAt = &revokedAt
+		s.logger.Info(
+			"share link revoked",
+			zap.String("id", link.ID),
+			zap.String("bucket", link.Bucket),
+			zap.String("key", link.Key),
+		)
+	}
+	if err := tx.Commit(); err != nil {
+		return Link{}, fmt.Errorf("commit share link revoke: %w", err)
+	}
 	return link, nil
 }
 
@@ -530,21 +613,34 @@ func (s *Store) Remove(ctx context.Context, id string) (Link, error) {
 		return Link{}, err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	db, err := s.openDB()
+	if err != nil {
+		return Link{}, err
+	}
+	defer func() {
+		_ = db.Close()
+	}()
 
-	link, err := s.readLink(id)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return Link{}, fmt.Errorf("begin share link removal: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	link, err := s.readLink(ctx, tx, id)
 	if err != nil {
 		return Link{}, err
 	}
 	if link.RevokedAt == nil && link.Status(s.now()) != "expired" {
 		return Link{}, fmt.Errorf("%w: %s", ErrNotRevoked, link.ID)
 	}
-	if err := os.Remove(s.linkPath(link.ID)); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return Link{}, fmt.Errorf("%w: %s", ErrNotFound, link.ID)
-		}
+	if _, err := tx.NewDelete().Model((*linkRecord)(nil)).Where("id = ?", link.ID).Exec(ctx); err != nil {
 		return Link{}, fmt.Errorf("remove share link: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Link{}, fmt.Errorf("commit share link removal: %w", err)
 	}
 
 	s.logger.Info(
@@ -566,43 +662,124 @@ func (l Link) Status(now time.Time) string {
 	return "active"
 }
 
-func (s *Store) readLink(id string) (Link, error) {
+func (s *Store) readLink(ctx context.Context, queryer bun.IDB, id string) (Link, error) {
 	validated, err := validateID(id)
 	if err != nil {
 		return Link{}, err
 	}
 
-	link := Link{}
-	if err := readJSONFile(s.linkPath(validated), &link); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return Link{}, fmt.Errorf("%w: %s", ErrNotFound, validated)
-		}
+	record := new(linkRecord)
+	err = queryer.NewSelect().Model(record).Where("id = ?", validated).Limit(1).Scan(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Link{}, fmt.Errorf("%w: %s", ErrNotFound, validated)
+	}
+	if err != nil {
 		return Link{}, fmt.Errorf("read share link: %w", err)
+	}
+	link, err := record.Link()
+	if err != nil {
+		return Link{}, err
 	}
 	return link, nil
 }
 
-func (s *Store) writeLink(link Link) error {
-	if err := os.MkdirAll(s.dir, 0o755); err != nil {
-		return fmt.Errorf("create share link dir: %w", err)
+func (s *Store) openDB() (*statedb.BunSession, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("open share link db: store is closed")
 	}
-
-	stagedPath, err := writeJSONTemp(s.dir, "share-link-*", link)
-	if err != nil {
-		return fmt.Errorf("stage share link: %w", err)
-	}
-	defer func() {
-		_ = os.Remove(stagedPath)
-	}()
-
-	if err := replaceFile(stagedPath, s.linkPath(link.ID)); err != nil {
-		return fmt.Errorf("write share link: %w", err)
-	}
-	return nil
+	return statedb.Session(s.db), nil
 }
 
-func (s *Store) linkPath(id string) string {
-	return filepath.Join(s.dir, id+".json")
+func newLinkRecord(link Link) linkRecord {
+	return linkRecord{
+		ID:          strings.ToLower(strings.TrimSpace(link.ID)),
+		Bucket:      strings.TrimSpace(link.Bucket),
+		Key:         strings.TrimSpace(link.Key),
+		Filename:    strings.TrimSpace(link.Filename),
+		ContentType: strings.TrimSpace(link.ContentType),
+		Size:        link.Size,
+		CreatedBy:   strings.TrimSpace(link.CreatedBy),
+		CreatedAt:   formatTime(link.CreatedAt),
+		ExpiresAt:   formatTime(link.ExpiresAt),
+		RevokedAt:   formatNullableTime(link.RevokedAt),
+	}
+}
+
+func (r linkRecord) Link() (Link, error) {
+	createdAtValue, err := parseTime(r.CreatedAt)
+	if err != nil {
+		return Link{}, err
+	}
+	expiresAtValue, err := parseTime(r.ExpiresAt)
+	if err != nil {
+		return Link{}, err
+	}
+	revokedAtValue, err := parseNullableTime(r.RevokedAt)
+	if err != nil {
+		return Link{}, err
+	}
+	return Link{
+		ID:          strings.ToLower(r.ID),
+		Bucket:      strings.TrimSpace(r.Bucket),
+		Key:         strings.TrimSpace(r.Key),
+		Filename:    strings.TrimSpace(r.Filename),
+		ContentType: strings.TrimSpace(r.ContentType),
+		Size:        r.Size,
+		CreatedBy:   strings.TrimSpace(r.CreatedBy),
+		CreatedAt:   createdAtValue,
+		ExpiresAt:   expiresAtValue,
+		RevokedAt:   revokedAtValue,
+	}, nil
+}
+
+func formatTime(value time.Time) string {
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func formatNullableTime(value *time.Time) sql.NullString {
+	if value == nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: formatTime(value.UTC()), Valid: true}
+}
+
+func parseTime(raw string) (time.Time, error) {
+	parsed, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse share link time: %w", err)
+	}
+	return parsed.UTC(), nil
+}
+
+func parseNullableTime(value sql.NullString) (*time.Time, error) {
+	if !value.Valid || strings.TrimSpace(value.String) == "" {
+		return nil, nil
+	}
+	parsed, err := parseTime(value.String)
+	if err != nil {
+		return nil, err
+	}
+	return &parsed, nil
+}
+
+func rowsAffected(result sql.Result, context string) (int, error) {
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", context, err)
+	}
+	return int(count), nil
+}
+
+func likePrefixPattern(prefix string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return replacer.Replace(prefix) + "%"
+}
+
+func isUniqueConstraint(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "unique constraint failed")
 }
 
 func validateID(id string) (string, error) {
@@ -622,50 +799,6 @@ func newID() (string, error) {
 		return "", fmt.Errorf("generate share link id: %w", err)
 	}
 	return hex.EncodeToString(buf), nil
-}
-
-func writeJSONTemp(dir, pattern string, value any) (string, error) {
-	file, err := os.CreateTemp(dir, pattern)
-	if err != nil {
-		return "", err
-	}
-	path := file.Name()
-
-	encoder := json.NewEncoder(file)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(value); err != nil {
-		_ = file.Close()
-		return "", err
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		return "", err
-	}
-	if err := file.Close(); err != nil {
-		return "", err
-	}
-
-	return path, nil
-}
-
-func readJSONFile(path string, value any) error {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(content, value)
-}
-
-func replaceFile(fromPath, toPath string) error {
-	if err := os.Rename(fromPath, toPath); err == nil {
-		return nil
-	}
-
-	if err := os.Remove(toPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-
-	return os.Rename(fromPath, toPath)
 }
 
 func normalizePrefix(value string) string {

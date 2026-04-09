@@ -3,24 +3,22 @@ package s3creds
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
+	"bares3-server/internal/statedb"
+	"github.com/uptrace/bun"
 	"go.uber.org/zap"
 )
 
 const (
-	controlDirName        = ".bares3"
-	credentialsFileName   = "s3-credentials.json"
 	credentialSourceStore = "managed"
 	credentialSourceBoot  = "config"
 	accessKeyPrefix       = "BS3"
@@ -36,6 +34,23 @@ var (
 	ErrInvalidLabel       = errors.New("invalid s3 credential label")
 	ErrInvalidPermission  = errors.New("invalid s3 credential permission")
 	ErrCredentialActive   = errors.New("s3 credential must be revoked before deletion")
+
+	storeMigrations = []statedb.Migration{{
+		Name: "s3_credentials_v1",
+		Statements: []string{`
+			CREATE TABLE IF NOT EXISTS s3_credentials (
+				access_key_id TEXT PRIMARY KEY,
+				secret_access_key TEXT NOT NULL,
+				label TEXT NOT NULL DEFAULT '',
+				source TEXT NOT NULL DEFAULT '',
+				permission TEXT NOT NULL,
+				buckets_json TEXT NOT NULL DEFAULT '[]',
+				created_at TEXT NOT NULL,
+				last_used_at TEXT,
+				revoked_at TEXT
+			)
+		`},
+	}}
 )
 
 type BootstrapCredential struct {
@@ -81,10 +96,24 @@ type UpdateInput struct {
 }
 
 type Store struct {
-	path   string
-	logger *zap.Logger
-	now    func() time.Time
-	mu     sync.Mutex
+	dataDir string
+	db      *bun.DB
+	logger  *zap.Logger
+	now     func() time.Time
+}
+
+type credentialRecord struct {
+	bun.BaseModel `bun:"table:s3_credentials"`
+
+	AccessKeyID     string         `bun:"access_key_id,pk"`
+	SecretAccessKey string         `bun:"secret_access_key"`
+	Label           string         `bun:"label"`
+	Source          string         `bun:"source"`
+	Permission      string         `bun:"permission"`
+	BucketsJSON     string         `bun:"buckets_json"`
+	CreatedAt       string         `bun:"created_at"`
+	LastUsedAt      sql.NullString `bun:"last_used_at"`
+	RevokedAt       sql.NullString `bun:"revoked_at"`
 }
 
 func New(dataDir string, bootstrap BootstrapCredential, logger *zap.Logger) (*Store, error) {
@@ -96,20 +125,31 @@ func New(dataDir string, bootstrap BootstrapCredential, logger *zap.Logger) (*St
 		logger = zap.NewNop()
 	}
 
-	dir := filepath.Join(trimmed, controlDirName)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("create s3 credential dir: %w", err)
+	sqlDB, err := statedb.Open(trimmed)
+	if err != nil {
+		return nil, err
 	}
+	bunDB := statedb.Wrap(sqlDB)
+	store := &Store{dataDir: trimmed, db: bunDB, logger: logger, now: time.Now}
 
-	store := &Store{
-		path:   filepath.Join(dir, credentialsFileName),
-		logger: logger,
-		now:    time.Now,
+	if err := statedb.EnsureMigrations(sqlDB, storeMigrations); err != nil {
+		_ = bunDB.Close()
+		return nil, fmt.Errorf("initialize s3 credential schema: %w", err)
 	}
-	if err := store.ensureBootstrap(bootstrap); err != nil {
+	if err := store.ensureBootstrap(bunDB, bootstrap); err != nil {
+		_ = bunDB.Close()
 		return nil, err
 	}
 	return store, nil
+}
+
+func (s *Store) Close() error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	err := s.db.Close()
+	s.db = nil
+	return err
 }
 
 func (s *Store) List(ctx context.Context) ([]PublicCredential, error) {
@@ -117,15 +157,26 @@ func (s *Store) List(ctx context.Context) ([]PublicCredential, error) {
 		return nil, err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	items, err := s.readAllLocked()
+	db, err := s.openDB()
 	if err != nil {
 		return nil, err
 	}
-	result := make([]PublicCredential, 0, len(items))
-	for _, item := range items {
+	defer func() {
+		_ = db.Close()
+	}()
+
+	records := make([]credentialRecord, 0)
+	err = db.NewSelect().Model(&records).OrderExpr("revoked_at IS NOT NULL ASC, created_at DESC, access_key_id ASC").Scan(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list s3 credentials: %w", err)
+	}
+
+	result := make([]PublicCredential, 0, len(records))
+	for _, record := range records {
+		item, err := record.Credential()
+		if err != nil {
+			return nil, err
+		}
 		result = append(result, item.Public())
 	}
 	return result, nil
@@ -144,40 +195,50 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (Credential, erro
 		return Credential{}, err
 	}
 	buckets := normalizeBuckets(input.Buckets)
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	items, err := s.readAllLocked()
+	bucketsJSON, err := encodeBuckets(buckets)
 	if err != nil {
 		return Credential{}, err
 	}
 
-	accessKeyID, err := generateAccessKeyID(existingAccessKeyIDs(items))
+	db, err := s.openDB()
 	if err != nil {
 		return Credential{}, err
 	}
-	secretAccessKey, err := generateSecretAccessKey()
-	if err != nil {
-		return Credential{}, err
+	defer func() {
+		_ = db.Close()
+	}()
+
+	for range 16 {
+		accessKeyID, err := generateAccessKeyID(nil)
+		if err != nil {
+			return Credential{}, err
+		}
+		secretAccessKey, err := generateSecretAccessKey()
+		if err != nil {
+			return Credential{}, err
+		}
+		credential := Credential{
+			AccessKeyID:     accessKeyID,
+			SecretAccessKey: secretAccessKey,
+			Label:           trimmedLabel,
+			Source:          credentialSourceStore,
+			Permission:      permission,
+			Buckets:         buckets,
+			CreatedAt:       s.now().UTC(),
+		}
+		record := newCredentialRecord(credential)
+		record.BucketsJSON = bucketsJSON
+		_, err = db.NewInsert().Model(&record).Exec(ctx)
+		if err == nil {
+			s.logger.Info("s3 credential created", zap.String("access_key_id", credential.AccessKeyID), zap.String("label", credential.Label))
+			return credential, nil
+		}
+		if !isUniqueConstraint(err) {
+			return Credential{}, fmt.Errorf("insert s3 credential: %w", err)
+		}
 	}
 
-	credential := Credential{
-		AccessKeyID:     accessKeyID,
-		SecretAccessKey: secretAccessKey,
-		Label:           trimmedLabel,
-		Source:          credentialSourceStore,
-		Permission:      permission,
-		Buckets:         buckets,
-		CreatedAt:       s.now().UTC(),
-	}
-	items = append(items, credential)
-	if err := s.writeAllLocked(items); err != nil {
-		return Credential{}, err
-	}
-
-	s.logger.Info("s3 credential created", zap.String("access_key_id", credential.AccessKeyID), zap.String("label", credential.Label))
-	return credential, nil
+	return Credential{}, fmt.Errorf("generate access key id: exhausted retries")
 }
 
 func (s *Store) Update(ctx context.Context, input UpdateInput) (PublicCredential, error) {
@@ -194,29 +255,54 @@ func (s *Store) Update(ctx context.Context, input UpdateInput) (PublicCredential
 		return PublicCredential{}, err
 	}
 	buckets := normalizeBuckets(input.Buckets)
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	items, err := s.readAllLocked()
+	bucketsJSON, err := encodeBuckets(buckets)
 	if err != nil {
 		return PublicCredential{}, err
 	}
-	for index := range items {
-		if items[index].AccessKeyID != trimmedAccessKeyID {
-			continue
-		}
-		items[index].Label = trimmedLabel
-		items[index].Permission = permission
-		items[index].Buckets = buckets
-		if err := s.writeAllLocked(items); err != nil {
-			return PublicCredential{}, err
-		}
-		s.logger.Info("s3 credential updated", zap.String("access_key_id", trimmedAccessKeyID), zap.String("permission", permission), zap.Int("bucket_count", len(buckets)))
-		return items[index].Public(), nil
+
+	db, err := s.openDB()
+	if err != nil {
+		return PublicCredential{}, err
+	}
+	defer func() {
+		_ = db.Close()
+	}()
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return PublicCredential{}, fmt.Errorf("begin s3 credential update: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	result, err := tx.NewUpdate().Model((*credentialRecord)(nil)).
+		Set("label = ?", trimmedLabel).
+		Set("permission = ?", permission).
+		Set("buckets_json = ?", bucketsJSON).
+		Where("access_key_id = ?", trimmedAccessKeyID).
+		Exec(ctx)
+	if err != nil {
+		return PublicCredential{}, fmt.Errorf("update s3 credential: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return PublicCredential{}, fmt.Errorf("inspect s3 credential update: %w", err)
+	}
+	if rowsAffected == 0 {
+		return PublicCredential{}, fmt.Errorf("%w: %s", ErrCredentialNotFound, trimmedAccessKeyID)
 	}
 
-	return PublicCredential{}, fmt.Errorf("%w: %s", ErrCredentialNotFound, trimmedAccessKeyID)
+	updated, err := loadCredential(ctx, tx, trimmedAccessKeyID)
+	if err != nil {
+		return PublicCredential{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return PublicCredential{}, fmt.Errorf("commit s3 credential update: %w", err)
+	}
+
+	s.logger.Info("s3 credential updated", zap.String("access_key_id", trimmedAccessKeyID), zap.String("permission", permission), zap.Int("bucket_count", len(buckets)))
+	return updated.Public(), nil
 }
 
 func (s *Store) Revoke(ctx context.Context, accessKeyID string) (PublicCredential, error) {
@@ -225,30 +311,41 @@ func (s *Store) Revoke(ctx context.Context, accessKeyID string) (PublicCredentia
 	}
 	trimmed := strings.TrimSpace(accessKeyID)
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	items, err := s.readAllLocked()
+	db, err := s.openDB()
 	if err != nil {
 		return PublicCredential{}, err
 	}
+	defer func() {
+		_ = db.Close()
+	}()
 
-	for index := range items {
-		if items[index].AccessKeyID != trimmed {
-			continue
-		}
-		if items[index].RevokedAt == nil {
-			now := s.now().UTC()
-			items[index].RevokedAt = &now
-			if err := s.writeAllLocked(items); err != nil {
-				return PublicCredential{}, err
-			}
-			s.logger.Info("s3 credential revoked", zap.String("access_key_id", trimmed))
-		}
-		return items[index].Public(), nil
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return PublicCredential{}, fmt.Errorf("begin s3 credential revoke: %w", err)
 	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
 
-	return PublicCredential{}, fmt.Errorf("%w: %s", ErrCredentialNotFound, trimmed)
+	credential, err := loadCredential(ctx, tx, trimmed)
+	if err != nil {
+		return PublicCredential{}, err
+	}
+	if credential.RevokedAt == nil {
+		revokedAt := s.now().UTC()
+		if _, err := tx.NewUpdate().Model((*credentialRecord)(nil)).
+			Set("revoked_at = ?", formatTime(revokedAt)).
+			Where("access_key_id = ?", trimmed).
+			Exec(ctx); err != nil {
+			return PublicCredential{}, fmt.Errorf("revoke s3 credential: %w", err)
+		}
+		credential.RevokedAt = &revokedAt
+		s.logger.Info("s3 credential revoked", zap.String("access_key_id", trimmed))
+	}
+	if err := tx.Commit(); err != nil {
+		return PublicCredential{}, fmt.Errorf("commit s3 credential revoke: %w", err)
+	}
+	return credential.Public(), nil
 }
 
 func (s *Store) Delete(ctx context.Context, accessKeyID string) error {
@@ -257,30 +354,38 @@ func (s *Store) Delete(ctx context.Context, accessKeyID string) error {
 	}
 	trimmed := strings.TrimSpace(accessKeyID)
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	items, err := s.readAllLocked()
+	db, err := s.openDB()
 	if err != nil {
 		return err
 	}
+	defer func() {
+		_ = db.Close()
+	}()
 
-	for index := range items {
-		if items[index].AccessKeyID != trimmed {
-			continue
-		}
-		if items[index].RevokedAt == nil {
-			return fmt.Errorf("%w: %s", ErrCredentialActive, trimmed)
-		}
-		items = append(items[:index], items[index+1:]...)
-		if err := s.writeAllLocked(items); err != nil {
-			return err
-		}
-		s.logger.Info("s3 credential deleted", zap.String("access_key_id", trimmed))
-		return nil
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin s3 credential delete: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	credential, err := loadCredential(ctx, tx, trimmed)
+	if err != nil {
+		return err
+	}
+	if credential.RevokedAt == nil {
+		return fmt.Errorf("%w: %s", ErrCredentialActive, trimmed)
+	}
+	if _, err := tx.NewDelete().Model((*credentialRecord)(nil)).Where("access_key_id = ?", trimmed).Exec(ctx); err != nil {
+		return fmt.Errorf("delete s3 credential: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit s3 credential delete: %w", err)
 	}
 
-	return fmt.Errorf("%w: %s", ErrCredentialNotFound, trimmed)
+	s.logger.Info("s3 credential deleted", zap.String("access_key_id", trimmed))
+	return nil
 }
 
 func (s *Store) LookupSecret(ctx context.Context, accessKeyID string) (string, error) {
@@ -289,19 +394,28 @@ func (s *Store) LookupSecret(ctx context.Context, accessKeyID string) (string, e
 	}
 	trimmed := strings.TrimSpace(accessKeyID)
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	items, err := s.readAllLocked()
+	db, err := s.openDB()
 	if err != nil {
 		return "", err
 	}
-	for _, item := range items {
-		if item.AccessKeyID == trimmed && item.RevokedAt == nil {
-			return item.SecretAccessKey, nil
-		}
+	defer func() {
+		_ = db.Close()
+	}()
+
+	record := new(credentialRecord)
+	err = db.NewSelect().Model(record).
+		Column("secret_access_key").
+		Where("access_key_id = ?", trimmed).
+		Where("revoked_at IS NULL").
+		Limit(1).
+		Scan(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("%w: %s", ErrCredentialNotFound, trimmed)
 	}
-	return "", fmt.Errorf("%w: %s", ErrCredentialNotFound, trimmed)
+	if err != nil {
+		return "", fmt.Errorf("lookup s3 credential secret: %w", err)
+	}
+	return record.SecretAccessKey, nil
 }
 
 func (s *Store) GetActive(ctx context.Context, accessKeyID string) (Credential, error) {
@@ -310,19 +424,22 @@ func (s *Store) GetActive(ctx context.Context, accessKeyID string) (Credential, 
 	}
 	trimmed := strings.TrimSpace(accessKeyID)
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	items, err := s.readAllLocked()
+	db, err := s.openDB()
 	if err != nil {
 		return Credential{}, err
 	}
-	for _, item := range items {
-		if item.AccessKeyID == trimmed && item.RevokedAt == nil {
-			return item, nil
-		}
+	defer func() {
+		_ = db.Close()
+	}()
+
+	credential, err := loadCredential(ctx, db, trimmed)
+	if err != nil {
+		return Credential{}, err
 	}
-	return Credential{}, fmt.Errorf("%w: %s", ErrCredentialNotFound, trimmed)
+	if credential.RevokedAt != nil {
+		return Credential{}, fmt.Errorf("%w: %s", ErrCredentialNotFound, trimmed)
+	}
+	return credential, nil
 }
 
 func (s *Store) Touch(ctx context.Context, accessKeyID string) error {
@@ -331,22 +448,30 @@ func (s *Store) Touch(ctx context.Context, accessKeyID string) error {
 	}
 	trimmed := strings.TrimSpace(accessKeyID)
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	items, err := s.readAllLocked()
+	db, err := s.openDB()
 	if err != nil {
 		return err
 	}
-	for index := range items {
-		if items[index].AccessKeyID != trimmed || items[index].RevokedAt != nil {
-			continue
-		}
-		now := s.now().UTC()
-		items[index].LastUsedAt = &now
-		return s.writeAllLocked(items)
+	defer func() {
+		_ = db.Close()
+	}()
+
+	result, err := db.NewUpdate().Model((*credentialRecord)(nil)).
+		Set("last_used_at = ?", formatTime(s.now().UTC())).
+		Where("access_key_id = ?", trimmed).
+		Where("revoked_at IS NULL").
+		Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("touch s3 credential: %w", err)
 	}
-	return fmt.Errorf("%w: %s", ErrCredentialNotFound, trimmed)
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("inspect s3 credential touch: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("%w: %s", ErrCredentialNotFound, trimmed)
+	}
+	return nil
 }
 
 func (s *Store) DefaultCredential(ctx context.Context) (Credential, error) {
@@ -354,19 +479,31 @@ func (s *Store) DefaultCredential(ctx context.Context) (Credential, error) {
 		return Credential{}, err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	items, err := s.readAllLocked()
+	db, err := s.openDB()
 	if err != nil {
 		return Credential{}, err
 	}
-	for _, item := range items {
-		if item.RevokedAt == nil {
-			return item, nil
-		}
+	defer func() {
+		_ = db.Close()
+	}()
+
+	record := new(credentialRecord)
+	err = db.NewSelect().Model(record).
+		Where("revoked_at IS NULL").
+		OrderExpr("created_at DESC, access_key_id ASC").
+		Limit(1).
+		Scan(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Credential{}, ErrNoActiveCredential
 	}
-	return Credential{}, ErrNoActiveCredential
+	if err != nil {
+		return Credential{}, fmt.Errorf("load default s3 credential: %w", err)
+	}
+	credential, err := record.Credential()
+	if err != nil {
+		return Credential{}, err
+	}
+	return credential, nil
 }
 
 func (s *Store) FindForOperation(ctx context.Context, bucket string, write bool) (Credential, error) {
@@ -375,18 +512,31 @@ func (s *Store) FindForOperation(ctx context.Context, bucket string, write bool)
 	}
 	trimmedBucket := strings.TrimSpace(bucket)
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	items, err := s.readAllLocked()
+	db, err := s.openDB()
 	if err != nil {
 		return Credential{}, err
 	}
-	for _, item := range items {
-		if item.RevokedAt != nil || !item.AllowsBucket(trimmedBucket) || !item.AllowsOperation(write) {
-			continue
+	defer func() {
+		_ = db.Close()
+	}()
+
+	records := make([]credentialRecord, 0)
+	err = db.NewSelect().Model(&records).
+		Where("revoked_at IS NULL").
+		OrderExpr("created_at DESC, access_key_id ASC").
+		Scan(ctx)
+	if err != nil {
+		return Credential{}, fmt.Errorf("list active s3 credentials: %w", err)
+	}
+
+	for _, record := range records {
+		credential, err := record.Credential()
+		if err != nil {
+			return Credential{}, err
 		}
-		return item, nil
+		if credential.AllowsBucket(trimmedBucket) && credential.AllowsOperation(write) {
+			return credential, nil
+		}
 	}
 	return Credential{}, ErrNoActiveCredential
 }
@@ -433,19 +583,16 @@ func (c Credential) Status() string {
 	return "active"
 }
 
-func (s *Store) ensureBootstrap(bootstrap BootstrapCredential) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	items, err := s.readAllLocked()
+func (s *Store) ensureBootstrap(db bun.IDB, bootstrap BootstrapCredential) error {
+	hasCredentials, err := hasAnyCredential(db)
 	if err != nil {
 		return err
 	}
-	if len(items) > 0 {
+	if hasCredentials {
 		return nil
 	}
 	if strings.TrimSpace(bootstrap.AccessKeyID) == "" || strings.TrimSpace(bootstrap.SecretAccessKey) == "" {
-		return s.writeAllLocked(nil)
+		return nil
 	}
 
 	credential := Credential{
@@ -454,97 +601,151 @@ func (s *Store) ensureBootstrap(bootstrap BootstrapCredential) error {
 		Label:           "Imported from config",
 		Source:          credentialSourceBoot,
 		Permission:      PermissionReadWrite,
+		Buckets:         []string{},
 		CreatedAt:       s.now().UTC(),
 	}
-	if err := s.writeAllLocked([]Credential{credential}); err != nil {
+	bucketsJSON, err := encodeBuckets(credential.Buckets)
+	if err != nil {
 		return err
+	}
+	record := newCredentialRecord(credential)
+	record.BucketsJSON = bucketsJSON
+	if _, err := db.NewInsert().Model(&record).Exec(context.Background()); err != nil {
+		return fmt.Errorf("bootstrap s3 credential: %w", err)
 	}
 	s.logger.Info("bootstrapped s3 credential from config", zap.String("access_key_id", credential.AccessKeyID))
 	return nil
 }
 
-func (s *Store) readAllLocked() ([]Credential, error) {
-	content, err := os.ReadFile(s.path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return []Credential{}, nil
-		}
-		return nil, fmt.Errorf("read s3 credentials: %w", err)
+func (s *Store) openDB() (*statedb.BunSession, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("open s3 credential db: store is closed")
 	}
-	if len(content) == 0 {
-		return []Credential{}, nil
-	}
-
-	items := []Credential{}
-	if err := json.Unmarshal(content, &items); err != nil {
-		return nil, fmt.Errorf("decode s3 credentials: %w", err)
-	}
-	for index := range items {
-		items[index].Permission = normalizePermission(items[index].Permission)
-		items[index].Buckets = normalizeBuckets(items[index].Buckets)
-	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].RevokedAt == nil && items[j].RevokedAt != nil {
-			return true
-		}
-		if items[i].RevokedAt != nil && items[j].RevokedAt == nil {
-			return false
-		}
-		return items[i].CreatedAt.After(items[j].CreatedAt)
-	})
-	return items, nil
+	return statedb.Session(s.db), nil
 }
 
-func (s *Store) writeAllLocked(items []Credential) error {
-	content, err := json.MarshalIndent(items, "", "  ")
+func loadCredential(ctx context.Context, queryer bun.IDB, accessKeyID string) (Credential, error) {
+	record := new(credentialRecord)
+	err := queryer.NewSelect().Model(record).Where("access_key_id = ?", accessKeyID).Limit(1).Scan(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Credential{}, fmt.Errorf("%w: %s", ErrCredentialNotFound, accessKeyID)
+	}
 	if err != nil {
-		return fmt.Errorf("encode s3 credentials: %w", err)
+		return Credential{}, fmt.Errorf("load s3 credential: %w", err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(s.path), "s3-credentials-*.json")
+	credential, err := record.Credential()
 	if err != nil {
-		return fmt.Errorf("stage s3 credentials: %w", err)
+		return Credential{}, err
 	}
-	tmpPath := tmp.Name()
-	defer func() {
-		_ = os.Remove(tmpPath)
-	}()
-	if _, err := tmp.Write(content); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write staged s3 credentials: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close staged s3 credentials: %w", err)
-	}
-	if err := os.Chmod(tmpPath, 0o600); err != nil {
-		return fmt.Errorf("chmod staged s3 credentials: %w", err)
-	}
-	if err := replaceFile(tmpPath, s.path); err != nil {
-		return fmt.Errorf("replace s3 credentials: %w", err)
-	}
-	return nil
+	return credential, nil
 }
 
-func replaceFile(sourcePath, destinationPath string) error {
-	if err := os.Rename(sourcePath, destinationPath); err == nil {
-		return nil
-	} else if !errors.Is(err, os.ErrExist) && !errors.Is(err, os.ErrPermission) {
-		if removeErr := os.Remove(destinationPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			return err
-		}
-		return os.Rename(sourcePath, destinationPath)
+func newCredentialRecord(credential Credential) credentialRecord {
+	return credentialRecord{
+		AccessKeyID:     strings.TrimSpace(credential.AccessKeyID),
+		SecretAccessKey: strings.TrimSpace(credential.SecretAccessKey),
+		Label:           strings.TrimSpace(credential.Label),
+		Source:          strings.TrimSpace(credential.Source),
+		Permission:      normalizePermission(credential.Permission),
+		BucketsJSON:     "[]",
+		CreatedAt:       formatTime(credential.CreatedAt),
+		LastUsedAt:      formatNullableTime(credential.LastUsedAt),
+		RevokedAt:       formatNullableTime(credential.RevokedAt),
 	}
-	if err := os.Remove(destinationPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return os.Rename(sourcePath, destinationPath)
 }
 
-func existingAccessKeyIDs(items []Credential) map[string]struct{} {
-	set := make(map[string]struct{}, len(items))
-	for _, item := range items {
-		set[item.AccessKeyID] = struct{}{}
+func (r credentialRecord) Credential() (Credential, error) {
+	buckets, err := decodeBuckets(r.BucketsJSON)
+	if err != nil {
+		return Credential{}, err
 	}
-	return set
+	createdAtValue, err := parseTime(r.CreatedAt)
+	if err != nil {
+		return Credential{}, err
+	}
+	lastUsedAtValue, err := parseNullableTime(r.LastUsedAt)
+	if err != nil {
+		return Credential{}, err
+	}
+	revokedAtValue, err := parseNullableTime(r.RevokedAt)
+	if err != nil {
+		return Credential{}, err
+	}
+	return Credential{
+		AccessKeyID:     strings.TrimSpace(r.AccessKeyID),
+		SecretAccessKey: strings.TrimSpace(r.SecretAccessKey),
+		Label:           strings.TrimSpace(r.Label),
+		Source:          strings.TrimSpace(r.Source),
+		Permission:      normalizePermission(r.Permission),
+		Buckets:         buckets,
+		CreatedAt:       createdAtValue,
+		LastUsedAt:      lastUsedAtValue,
+		RevokedAt:       revokedAtValue,
+	}, nil
+}
+
+func hasAnyCredential(db bun.IDB) (bool, error) {
+	count, err := db.NewSelect().Model((*credentialRecord)(nil)).Count(context.Background())
+	if err != nil {
+		return false, fmt.Errorf("count s3 credentials: %w", err)
+	}
+	return count > 0, nil
+}
+
+func encodeBuckets(buckets []string) (string, error) {
+	content, err := json.Marshal(normalizeBuckets(buckets))
+	if err != nil {
+		return "", fmt.Errorf("encode s3 credential buckets: %w", err)
+	}
+	return string(content), nil
+}
+
+func decodeBuckets(raw string) ([]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return []string{}, nil
+	}
+	buckets := []string{}
+	if err := json.Unmarshal([]byte(raw), &buckets); err != nil {
+		return nil, fmt.Errorf("decode s3 credential buckets: %w", err)
+	}
+	return normalizeBuckets(buckets), nil
+}
+
+func formatTime(value time.Time) string {
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func formatNullableTime(value *time.Time) sql.NullString {
+	if value == nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: formatTime(value.UTC()), Valid: true}
+}
+
+func parseTime(raw string) (time.Time, error) {
+	parsed, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse s3 credential time: %w", err)
+	}
+	return parsed.UTC(), nil
+}
+
+func parseNullableTime(value sql.NullString) (*time.Time, error) {
+	if !value.Valid || strings.TrimSpace(value.String) == "" {
+		return nil, nil
+	}
+	parsed, err := parseTime(value.String)
+	if err != nil {
+		return nil, err
+	}
+	return &parsed, nil
+}
+
+func isUniqueConstraint(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "unique constraint failed")
 }
 
 func generateAccessKeyID(existing map[string]struct{}) (string, error) {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -29,20 +28,38 @@ type Store struct {
 	metadataLayout string
 	commitMu       sync.Mutex
 	instanceQuota  atomic.Int64
+	metadata       *metadataStore
 	logger         *zap.Logger
 }
 
 const bucketUsageHistoryLimit = 60
 
 func New(cfg config.Config, logger *zap.Logger) *Store {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	metadata, err := newMetadataStore(cfg.Paths.DataDir, logger.Named("metadata"))
+	if err != nil {
+		panic(fmt.Sprintf("initialize storage metadata store: %v", err))
+	}
 	store := &Store{
 		dataDir:        cfg.Paths.DataDir,
 		tmpDir:         cfg.Storage.TmpDir,
 		metadataLayout: cfg.Storage.MetadataLayout,
+		metadata:       metadata,
 		logger:         logger,
 	}
 	store.instanceQuota.Store(cfg.Storage.MaxBytes)
 	return store
+}
+
+func (s *Store) Close() error {
+	if s == nil || s.metadata == nil {
+		return nil
+	}
+	err := s.metadata.Close()
+	s.metadata = nil
+	return err
 }
 
 func (s *Store) CreateBucket(ctx context.Context, name string, quotaBytes int64) (BucketInfo, error) {
@@ -90,7 +107,7 @@ func (s *Store) CreateBucketWithOptions(ctx context.Context, input CreateBucketI
 		return BucketInfo{}, err
 	}
 
-	if err := os.MkdirAll(s.bucketMetaDir(name), 0o755); err != nil {
+	if err := os.MkdirAll(root, 0o755); err != nil {
 		return BucketInfo{}, fmt.Errorf("create bucket directories: %w", err)
 	}
 
@@ -113,7 +130,7 @@ func (s *Store) CreateBucketWithOptions(ctx context.Context, input CreateBucketI
 	info := BucketInfo{
 		Name:           meta.Name,
 		Path:           root,
-		MetadataPath:   s.bucketMetadataPath(name),
+		MetadataPath:   "",
 		CreatedAt:      meta.CreatedAt,
 		MetadataLayout: meta.MetadataLayout,
 		AccessMode:     meta.AccessMode,
@@ -133,49 +150,24 @@ func (s *Store) GetBucket(ctx context.Context, name string) (BucketInfo, error) 
 	if err := validateBucketName(name); err != nil {
 		return BucketInfo{}, err
 	}
-
-	root := s.bucketRoot(name)
-	info, err := os.Stat(root)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return BucketInfo{}, fmt.Errorf("%w: %s", ErrBucketNotFound, name)
-		}
-		return BucketInfo{}, err
-	}
-	if !info.IsDir() {
+	meta, err := s.readBucketMetadata(name)
+	if errors.Is(err, os.ErrNotExist) {
 		return BucketInfo{}, fmt.Errorf("%w: %s", ErrBucketNotFound, name)
 	}
-
-	meta, err := s.readBucketMetadata(name)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err != nil {
 		return BucketInfo{}, err
-	}
-
-	createdAt := info.ModTime().UTC()
-	metadataLayout := s.metadataLayout
-	accessMode := BucketAccessPrivate
-	quotaBytes := int64(0)
-	tags := []string(nil)
-	note := ""
-	if err == nil {
-		createdAt = meta.CreatedAt
-		metadataLayout = meta.MetadataLayout
-		accessMode = NormalizeBucketAccessMode(meta.AccessMode)
-		quotaBytes = meta.QuotaBytes
-		tags = cloneStringSlice(meta.Tags)
-		note = meta.Note
 	}
 
 	return BucketInfo{
 		Name:           name,
-		Path:           root,
-		MetadataPath:   s.bucketMetadataPath(name),
-		CreatedAt:      createdAt,
-		MetadataLayout: metadataLayout,
-		AccessMode:     accessMode,
-		QuotaBytes:     quotaBytes,
-		Tags:           tags,
-		Note:           note,
+		Path:           s.bucketRoot(name),
+		MetadataPath:   "",
+		CreatedAt:      meta.CreatedAt,
+		MetadataLayout: meta.MetadataLayout,
+		AccessMode:     NormalizeBucketAccessMode(meta.AccessMode),
+		QuotaBytes:     meta.QuotaBytes,
+		Tags:           cloneStringSlice(meta.Tags),
+		Note:           meta.Note,
 	}, nil
 }
 
@@ -184,42 +176,30 @@ func (s *Store) ListBuckets(ctx context.Context) ([]BucketInfo, error) {
 		return nil, err
 	}
 
-	entries, err := os.ReadDir(s.dataDir)
+	metas, err := s.metadata.listBuckets()
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
 		return nil, err
 	}
-
-	buckets := make([]BucketInfo, 0, len(entries))
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if strings.HasPrefix(name, ".") {
-			continue
-		}
-		if err := validateBucketName(name); err != nil {
-			continue
-		}
-		bucket, err := s.GetBucket(ctx, name)
+	buckets := make([]BucketInfo, 0, len(metas))
+	for _, meta := range metas {
+		usage, err := s.bucketUsage(ctx, meta.Name)
 		if err != nil {
 			return nil, err
 		}
-		usage, err := s.bucketUsage(ctx, name)
-		if err != nil {
-			return nil, err
-		}
-		bucket.UsedBytes = usage.UsedBytes
-		bucket.ObjectCount = usage.ObjectCount
-		buckets = append(buckets, bucket)
+		buckets = append(buckets, BucketInfo{
+			Name:           meta.Name,
+			Path:           s.bucketRoot(meta.Name),
+			MetadataPath:   "",
+			CreatedAt:      meta.CreatedAt,
+			MetadataLayout: meta.MetadataLayout,
+			AccessMode:     NormalizeBucketAccessMode(meta.AccessMode),
+			QuotaBytes:     meta.QuotaBytes,
+			Tags:           cloneStringSlice(meta.Tags),
+			Note:           meta.Note,
+			UsedBytes:      usage.UsedBytes,
+			ObjectCount:    usage.ObjectCount,
+		})
 	}
-
-	sort.Slice(buckets, func(i, j int) bool {
-		return buckets[i].Name < buckets[j].Name
-	})
 
 	return buckets, nil
 }
@@ -313,19 +293,13 @@ func (s *Store) UpdateBucket(ctx context.Context, input UpdateBucketInput) (Buck
 		renamed = true
 	}
 
-	if err := s.writeBucketMetadata(nextName, meta); err != nil {
-		if renamed {
-			_ = os.Rename(s.bucketRoot(nextName), s.bucketRoot(name))
-		}
-		return BucketInfo{}, err
-	}
 	if renamed {
-		if err := s.rewriteBucketObjectMetadata(nextName); err != nil {
+		if err := s.renameBucketMetadata(name, nextName, meta); err != nil {
+			_ = os.Rename(s.bucketRoot(nextName), s.bucketRoot(name))
 			return BucketInfo{}, err
 		}
-		if err := s.rewriteBucketMultipartMetadata(nextName); err != nil {
-			return BucketInfo{}, err
-		}
+	} else if err := s.writeBucketMetadata(nextName, meta); err != nil {
+		return BucketInfo{}, err
 	}
 	if input.QuotaBytes != currentBucket.QuotaBytes {
 		if err := s.recordBucketUsageSample(nextName, currentBucket.UsedBytes, currentBucket.ObjectCount, input.QuotaBytes); err != nil {
@@ -336,7 +310,7 @@ func (s *Store) UpdateBucket(ctx context.Context, input UpdateBucketInput) (Buck
 	updated := currentBucket
 	updated.Name = nextName
 	updated.Path = s.bucketRoot(nextName)
-	updated.MetadataPath = s.bucketMetadataPath(nextName)
+	updated.MetadataPath = ""
 	updated.AccessMode = nextAccessMode
 	updated.QuotaBytes = input.QuotaBytes
 	updated.Tags = cloneStringSlice(meta.Tags)
@@ -524,40 +498,13 @@ func (s *Store) UsageSummary(ctx context.Context) (int64, int, error) {
 }
 
 func (s *Store) bucketUsage(ctx context.Context, bucket string) (BucketInfo, error) {
-	root := s.bucketRoot(bucket)
-	usedBytes := int64(0)
-	objectCount := 0
-
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if path != root && filepath.Base(path) == controlDirName {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		usedBytes += info.Size()
-		objectCount += 1
-		return nil
-	})
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return BucketInfo{}, nil
-		}
+	if err := ctx.Err(); err != nil {
 		return BucketInfo{}, err
 	}
-
-	return BucketInfo{UsedBytes: usedBytes, ObjectCount: objectCount}, nil
+	if _, err := s.GetBucket(ctx, bucket); err != nil {
+		return BucketInfo{}, err
+	}
+	return s.metadata.bucketUsage(bucket)
 }
 
 func validateQuotaBytes(value int64) error {
@@ -605,39 +552,20 @@ func (s *Store) collectObjects(ctx context.Context, bucket, prefix string) ([]Ob
 	prefix = strings.TrimSpace(prefix)
 	objectsByKey := make(map[string]ObjectInfo)
 
-	metadataRoot := s.bucketMetaDir(bucket)
-	if err := filepath.WalkDir(metadataRoot, func(path string, entry os.DirEntry, err error) error {
+	metas, err := s.metadata.listObjects(bucket, prefix)
+	if err != nil {
+		return nil, err
+	}
+	for _, meta := range metas {
+		objectPath, _, err := s.resolveObjectPaths(bucket, meta.Key)
 		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		if filepath.Ext(path) != ".json" {
-			return nil
-		}
-
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-
-		meta := objectMetadata{}
-		if err := readJSONFile(path, &meta); err != nil {
-			return err
-		}
-		if prefix != "" && !strings.HasPrefix(meta.Key, prefix) {
-			return nil
-		}
-
-		objectPath, metadataPath, err := s.resolveObjectPaths(bucket, meta.Key)
-		if err != nil {
-			return err
+			return nil, err
 		}
 		objectsByKey[meta.Key] = ObjectInfo{
 			Bucket:             meta.Bucket,
 			Key:                meta.Key,
 			Path:               objectPath,
-			MetadataPath:       metadataPath,
+			MetadataPath:       "",
 			Size:               meta.Size,
 			ETag:               meta.ETag,
 			ContentType:        meta.ContentType,
@@ -646,53 +574,6 @@ func (s *Store) collectObjects(ctx context.Context, bucket, prefix string) ([]Ob
 			UserMetadata:       cloneStringMap(meta.UserMetadata),
 			LastModified:       meta.LastModified,
 		}
-		return nil
-	}); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-
-	if err := filepath.WalkDir(s.bucketRoot(bucket), func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if path != s.bucketRoot(bucket) && filepath.Base(path) == controlDirName {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		relPath, err := filepath.Rel(s.bucketRoot(bucket), path)
-		if err != nil {
-			return err
-		}
-		key := filepath.ToSlash(relPath)
-		if prefix != "" && !strings.HasPrefix(key, prefix) {
-			return nil
-		}
-		if _, ok := objectsByKey[key]; ok {
-			return nil
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		objectsByKey[key] = ObjectInfo{
-			Bucket:       bucket,
-			Key:          key,
-			Path:         path,
-			MetadataPath: "",
-			Size:         info.Size(),
-			ContentType:  fallbackContentType(path),
-			LastModified: info.ModTime().UTC(),
-		}
-		return nil
-	}); err != nil {
-		return nil, err
 	}
 
 	objects := make([]ObjectInfo, 0, len(objectsByKey))
@@ -880,11 +761,18 @@ func (s *Store) StatObject(ctx context.Context, bucket, key string) (ObjectInfo,
 		return ObjectInfo{}, err
 	}
 
-	objectPath, metadataPath, err := s.resolveObjectPaths(bucket, key)
+	meta, err := s.readObjectMetadata(bucket, key)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ObjectInfo{}, fmt.Errorf("%w: %s/%s", ErrObjectNotFound, bucket, key)
+		}
 		return ObjectInfo{}, err
 	}
 
+	objectPath, _, err := s.resolveObjectPaths(bucket, key)
+	if err != nil {
+		return ObjectInfo{}, err
+	}
 	fileInfo, err := os.Stat(objectPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -893,27 +781,11 @@ func (s *Store) StatObject(ctx context.Context, bucket, key string) (ObjectInfo,
 		return ObjectInfo{}, err
 	}
 
-	meta := objectMetadata{}
-	if err := readJSONFile(metadataPath, &meta); err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return ObjectInfo{}, err
-		}
-		return ObjectInfo{
-			Bucket:       bucket,
-			Key:          key,
-			Path:         objectPath,
-			MetadataPath: metadataPath,
-			Size:         fileInfo.Size(),
-			ContentType:  fallbackContentType(objectPath),
-			LastModified: fileInfo.ModTime().UTC(),
-		}, nil
-	}
-
 	object := ObjectInfo{
 		Bucket:             meta.Bucket,
 		Key:                meta.Key,
 		Path:               objectPath,
-		MetadataPath:       metadataPath,
+		MetadataPath:       "",
 		Size:               meta.Size,
 		ETag:               meta.ETag,
 		ContentType:        meta.ContentType,
@@ -1041,26 +913,12 @@ func (s *Store) UpdateObjectMetadata(ctx context.Context, input UpdateObjectMeta
 		meta.ContentType = fallbackContentType(object.Path)
 	}
 
-	metadataPath := object.MetadataPath
-	if strings.TrimSpace(metadataPath) == "" {
-		_, metadataPath, err = s.resolveObjectPaths(bucket, key)
-		if err != nil {
-			return ObjectInfo{}, err
-		}
-	}
-	stagedMetadataPath, err := writeJSONTemp(filepath.Dir(metadataPath), "meta-*", meta)
-	if err != nil {
-		return ObjectInfo{}, fmt.Errorf("stage metadata file: %w", err)
-	}
-	defer func() {
-		_ = os.Remove(stagedMetadataPath)
-	}()
-	if err := replaceFile(stagedMetadataPath, metadataPath); err != nil {
-		return ObjectInfo{}, fmt.Errorf("write metadata file: %w", err)
+	if err := s.writeObjectMetadata(meta); err != nil {
+		return ObjectInfo{}, err
 	}
 
 	updated := object
-	updated.MetadataPath = metadataPath
+	updated.MetadataPath = ""
 	updated.ContentType = meta.ContentType
 	updated.CacheControl = meta.CacheControl
 	updated.ContentDisposition = meta.ContentDisposition
@@ -1073,9 +931,14 @@ func (s *Store) UpdateObjectMetadata(ctx context.Context, input UpdateObjectMeta
 
 func (s *Store) deleteObjectLocked(bucket, key string) error {
 
-	objectPath, metadataPath, err := s.resolveObjectPaths(bucket, key)
+	objectPath, _, err := s.resolveObjectPaths(bucket, key)
 	if err != nil {
 		return err
+	}
+	_, metadataErr := s.readObjectMetadata(bucket, key)
+	metadataExists := metadataErr == nil
+	if metadataErr != nil && !errors.Is(metadataErr, os.ErrNotExist) {
+		return metadataErr
 	}
 
 	removedObject := false
@@ -1087,21 +950,16 @@ func (s *Store) deleteObjectLocked(bucket, key string) error {
 		removedObject = true
 	}
 
-	removedMetadata := false
-	if err := os.Remove(metadataPath); err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove metadata file: %w", err)
-		}
-	} else {
-		removedMetadata = true
+	if err := s.metadata.deleteObject(bucket, key); err != nil {
+		return err
 	}
+	removedMetadata := metadataExists
 
 	if !removedObject && !removedMetadata {
 		return fmt.Errorf("%w: %s/%s", ErrObjectNotFound, bucket, key)
 	}
 
 	pruneEmptyParents(filepath.Dir(objectPath), s.bucketRoot(bucket))
-	pruneEmptyParents(filepath.Dir(metadataPath), s.bucketMetaDir(bucket))
 
 	s.logger.Info("object deleted", zap.String("bucket", bucket), zap.String("key", key))
 	return nil
@@ -1260,6 +1118,9 @@ func (s *Store) DeleteBucket(ctx context.Context, name string) error {
 	if err := os.RemoveAll(root); err != nil {
 		return fmt.Errorf("remove bucket dir: %w", err)
 	}
+	if err := s.metadata.deleteBucket(name); err != nil {
+		return err
+	}
 
 	s.logger.Info("bucket deleted", zap.String("bucket", name), zap.String("path", root))
 	return nil
@@ -1273,62 +1134,34 @@ func (s *Store) bucketControlDir(name string) string {
 	return joinPath(s.bucketRoot(name), controlDirName)
 }
 
-func (s *Store) bucketMetaDir(name string) string {
-	return joinPath(s.bucketControlDir(name), metaDirName)
-}
-
-func (s *Store) bucketMetadataPath(name string) string {
-	return joinPath(s.bucketControlDir(name), bucketMetaName)
-}
-
-func (s *Store) bucketUsageHistoryPath(name string) string {
-	return joinPath(s.bucketControlDir(name), bucketHistoryName)
-}
-
 func (s *Store) readBucketMetadata(name string) (bucketMetadata, error) {
-	meta := bucketMetadata{}
-	if err := readJSONFile(s.bucketMetadataPath(name), &meta); err != nil {
-		return bucketMetadata{}, err
-	}
-	return meta, nil
+	return s.metadata.getBucket(name)
 }
 
 func (s *Store) writeBucketMetadata(name string, meta bucketMetadata) error {
-	path := s.bucketMetadataPath(name)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	staged, err := writeJSONTemp(filepath.Dir(path), "bucket-*", meta)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = os.Remove(staged)
-	}()
-	return replaceFile(staged, path)
+	return s.metadata.upsertBucket(meta)
+}
+
+func (s *Store) renameBucketMetadata(sourceName, destinationName string, meta bucketMetadata) error {
+	return s.metadata.renameBucket(sourceName, destinationName, meta)
+}
+
+func (s *Store) readObjectMetadata(bucket, key string) (objectMetadata, error) {
+	return s.metadata.getObject(bucket, key)
+}
+
+func (s *Store) writeObjectMetadata(meta objectMetadata) error {
+	return s.metadata.upsertObject(meta)
 }
 
 func (s *Store) readBucketUsageHistory(name string) ([]BucketUsageSample, error) {
-	items := []BucketUsageSample{}
-	if err := readJSONFile(s.bucketUsageHistoryPath(name), &items); err != nil {
-		return nil, err
-	}
-	return items, nil
+	return s.metadata.listBucketUsageHistory(name, 0)
 }
 
 func (s *Store) writeBucketUsageHistory(name string, items []BucketUsageSample) error {
-	path := s.bucketUsageHistoryPath(name)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	staged, err := writeJSONTemp(filepath.Dir(path), "bucket-history-*", items)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = os.Remove(staged)
-	}()
-	return replaceFile(staged, path)
+	_ = name
+	_ = items
+	return nil
 }
 
 func (s *Store) currentBucketUsageSample(ctx context.Context, bucket string) (BucketUsageSample, error) {
@@ -1372,57 +1205,11 @@ func (s *Store) recordBucketUsageSamples(ctx context.Context, buckets ...string)
 }
 
 func (s *Store) recordBucketUsageSample(bucket string, usedBytes int64, objectCount int, quotaBytes int64) error {
-	history, err := s.readBucketUsageHistory(bucket)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-
-	history = append(history, BucketUsageSample{
+	return s.metadata.appendBucketUsageSample(bucket, BucketUsageSample{
 		RecordedAt:  time.Now().UTC(),
 		UsedBytes:   usedBytes,
 		ObjectCount: objectCount,
 		QuotaBytes:  quotaBytes,
-	})
-	if len(history) > bucketUsageHistoryLimit {
-		history = history[len(history)-bucketUsageHistoryLimit:]
-	}
-	return s.writeBucketUsageHistory(bucket, history)
-}
-
-func (s *Store) rewriteBucketObjectMetadata(bucket string) error {
-	root := s.bucketMetaDir(bucket)
-	if _, err := os.Stat(root); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-
-	return filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() || filepath.Ext(path) != ".json" {
-			return nil
-		}
-
-		meta := objectMetadata{}
-		if err := readJSONFile(path, &meta); err != nil {
-			return err
-		}
-		if meta.Bucket == bucket {
-			return nil
-		}
-
-		meta.Bucket = bucket
-		staged, err := writeJSONTemp(filepath.Dir(path), "meta-*", meta)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			_ = os.Remove(staged)
-		}()
-		return replaceFile(staged, path)
 	})
 }
 
@@ -1436,42 +1223,7 @@ func (s *Store) resolveObjectPaths(bucket, key string) (string, string, error) {
 	}
 
 	objectPath := joinPath(append([]string{s.bucketRoot(bucket)}, segments...)...)
-	metaSegments := append([]string{s.bucketMetaDir(bucket)}, segments...)
-	metaSegments[len(metaSegments)-1] += ".json"
-	metadataPath := joinPath(metaSegments...)
-
-	return objectPath, metadataPath, nil
-}
-
-func writeJSONTemp(dir, pattern string, value any) (string, error) {
-	file, err := os.CreateTemp(dir, pattern)
-	if err != nil {
-		return "", err
-	}
-	path := file.Name()
-
-	encoder := json.NewEncoder(file)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(value); err != nil {
-		_ = file.Close()
-		return "", err
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		return "", err
-	}
-	if err := file.Close(); err != nil {
-		return "", err
-	}
-	return path, nil
-}
-
-func readJSONFile(path string, value any) error {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(content, value)
+	return objectPath, "", nil
 }
 
 func fallbackContentType(path string) string {
@@ -1553,7 +1305,7 @@ func (s *Store) ensureDestinationBucketQuota(ctx context.Context, sourceBucket, 
 }
 
 func (s *Store) ensureDestinationAvailable(bucket, key string) error {
-	objectPath, metadataPath, err := s.resolveObjectPaths(bucket, key)
+	objectPath, _, err := s.resolveObjectPaths(bucket, key)
 	if err != nil {
 		return err
 	}
@@ -1562,7 +1314,7 @@ func (s *Store) ensureDestinationAvailable(bucket, key string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if _, err := os.Stat(metadataPath); err == nil {
+	if _, err := s.readObjectMetadata(bucket, key); err == nil {
 		return fmt.Errorf("%w: %s/%s", ErrObjectExists, bucket, key)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -1571,24 +1323,12 @@ func (s *Store) ensureDestinationAvailable(bucket, key string) error {
 }
 
 func (s *Store) moveObjectLocked(object ObjectInfo, destinationBucket, destinationKey string) (ObjectInfo, error) {
-	sourceMetadataPath := object.MetadataPath
-	if strings.TrimSpace(sourceMetadataPath) == "" {
-		_, resolvedMetadataPath, err := s.resolveObjectPaths(object.Bucket, object.Key)
-		if err != nil {
-			return ObjectInfo{}, err
-		}
-		sourceMetadataPath = resolvedMetadataPath
-	}
-
-	destinationObjectPath, destinationMetadataPath, err := s.resolveObjectPaths(destinationBucket, destinationKey)
+	destinationObjectPath, _, err := s.resolveObjectPaths(destinationBucket, destinationKey)
 	if err != nil {
 		return ObjectInfo{}, err
 	}
 	if err := os.MkdirAll(filepath.Dir(destinationObjectPath), 0o755); err != nil {
 		return ObjectInfo{}, fmt.Errorf("create destination object dir: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(destinationMetadataPath), 0o755); err != nil {
-		return ObjectInfo{}, fmt.Errorf("create destination metadata dir: %w", err)
 	}
 
 	updatedAt := time.Now().UTC()
@@ -1603,38 +1343,24 @@ func (s *Store) moveObjectLocked(object ObjectInfo, destinationBucket, destinati
 		UserMetadata:       cloneStringMap(object.UserMetadata),
 		LastModified:       updatedAt,
 	}
-	stagedMetadataPath, err := writeJSONTemp(filepath.Dir(destinationMetadataPath), "meta-*", meta)
-	if err != nil {
-		return ObjectInfo{}, fmt.Errorf("stage destination metadata: %w", err)
-	}
-	defer func() {
-		_ = os.Remove(stagedMetadataPath)
-	}()
-
 	if err := os.Rename(object.Path, destinationObjectPath); err != nil {
 		return ObjectInfo{}, fmt.Errorf("move object file: %w", err)
 	}
-	if err := replaceFile(stagedMetadataPath, destinationMetadataPath); err != nil {
+	if err := s.metadata.moveObject(object.Bucket, object.Key, meta); err != nil {
 		_ = os.Rename(destinationObjectPath, object.Path)
-		return ObjectInfo{}, fmt.Errorf("write moved metadata: %w", err)
+		return ObjectInfo{}, err
 	}
 	if err := os.Chtimes(destinationObjectPath, updatedAt, updatedAt); err == nil {
 		meta.LastModified = updatedAt
 	}
-	if filepath.Clean(sourceMetadataPath) != filepath.Clean(destinationMetadataPath) {
-		if err := os.Remove(sourceMetadataPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return ObjectInfo{}, fmt.Errorf("remove old metadata file: %w", err)
-		}
-	}
 
 	pruneEmptyParents(filepath.Dir(object.Path), s.bucketRoot(object.Bucket))
-	pruneEmptyParents(filepath.Dir(sourceMetadataPath), s.bucketMetaDir(object.Bucket))
 
 	moved := ObjectInfo{
 		Bucket:             destinationBucket,
 		Key:                destinationKey,
 		Path:               destinationObjectPath,
-		MetadataPath:       destinationMetadataPath,
+		MetadataPath:       "",
 		Size:               object.Size,
 		ETag:               object.ETag,
 		ContentType:        object.ContentType,

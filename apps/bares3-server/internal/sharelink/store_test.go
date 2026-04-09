@@ -2,6 +2,8 @@ package sharelink
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -363,7 +365,62 @@ func newTestStore(t *testing.T) (*Store, *time.Time) {
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
 	now := time.Date(2026, time.April, 8, 12, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
 	return store, &now
+}
+
+func TestNewIgnoresLegacyShareLinks(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	legacyDir := filepath.Join(dataDir, ".bares3", "sharelinks")
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	createdAt := time.Date(2026, time.April, 9, 14, 0, 0, 0, time.UTC)
+	content, err := json.Marshal(Link{
+		ID:        "0123456789abcdef0123456789abcdef",
+		Bucket:    "gallery",
+		Key:       "notes/readme.txt",
+		Filename:  "readme.txt",
+		Size:      42,
+		CreatedBy: "admin",
+		CreatedAt: createdAt,
+		ExpiresAt: createdAt.Add(2 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, "legacy.json"), content, 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	store, err := New(dataDir, zap.NewNop())
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+	store.now = func() time.Time { return createdAt }
+
+	links, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(links) != 0 {
+		t.Fatalf("expected legacy share links to be ignored, got %+v", links)
+	}
+	count, err := store.ActiveCount(context.Background())
+	if err != nil {
+		t.Fatalf("ActiveCount failed: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected ignored legacy share links count 0, got %d", count)
+	}
 }

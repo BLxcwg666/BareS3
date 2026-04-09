@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"bares3-server/internal/config"
 	"go.uber.org/zap"
@@ -313,23 +314,15 @@ func TestPutObjectWritesDataAndMetadata(t *testing.T) {
 	if string(content) != "hello world" {
 		t.Fatalf("unexpected object content: %q", string(content))
 	}
-
-	var storedMeta ObjectInfo
-	metaContent, err := os.ReadFile(object.MetadataPath)
+	if object.MetadataPath != "" {
+		t.Fatalf("expected metadata path to be empty, got %q", object.MetadataPath)
+	}
+	_, metadataPath, err := store.resolveObjectPaths("gallery", "2026/launch/mock-02.png")
 	if err != nil {
-		t.Fatalf("Read metadata failed: %v", err)
+		t.Fatalf("resolveObjectPaths failed: %v", err)
 	}
-	if err := json.Unmarshal(metaContent, &storedMeta); err != nil {
-		t.Fatalf("Unmarshal metadata failed: %v", err)
-	}
-	if storedMeta.Key != object.Key || storedMeta.Bucket != object.Bucket {
-		t.Fatalf("unexpected stored metadata: %+v", storedMeta)
-	}
-	if storedMeta.ETag == "" {
-		t.Fatalf("expected non-empty etag")
-	}
-	if storedMeta.CacheControl != "public, max-age=3600" {
-		t.Fatalf("unexpected cache control: %q", storedMeta.CacheControl)
+	if metadataPath != "" {
+		t.Fatalf("expected resolveObjectPaths to return empty metadata path, got %q", metadataPath)
 	}
 
 	stated, err := store.StatObject(context.Background(), "gallery", "2026/launch/mock-02.png")
@@ -339,8 +332,11 @@ func TestPutObjectWritesDataAndMetadata(t *testing.T) {
 	if stated.Size != int64(len("hello world")) {
 		t.Fatalf("unexpected object size: %d", stated.Size)
 	}
-	if stated.ETag != storedMeta.ETag {
-		t.Fatalf("etag mismatch: %s != %s", stated.ETag, storedMeta.ETag)
+	if stated.ETag == "" {
+		t.Fatalf("expected non-empty etag in sqlite metadata")
+	}
+	if stated.CacheControl != "public, max-age=3600" {
+		t.Fatalf("unexpected cache control from sqlite metadata: %q", stated.CacheControl)
 	}
 }
 
@@ -507,8 +503,8 @@ func TestDeleteObjectRemovesDataAndMetadata(t *testing.T) {
 	if _, err := os.Stat(object.Path); !os.IsNotExist(err) {
 		t.Fatalf("expected object file to be removed, got %v", err)
 	}
-	if _, err := os.Stat(object.MetadataPath); !os.IsNotExist(err) {
-		t.Fatalf("expected metadata file to be removed, got %v", err)
+	if _, err := store.StatObject(context.Background(), "gallery", "notes/remove.txt"); !errors.Is(err, ErrObjectNotFound) {
+		t.Fatalf("expected sqlite metadata to be removed, got %v", err)
 	}
 }
 
@@ -709,6 +705,62 @@ func TestDeleteBucketRequiresEmptyBucket(t *testing.T) {
 	}
 }
 
+func TestMultipartLegacySessionIgnoresLegacyFiles(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+
+	for _, dir := range []string{cfg.Paths.DataDir, cfg.Paths.LogDir, cfg.Storage.TmpDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%s) failed: %v", dir, err)
+		}
+	}
+
+	createdAt := time.Date(2026, time.April, 9, 12, 0, 0, 0, time.UTC)
+	bucketControlDir := filepath.Join(cfg.Paths.DataDir, "gallery", ".bares3")
+	partsDir := filepath.Join(bucketControlDir, multipartDirName, "upload-123", "parts")
+	if err := os.MkdirAll(partsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(parts) failed: %v", err)
+	}
+	writeJSONFileForTest(t, filepath.Join(bucketControlDir, bucketMetaName), bucketMetadata{
+		Name:           "gallery",
+		CreatedAt:      createdAt,
+		MetadataLayout: "hidden-dir",
+		AccessMode:     BucketAccessPrivate,
+		AccessPolicy:   PresetBucketAccessPolicy(BucketAccessPrivate),
+	})
+	writeJSONFileForTest(t, filepath.Join(bucketControlDir, multipartDirName, "upload-123", "upload.json"), multipartUploadMetadata{
+		UploadID:           "upload-123",
+		Bucket:             "gallery",
+		Key:                "archive/big.txt",
+		ContentType:        "text/plain",
+		ContentDisposition: "attachment",
+		CreatedAt:          createdAt,
+	})
+	writeJSONFileForTest(t, filepath.Join(partsDir, "00001.json"), multipartPartMetadata{
+		PartNumber:   1,
+		ETag:         "part-one",
+		Size:         6,
+		LastModified: createdAt.Add(time.Minute),
+	})
+
+	store := New(cfg, zap.NewNop())
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if _, err := store.readMultipartUpload("gallery", "archive/big.txt", "upload-123"); !errors.Is(err, ErrUploadNotFound) {
+		t.Fatalf("expected legacy multipart upload metadata to be ignored, got %v", err)
+	}
+	if _, err := store.ListParts(context.Background(), "gallery", "archive/big.txt", "upload-123"); !errors.Is(err, ErrUploadNotFound) {
+		t.Fatalf("expected legacy multipart parts to be ignored, got %v", err)
+	}
+}
+
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 
@@ -724,5 +776,23 @@ func newTestStore(t *testing.T) *Store {
 		}
 	}
 
-	return New(cfg, zap.NewNop())
+	store := New(cfg, zap.NewNop())
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+	return store
+}
+
+func writeJSONFileForTest(t *testing.T, path string, value any) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s) failed: %v", filepath.Dir(path), err)
+	}
+	content, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("Marshal(%s) failed: %v", path, err)
+	}
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatalf("WriteFile(%s) failed: %v", path, err)
+	}
 }

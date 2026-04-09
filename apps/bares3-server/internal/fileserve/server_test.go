@@ -26,7 +26,7 @@ func TestServeShareLinks(t *testing.T) {
 	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
 	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
 
-	store := storage.New(cfg, zap.NewNop())
+	store := newStorageStoreForTest(t, cfg)
 	ctx := context.Background()
 	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
@@ -40,10 +40,7 @@ func TestServeShareLinks(t *testing.T) {
 		t.Fatalf("PutObject failed: %v", err)
 	}
 
-	links, err := sharelink.New(cfg.Paths.DataDir, zap.NewNop())
-	if err != nil {
-		t.Fatalf("sharelink.New failed: %v", err)
-	}
+	links := newShareLinksForTest(t, cfg.Paths.DataDir)
 	link, err := links.Create(ctx, sharelink.CreateInput{
 		Bucket:  "gallery",
 		Key:     "notes/readme.txt",
@@ -53,7 +50,7 @@ func TestServeShareLinks(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	handler := NewHandler(cfg, store, zap.NewNop())
+	handler := newHandler(cfg, store, links, zap.NewNop())
 
 	openRequest := httptest.NewRequest(http.MethodGet, "/s/"+link.ID, nil)
 	openRecorder := httptest.NewRecorder()
@@ -97,7 +94,7 @@ func TestServePublicBucketRouteHonorsAccessMode(t *testing.T) {
 	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
 	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
 
-	store := storage.New(cfg, zap.NewNop())
+	store := newStorageStoreForTest(t, cfg)
 	ctx := context.Background()
 	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
@@ -111,7 +108,7 @@ func TestServePublicBucketRouteHonorsAccessMode(t *testing.T) {
 		t.Fatalf("PutObject failed: %v", err)
 	}
 
-	handler := NewHandler(cfg, store, zap.NewNop())
+	handler := newHandler(cfg, store, newShareLinksForTest(t, cfg.Paths.DataDir), zap.NewNop())
 
 	privateRequest := httptest.NewRequest(http.MethodGet, "/pub/gallery/notes/readme.txt", nil)
 	privateRecorder := httptest.NewRecorder()
@@ -149,7 +146,7 @@ func TestServeCustomBucketAccessRules(t *testing.T) {
 	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
 	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
 
-	store := storage.New(cfg, zap.NewNop())
+	store := newStorageStoreForTest(t, cfg)
 	ctx := context.Background()
 	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
@@ -181,10 +178,7 @@ func TestServeCustomBucketAccessRules(t *testing.T) {
 		t.Fatalf("UpdateBucketAccess failed: %v", err)
 	}
 
-	links, err := sharelink.New(cfg.Paths.DataDir, zap.NewNop())
-	if err != nil {
-		t.Fatalf("sharelink.New failed: %v", err)
-	}
+	links := newShareLinksForTest(t, cfg.Paths.DataDir)
 	authLink, err := links.Create(ctx, sharelink.CreateInput{Bucket: "gallery", Key: "notes/readme.txt", Expires: time.Hour})
 	if err != nil {
 		t.Fatalf("Create auth link failed: %v", err)
@@ -194,7 +188,7 @@ func TestServeCustomBucketAccessRules(t *testing.T) {
 		t.Fatalf("Create deny link failed: %v", err)
 	}
 
-	handler := NewHandler(cfg, store, zap.NewNop())
+	handler := newHandler(cfg, store, links, zap.NewNop())
 
 	publicRequest := httptest.NewRequest(http.MethodGet, "/pub/gallery/images/hero.txt", nil)
 	publicRecorder := httptest.NewRecorder()
@@ -230,4 +224,25 @@ func TestServeCustomBucketAccessRules(t *testing.T) {
 	if denyLinkRecorder.Code != http.StatusForbidden {
 		t.Fatalf("unexpected denied share link status: %d body=%s", denyLinkRecorder.Code, denyLinkRecorder.Body.String())
 	}
+}
+
+func newStorageStoreForTest(t *testing.T, cfg config.Config) *storage.Store {
+	t.Helper()
+	store := storage.New(cfg, zap.NewNop())
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+	return store
+}
+
+func newShareLinksForTest(t *testing.T, dataDir string) *sharelink.Store {
+	t.Helper()
+	links, err := sharelink.New(dataDir, zap.NewNop())
+	if err != nil {
+		t.Fatalf("sharelink.New failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = links.Close()
+	})
+	return links
 }
