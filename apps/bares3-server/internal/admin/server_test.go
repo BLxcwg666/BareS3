@@ -13,6 +13,7 @@ import (
 
 	"bares3-server/internal/config"
 	"bares3-server/internal/consoleauth"
+	"bares3-server/internal/s3creds"
 	"bares3-server/internal/sharelink"
 	"bares3-server/internal/storage"
 	"go.uber.org/zap"
@@ -57,7 +58,7 @@ func TestLoginAndProtectedRuntime(t *testing.T) {
 		t.Fatalf("PutObject mock-03 failed: %v", err)
 	}
 
-	handler := NewHandler(cfg, store, zap.NewNop())
+	handler := NewHandler(cfg, store, nil, zap.NewNop())
 
 	unauthorized := httptest.NewRequest(http.MethodGet, "/api/v1/runtime", nil)
 	unauthorizedRecorder := httptest.NewRecorder()
@@ -156,7 +157,7 @@ func TestLoginSetsSecureCookieForHTTPSRequests(t *testing.T) {
 	cfg.Auth.Console.PasswordHash = hash
 	cfg.Auth.Console.SessionSecret = "test-session-secret"
 
-	handler := NewHandler(cfg, storage.New(cfg, zap.NewNop()), zap.NewNop())
+	handler := NewHandler(cfg, storage.New(cfg, zap.NewNop()), nil, zap.NewNop())
 
 	loginBody, _ := json.Marshal(map[string]string{"username": "admin", "password": "secret-password"})
 	loginRequest := httptest.NewRequest(http.MethodPost, "https://bares3.test/api/v1/auth/login", bytes.NewReader(loginBody))
@@ -215,7 +216,7 @@ func TestObjectListingSupportsPaginationAndSearch(t *testing.T) {
 		}
 	}
 
-	handler := NewHandler(cfg, store, zap.NewNop())
+	handler := NewHandler(cfg, store, nil, zap.NewNop())
 	cookie := loginCookie(t, handler)
 
 	listRequest := httptest.NewRequest(http.MethodGet, "/api/v1/buckets/gallery/objects?query=text/plain&limit=1", nil)
@@ -295,7 +296,7 @@ func TestGlobalSearchEndpointReturnsBucketAndObjectHits(t *testing.T) {
 		t.Fatalf("PutObject failed: %v", err)
 	}
 
-	handler := NewHandler(cfg, store, zap.NewNop())
+	handler := NewHandler(cfg, store, nil, zap.NewNop())
 	cookie := loginCookie(t, handler)
 
 	searchRequest := httptest.NewRequest(http.MethodGet, "/api/v1/search?query=read&limit=5", nil)
@@ -353,7 +354,7 @@ func TestUpdateStorageSettingsPersistsAndAppliesImmediately(t *testing.T) {
 	}
 
 	store := storage.New(cfg, zap.NewNop())
-	handler := NewHandler(cfg, store, zap.NewNop())
+	handler := NewHandler(cfg, store, nil, zap.NewNop())
 
 	loginBody, _ := json.Marshal(map[string]string{"username": "admin", "password": "secret-password"})
 	loginRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(loginBody))
@@ -421,7 +422,7 @@ func TestCreateListAndRevokeShareLinks(t *testing.T) {
 		t.Fatalf("PutObject failed: %v", err)
 	}
 
-	handler := NewHandler(cfg, store, zap.NewNop())
+	handler := NewHandler(cfg, store, nil, zap.NewNop())
 	cookie := loginCookie(t, handler)
 
 	createBody, _ := json.Marshal(map[string]any{
@@ -577,7 +578,7 @@ func TestMoveBrowserEntries(t *testing.T) {
 		}
 	}
 
-	handler := NewHandler(cfg, store, zap.NewNop())
+	handler := NewHandler(cfg, store, nil, zap.NewNop())
 	cookie := loginCookie(t, handler)
 
 	shareOneBody, _ := json.Marshal(map[string]any{
@@ -716,7 +717,7 @@ func TestDeleteObjectAlsoRemovesShareLinks(t *testing.T) {
 		t.Fatalf("PutObject failed: %v", err)
 	}
 
-	handler := NewHandler(cfg, store, zap.NewNop())
+	handler := NewHandler(cfg, store, nil, zap.NewNop())
 	cookie := loginCookie(t, handler)
 
 	shareBody, _ := json.Marshal(map[string]any{
@@ -792,7 +793,7 @@ func TestUpdateObjectMetadata(t *testing.T) {
 		t.Fatalf("PutObject failed: %v", err)
 	}
 
-	handler := NewHandler(cfg, store, zap.NewNop())
+	handler := NewHandler(cfg, store, nil, zap.NewNop())
 	cookie := loginCookie(t, handler)
 
 	body, _ := json.Marshal(map[string]any{
@@ -857,7 +858,7 @@ func TestDeletePrefixAlsoRemovesShareLinks(t *testing.T) {
 		}
 	}
 
-	handler := NewHandler(cfg, store, zap.NewNop())
+	handler := NewHandler(cfg, store, nil, zap.NewNop())
 	cookie := loginCookie(t, handler)
 	for _, key := range []string{"folder/a.txt", "folder/deep/b.txt"} {
 		shareBody, _ := json.Marshal(map[string]any{"bucket": "gallery", "key": key, "expires_seconds": 3600})
@@ -935,7 +936,7 @@ func TestDeleteBucketAlsoRemovesShareLinks(t *testing.T) {
 		t.Fatalf("Create stale share link failed: %v", err)
 	}
 
-	handler := NewHandler(cfg, store, zap.NewNop())
+	handler := NewHandler(cfg, store, nil, zap.NewNop())
 	cookie := loginCookie(t, handler)
 
 	deleteRequest := httptest.NewRequest(http.MethodDelete, "/api/v1/buckets/gallery", nil)
@@ -1003,7 +1004,7 @@ func TestUpdateBucketRenamesMetadataAndHistory(t *testing.T) {
 		t.Fatalf("Create share link failed: %v", err)
 	}
 
-	handler := NewHandler(cfg, store, zap.NewNop())
+	handler := NewHandler(cfg, store, nil, zap.NewNop())
 	cookie := loginCookie(t, handler)
 
 	updateBody, _ := json.Marshal(map[string]any{
@@ -1106,7 +1107,7 @@ func TestBucketAccessPolicyCRUD(t *testing.T) {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
 
-	handler := NewHandler(cfg, store, zap.NewNop())
+	handler := NewHandler(cfg, store, nil, zap.NewNop())
 	cookie := loginCookie(t, handler)
 
 	updateBody, _ := json.Marshal(map[string]any{
@@ -1155,6 +1156,102 @@ func TestBucketAccessPolicyCRUD(t *testing.T) {
 	}
 	if len(configPayload.Policy.Rules) != 2 || configPayload.Policy.Rules[0].Prefix != "images/" || configPayload.Policy.Rules[1].Action != storage.BucketAccessActionDeny {
 		t.Fatalf("unexpected access rules payload: %+v", configPayload.Policy.Rules)
+	}
+}
+
+func TestS3CredentialCRUD(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	hash, err := consoleauth.HashPassword("secret-password")
+	if err != nil {
+		t.Fatalf("HashPassword failed: %v", err)
+	}
+	cfg.Auth.Console.PasswordHash = hash
+	cfg.Auth.Console.SessionSecret = "test-session-secret"
+	cfg.Auth.S3.AccessKeyID = ""
+	cfg.Auth.S3.SecretAccessKey = ""
+
+	store := storage.New(cfg, zap.NewNop())
+	handler := NewHandler(cfg, store, nil, zap.NewNop())
+	cookie := loginCookie(t, handler)
+
+	createBody, _ := json.Marshal(map[string]any{"label": "CI automation", "permission": "read_only", "buckets": []string{"gallery", "archive"}})
+	createRequest := httptest.NewRequest(http.MethodPost, "/api/v1/settings/s3/credentials", bytes.NewReader(createBody))
+	createRequest.Header.Set("Content-Type", "application/json")
+	createRequest.AddCookie(cookie)
+	createRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(createRecorder, createRequest)
+	if createRecorder.Code != http.StatusCreated {
+		t.Fatalf("unexpected create credential status: %d body=%s", createRecorder.Code, createRecorder.Body.String())
+	}
+	created := struct {
+		AccessKeyID     string   `json:"access_key_id"`
+		SecretAccessKey string   `json:"secret_access_key"`
+		Label           string   `json:"label"`
+		Permission      string   `json:"permission"`
+		Buckets         []string `json:"buckets"`
+		Status          string   `json:"status"`
+	}{}
+	if err := json.Unmarshal(createRecorder.Body.Bytes(), &created); err != nil {
+		t.Fatalf("unmarshal created credential failed: %v", err)
+	}
+	if created.AccessKeyID == "" || created.SecretAccessKey == "" || created.Label != "CI automation" || created.Permission != s3creds.PermissionReadOnly || len(created.Buckets) != 2 || created.Status != "active" {
+		t.Fatalf("unexpected created credential payload: %+v", created)
+	}
+
+	updateBody, _ := json.Marshal(map[string]any{"label": "Updated automation", "permission": "read_write", "buckets": []string{"gallery"}})
+	updateRequest := httptest.NewRequest(http.MethodPut, "/api/v1/settings/s3/credentials/"+created.AccessKeyID, bytes.NewReader(updateBody))
+	updateRequest.Header.Set("Content-Type", "application/json")
+	updateRequest.AddCookie(cookie)
+	updateRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(updateRecorder, updateRequest)
+	if updateRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected update credential status: %d body=%s", updateRecorder.Code, updateRecorder.Body.String())
+	}
+
+	listRequest := httptest.NewRequest(http.MethodGet, "/api/v1/settings/s3/credentials", nil)
+	listRequest.AddCookie(cookie)
+	listRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(listRecorder, listRequest)
+	if listRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected list credential status: %d body=%s", listRecorder.Code, listRecorder.Body.String())
+	}
+	listPayload := struct {
+		Items []struct {
+			AccessKeyID string `json:"access_key_id"`
+			Permission  string `json:"permission"`
+			LastUsedAt  string `json:"last_used_at"`
+			Status      string `json:"status"`
+		} `json:"items"`
+	}{}
+	if err := json.Unmarshal(listRecorder.Body.Bytes(), &listPayload); err != nil {
+		t.Fatalf("unmarshal listed credentials failed: %v", err)
+	}
+	if len(listPayload.Items) != 1 || listPayload.Items[0].AccessKeyID != created.AccessKeyID || listPayload.Items[0].Permission != s3creds.PermissionReadWrite || listPayload.Items[0].Status != "active" {
+		t.Fatalf("unexpected listed credential payload: %+v", listPayload.Items)
+	}
+
+	revokeRequest := httptest.NewRequest(http.MethodDelete, "/api/v1/settings/s3/credentials/"+created.AccessKeyID, nil)
+	revokeRequest.AddCookie(cookie)
+	revokeRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(revokeRecorder, revokeRequest)
+	if revokeRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected revoke credential status: %d body=%s", revokeRecorder.Code, revokeRecorder.Body.String())
+	}
+
+	removeRequest := httptest.NewRequest(http.MethodDelete, "/api/v1/settings/s3/credentials/"+created.AccessKeyID+"/remove", nil)
+	removeRequest.AddCookie(cookie)
+	removeRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(removeRecorder, removeRequest)
+	if removeRecorder.Code != http.StatusNoContent {
+		t.Fatalf("unexpected remove credential status: %d body=%s", removeRecorder.Code, removeRecorder.Body.String())
 	}
 }
 

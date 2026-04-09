@@ -217,13 +217,12 @@ func (c Config) Validate() error {
 	if c.Auth.Console.SessionTTLMinutes <= 0 {
 		return errors.New("auth.console.session_ttl_minutes must be greater than zero")
 	}
-	if strings.TrimSpace(c.Auth.S3.AccessKeyID) == "" {
-		return errors.New("auth.s3.access_key_id must not be empty")
+	accessKeyID := strings.TrimSpace(c.Auth.S3.AccessKeyID)
+	secretAccessKey := strings.TrimSpace(c.Auth.S3.SecretAccessKey)
+	if (accessKeyID == "") != (secretAccessKey == "") {
+		return errors.New("auth.s3.access_key_id and auth.s3.secret_access_key must both be set or both be empty")
 	}
-	if strings.TrimSpace(c.Auth.S3.SecretAccessKey) == "" {
-		return errors.New("auth.s3.secret_access_key must not be empty")
-	}
-	if !isDevelopmentEnv(c.App.Env) && usesDefaultDevelopmentS3Credentials(c.Auth.S3) {
+	if accessKeyID != "" && !isDevelopmentEnv(c.App.Env) && usesDefaultDevelopmentS3Credentials(c.Auth.S3) {
 		return errors.New("auth.s3 credentials must be changed from the bundled development defaults outside development")
 	}
 	layout := strings.ToLower(strings.TrimSpace(c.Storage.MetadataLayout))

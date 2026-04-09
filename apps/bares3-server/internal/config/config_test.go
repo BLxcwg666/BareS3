@@ -32,3 +32,21 @@ func TestValidateRejectsBundledS3CredentialsOutsideDevelopment(t *testing.T) {
 		t.Fatalf("expected production config to reject bundled S3 credentials")
 	}
 }
+
+func TestValidateAllowsEmptyS3Credentials(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.App.Env = "production"
+	cfg.Auth.Console.PasswordHash = "hash"
+	cfg.Auth.Console.SessionSecret = "secret"
+	cfg.Auth.S3.AccessKeyID = ""
+	cfg.Auth.S3.SecretAccessKey = ""
+	cfg.Storage.TmpDir = "./tmp"
+	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected empty S3 credentials to validate, got %v", err)
+	}
+}

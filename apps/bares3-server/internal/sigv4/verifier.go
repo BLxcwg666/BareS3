@@ -25,6 +25,7 @@ const (
 type Verifier struct {
 	accessKeyID     string
 	secretAccessKey string
+	lookupSecret    func(string) (string, bool)
 	region          string
 	service         string
 	now             func() time.Time
@@ -80,6 +81,27 @@ func NewVerifier(accessKeyID, secretAccessKey, region, service string) *Verifier
 	return &Verifier{
 		accessKeyID:     accessKeyID,
 		secretAccessKey: secretAccessKey,
+		lookupSecret: func(value string) (string, bool) {
+			if strings.TrimSpace(value) != strings.TrimSpace(accessKeyID) || strings.TrimSpace(secretAccessKey) == "" {
+				return "", false
+			}
+			return secretAccessKey, true
+		},
+		region:  region,
+		service: service,
+		now:     time.Now,
+		maxSkew: defaultMaxSkew,
+	}
+}
+
+func NewVerifierWithLookup(lookupSecret func(string) (string, bool), defaultAccessKeyID, defaultSecretAccessKey, region, service string) *Verifier {
+	if lookupSecret == nil {
+		lookupSecret = func(string) (string, bool) { return "", false }
+	}
+	return &Verifier{
+		accessKeyID:     defaultAccessKeyID,
+		secretAccessKey: defaultSecretAccessKey,
+		lookupSecret:    lookupSecret,
 		region:          region,
 		service:         service,
 		now:             time.Now,
@@ -110,7 +132,8 @@ func (v *Verifier) authenticateHeader(r *http.Request) (*Identity, error) {
 	if err := v.validateCredentialScope(scope); err != nil {
 		return nil, err
 	}
-	if accessKeyID != v.accessKeyID {
+	secretAccessKey, ok := v.lookupSecret(accessKeyID)
+	if !ok {
 		return nil, &Error{Status: http.StatusForbidden, Code: "InvalidAccessKeyId", Message: "unknown access key id"}
 	}
 
@@ -137,7 +160,7 @@ func (v *Verifier) authenticateHeader(r *http.Request) (*Identity, error) {
 		return nil, err
 	}
 	stringToSign := buildStringToSign(timestamp, scope, canonicalRequest)
-	expectedSignature := hex.EncodeToString(signString(v.secretAccessKey, scope, stringToSign))
+	expectedSignature := hex.EncodeToString(signString(secretAccessKey, scope, stringToSign))
 	if !secureHexEqual(expectedSignature, parts.Signature) {
 		return nil, &Error{Status: http.StatusForbidden, Code: "SignatureDoesNotMatch", Message: "request signature does not match"}
 	}
@@ -158,7 +181,8 @@ func (v *Verifier) authenticateQuery(r *http.Request) (*Identity, error) {
 	if err := v.validateCredentialScope(scope); err != nil {
 		return nil, err
 	}
-	if accessKeyID != v.accessKeyID {
+	secretAccessKey, ok := v.lookupSecret(accessKeyID)
+	if !ok {
 		return nil, &Error{Status: http.StatusForbidden, Code: "InvalidAccessKeyId", Message: "unknown access key id"}
 	}
 
@@ -195,7 +219,7 @@ func (v *Verifier) authenticateQuery(r *http.Request) (*Identity, error) {
 		return nil, err
 	}
 	stringToSign := buildStringToSign(timestamp, scope, canonicalRequest)
-	expectedSignature := hex.EncodeToString(signString(v.secretAccessKey, scope, stringToSign))
+	expectedSignature := hex.EncodeToString(signString(secretAccessKey, scope, stringToSign))
 	if !secureHexEqual(expectedSignature, signature) {
 		return nil, &Error{Status: http.StatusForbidden, Code: "SignatureDoesNotMatch", Message: "request signature does not match"}
 	}

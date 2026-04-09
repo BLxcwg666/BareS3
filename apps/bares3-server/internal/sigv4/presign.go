@@ -48,6 +48,9 @@ func (v *Verifier) Presign(input PresignInput) (PresignResult, error) {
 	if now.IsZero() {
 		now = v.now().UTC()
 	}
+	if strings.TrimSpace(v.accessKeyID) == "" || strings.TrimSpace(v.secretAccessKey) == "" {
+		return PresignResult{}, fmt.Errorf("presign credentials are not configured")
+	}
 
 	cloned := *input.URL
 	query := cloneQuery(cloned.Query())

@@ -19,6 +19,7 @@ import (
 	"bares3-server/internal/config"
 	"bares3-server/internal/consoleauth"
 	"bares3-server/internal/httpx"
+	"bares3-server/internal/s3creds"
 	"bares3-server/internal/sharelink"
 	"bares3-server/internal/sigv4"
 	"bares3-server/internal/storage"
@@ -28,7 +29,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) http.Handler {
+func NewHandler(cfg config.Config, store *storage.Store, credentials *s3creds.Store, logger *zap.Logger) http.Handler {
 	manager, err := consoleauth.NewManager(consoleauth.Options{
 		Username:      cfg.Auth.Console.Username,
 		PasswordHash:  cfg.Auth.Console.PasswordHash,
@@ -45,6 +46,15 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 	shareLinks, err := sharelink.New(cfg.Paths.DataDir, logger.Named("sharelink"))
 	if err != nil {
 		panic(fmt.Sprintf("initialize share link store: %v", err))
+	}
+	if credentials == nil {
+		credentials, err = s3creds.New(cfg.Paths.DataDir, s3creds.BootstrapCredential{
+			AccessKeyID:     cfg.Auth.S3.AccessKeyID,
+			SecretAccessKey: cfg.Auth.S3.SecretAccessKey,
+		}, logger.Named("s3creds"))
+		if err != nil {
+			panic(fmt.Sprintf("initialize s3 credential store: %v", err))
+		}
 	}
 
 	router := chi.NewRouter()
@@ -309,6 +319,147 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 						"active_link_count": activeLinkCount,
 					},
 				})
+			})
+
+			protected.Get("/settings/s3/credentials", func(w http.ResponseWriter, r *http.Request) {
+				items, err := credentials.List(r.Context())
+				if err != nil {
+					writeS3CredentialError(w, err)
+					return
+				}
+				httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
+			})
+
+			protected.Post("/settings/s3/credentials", func(w http.ResponseWriter, r *http.Request) {
+				payload := struct {
+					Label      string   `json:"label"`
+					Permission string   `json:"permission"`
+					Buckets    []string `json:"buckets"`
+				}{}
+
+				decoder := json.NewDecoder(r.Body)
+				decoder.DisallowUnknownFields()
+				if err := decoder.Decode(&payload); err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+						"status":  "error",
+						"message": "invalid request body",
+					})
+					return
+				}
+
+				created, err := credentials.Create(r.Context(), s3creds.CreateInput{
+					Label:      payload.Label,
+					Permission: payload.Permission,
+					Buckets:    payload.Buckets,
+				})
+				if err != nil {
+					writeS3CredentialError(w, err)
+					return
+				}
+
+				recordAudit(logger, auditRecorder, auditlog.Entry{
+					Actor:  actorFromRequest(r),
+					Action: "s3credential.create",
+					Title:  fmt.Sprintf("Created S3 access key %s", created.AccessKeyID),
+					Detail: fmt.Sprintf("Label %s · Permission %s · Buckets %s", nonEmptyLabel(created.Label, "(none)"), s3CredentialPermissionLabel(created.Permission), s3CredentialBucketLabel(created.Buckets)),
+					Target: created.AccessKeyID,
+					Remote: requestRemote(r),
+					Status: "success",
+				})
+
+				httpx.WriteJSON(w, http.StatusCreated, map[string]any{
+					"access_key_id":     created.AccessKeyID,
+					"secret_access_key": created.SecretAccessKey,
+					"label":             created.Label,
+					"source":            created.Source,
+					"permission":        created.Permission,
+					"buckets":           created.Buckets,
+					"created_at":        created.CreatedAt,
+					"last_used_at":      created.LastUsedAt,
+					"status":            created.Status(),
+				})
+			})
+
+			protected.Put("/settings/s3/credentials/{accessKeyID}", func(w http.ResponseWriter, r *http.Request) {
+				payload := struct {
+					Label      string   `json:"label"`
+					Permission string   `json:"permission"`
+					Buckets    []string `json:"buckets"`
+				}{}
+
+				decoder := json.NewDecoder(r.Body)
+				decoder.DisallowUnknownFields()
+				if err := decoder.Decode(&payload); err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+						"status":  "error",
+						"message": "invalid request body",
+					})
+					return
+				}
+
+				accessKeyID := chi.URLParam(r, "accessKeyID")
+				updated, err := credentials.Update(r.Context(), s3creds.UpdateInput{
+					AccessKeyID: accessKeyID,
+					Label:       payload.Label,
+					Permission:  payload.Permission,
+					Buckets:     payload.Buckets,
+				})
+				if err != nil {
+					writeS3CredentialError(w, err)
+					return
+				}
+
+				recordAudit(logger, auditRecorder, auditlog.Entry{
+					Actor:  actorFromRequest(r),
+					Action: "s3credential.update",
+					Title:  fmt.Sprintf("Updated S3 access key %s", updated.AccessKeyID),
+					Detail: fmt.Sprintf("Label %s · Permission %s · Buckets %s", nonEmptyLabel(updated.Label, "(none)"), s3CredentialPermissionLabel(updated.Permission), s3CredentialBucketLabel(updated.Buckets)),
+					Target: updated.AccessKeyID,
+					Remote: requestRemote(r),
+					Status: "success",
+				})
+
+				httpx.WriteJSON(w, http.StatusOK, updated)
+			})
+
+			protected.Delete("/settings/s3/credentials/{accessKeyID}", func(w http.ResponseWriter, r *http.Request) {
+				accessKeyID := chi.URLParam(r, "accessKeyID")
+				revoked, err := credentials.Revoke(r.Context(), accessKeyID)
+				if err != nil {
+					writeS3CredentialError(w, err)
+					return
+				}
+
+				recordAudit(logger, auditRecorder, auditlog.Entry{
+					Actor:  actorFromRequest(r),
+					Action: "s3credential.revoke",
+					Title:  fmt.Sprintf("Revoked S3 access key %s", revoked.AccessKeyID),
+					Detail: fmt.Sprintf("Label %s", nonEmptyLabel(revoked.Label, "(none)")),
+					Target: revoked.AccessKeyID,
+					Remote: requestRemote(r),
+					Status: "success",
+				})
+
+				httpx.WriteJSON(w, http.StatusOK, revoked)
+			})
+
+			protected.Delete("/settings/s3/credentials/{accessKeyID}/remove", func(w http.ResponseWriter, r *http.Request) {
+				accessKeyID := chi.URLParam(r, "accessKeyID")
+				if err := credentials.Delete(r.Context(), accessKeyID); err != nil {
+					writeS3CredentialError(w, err)
+					return
+				}
+
+				recordAudit(logger, auditRecorder, auditlog.Entry{
+					Actor:  actorFromRequest(r),
+					Action: "s3credential.remove",
+					Title:  fmt.Sprintf("Deleted revoked S3 access key %s", accessKeyID),
+					Target: accessKeyID,
+					Remote: requestRemote(r),
+					Status: "success",
+				})
+
+				w.WriteHeader(http.StatusNoContent)
 			})
 
 			protected.Get("/buckets", func(w http.ResponseWriter, r *http.Request) {
@@ -1057,7 +1208,13 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 				}
 				baseURL.Path = requestPath
 
-				verifier := sigv4.NewVerifier(cfg.Auth.S3.AccessKeyID, cfg.Auth.S3.SecretAccessKey, cfg.Storage.Region, "s3")
+				writeRequested := strings.EqualFold(strings.TrimSpace(payload.Method), http.MethodPut) || strings.EqualFold(strings.TrimSpace(payload.Method), http.MethodDelete) || strings.EqualFold(strings.TrimSpace(payload.Method), http.MethodPost)
+				credential, err := credentials.FindForOperation(r.Context(), strings.TrimSpace(payload.Bucket), writeRequested)
+				if err != nil {
+					writeS3CredentialError(w, err)
+					return
+				}
+				verifier := sigv4.NewVerifier(credential.AccessKeyID, credential.SecretAccessKey, cfg.Storage.Region, "s3")
 				result, err := verifier.Presign(sigv4.PresignInput{
 					Method:  payload.Method,
 					URL:     baseURL,
@@ -1075,7 +1232,7 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 					Actor:  actorFromRequest(r),
 					Action: "presign.s3",
 					Title:  fmt.Sprintf("Generated presigned %s for %s/%s", strings.ToUpper(strings.TrimSpace(payload.Method)), strings.TrimSpace(payload.Bucket), strings.TrimSpace(payload.Key)),
-					Detail: fmt.Sprintf("Expires in %ds", payload.ExpiresSeconds),
+					Detail: fmt.Sprintf("Expires in %ds · Access key %s", payload.ExpiresSeconds, credential.AccessKeyID),
 					Target: strings.TrimSpace(payload.Bucket) + "/" + strings.TrimSpace(payload.Key),
 					Remote: requestRemote(r),
 					Status: "success",
@@ -1130,6 +1287,23 @@ func writeShareLinkError(w http.ResponseWriter, err error) {
 		status = http.StatusBadRequest
 	case errors.Is(err, sharelink.ErrNotFound):
 		status = http.StatusNotFound
+	}
+
+	httpx.WriteJSON(w, status, map[string]any{
+		"status":  "error",
+		"message": err.Error(),
+	})
+}
+
+func writeS3CredentialError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	switch {
+	case errors.Is(err, s3creds.ErrInvalidLabel), errors.Is(err, s3creds.ErrInvalidPermission):
+		status = http.StatusBadRequest
+	case errors.Is(err, s3creds.ErrCredentialNotFound):
+		status = http.StatusNotFound
+	case errors.Is(err, s3creds.ErrNoActiveCredential), errors.Is(err, s3creds.ErrCredentialActive):
+		status = http.StatusConflict
 	}
 
 	httpx.WriteJSON(w, status, map[string]any{
@@ -1249,6 +1423,27 @@ func fallbackActor(value string) string {
 	return strings.TrimSpace(value)
 }
 
+func nonEmptyLabel(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return strings.TrimSpace(value)
+}
+
+func s3CredentialPermissionLabel(value string) string {
+	if strings.TrimSpace(value) == s3creds.PermissionReadOnly {
+		return "read_only"
+	}
+	return "read_write"
+}
+
+func s3CredentialBucketLabel(values []string) string {
+	if len(values) == 0 {
+		return "all"
+	}
+	return strings.Join(values, ",")
+}
+
 func quotaLabel(bytes int64) string {
 	if bytes <= 0 {
 		return "unlimited"
@@ -1265,7 +1460,6 @@ func bucketAccessLabel(value string) string {
 	default:
 		return "private"
 	}
-
 }
 
 func bucketAccessRuleLabel(value string) string {

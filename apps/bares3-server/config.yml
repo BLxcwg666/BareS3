@@ -16,9 +16,6 @@ auth:
     password_hash: ""
     session_secret: ""
     session_ttl_minutes: 10080
-  s3:
-    access_key_id: bares3-dev
-    secret_access_key: bares3-dev-secret
 
 storage:
   public_base_url: http://127.0.0.1:9001

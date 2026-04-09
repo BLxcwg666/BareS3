@@ -1,6 +1,7 @@
 package s3api
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/xml"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"bares3-server/internal/buildinfo"
 	"bares3-server/internal/config"
 	"bares3-server/internal/httpx"
+	"bares3-server/internal/s3creds"
 	"bares3-server/internal/sharelink"
 	"bares3-server/internal/sigv4"
 	"bares3-server/internal/storage"
@@ -135,8 +137,24 @@ type listResponseItem struct {
 	Object storage.ObjectInfo
 }
 
-func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) http.Handler {
-	verifier := sigv4.NewVerifier(cfg.Auth.S3.AccessKeyID, cfg.Auth.S3.SecretAccessKey, cfg.Storage.Region, "s3")
+func NewHandler(cfg config.Config, store *storage.Store, credentials *s3creds.Store, logger *zap.Logger) http.Handler {
+	if credentials == nil {
+		var err error
+		credentials, err = s3creds.New(cfg.Paths.DataDir, s3creds.BootstrapCredential{
+			AccessKeyID:     cfg.Auth.S3.AccessKeyID,
+			SecretAccessKey: cfg.Auth.S3.SecretAccessKey,
+		}, logger.Named("s3creds"))
+		if err != nil {
+			panic(fmt.Sprintf("initialize s3 credential store: %v", err))
+		}
+	}
+	verifier := sigv4.NewVerifierWithLookup(func(accessKeyID string) (string, bool) {
+		secret, err := credentials.LookupSecret(context.Background(), accessKeyID)
+		if err != nil {
+			return "", false
+		}
+		return secret, true
+	}, cfg.Auth.S3.AccessKeyID, cfg.Auth.S3.SecretAccessKey, cfg.Storage.Region, "s3")
 	shareLinks, err := sharelink.New(cfg.Paths.DataDir, logger.Named("sharelink"))
 	if err != nil {
 		panic(fmt.Sprintf("initialize share link store: %v", err))
@@ -154,20 +172,30 @@ func NewHandler(cfg config.Config, store *storage.Store, logger *zap.Logger) htt
 	})
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		handleS3Request(w, r, cfg, store, shareLinks, verifier)
+		handleS3Request(w, r, cfg, store, shareLinks, credentials, verifier)
 	})
 
 	return httpx.RequestLogger(logger, "s3")(mux)
 }
 
-func handleS3Request(w http.ResponseWriter, r *http.Request, cfg config.Config, store *storage.Store, shareLinks *sharelink.Store, verifier *sigv4.Verifier) {
-	if _, err := verifier.Authenticate(r); err != nil {
+func handleS3Request(w http.ResponseWriter, r *http.Request, cfg config.Config, store *storage.Store, shareLinks *sharelink.Store, credentials *s3creds.Store, verifier *sigv4.Verifier) {
+	identity, err := verifier.Authenticate(r)
+	if err != nil {
 		writeAuthError(w, r, err)
+		return
+	}
+	credential, err := credentials.GetActive(r.Context(), identity.AccessKeyID)
+	if err != nil {
+		writeS3Error(w, r, http.StatusForbidden, "AccessDenied", "request authentication failed")
+		return
+	}
+	if err := credentials.Touch(r.Context(), identity.AccessKeyID); err != nil {
+		writeS3Error(w, r, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
 
 	if r.URL.Path == "/" || strings.TrimSpace(r.URL.Path) == "" {
-		handleServiceRoot(w, r, store)
+		handleServiceRoot(w, r, store, credential)
 		return
 	}
 
@@ -178,6 +206,9 @@ func handleS3Request(w http.ResponseWriter, r *http.Request, cfg config.Config, 
 	}
 
 	w.Header().Set("X-Amz-Bucket-Region", cfg.Storage.Region)
+	if !authorizeBucketRequest(w, r, credential, bucket, requestRequiresWrite(r, key)) {
+		return
+	}
 
 	if key == "" {
 		handleBucketRequest(w, r, store, shareLinks, bucket)
@@ -187,7 +218,7 @@ func handleS3Request(w http.ResponseWriter, r *http.Request, cfg config.Config, 
 	handleObjectRequest(w, r, cfg, store, shareLinks, bucket, key)
 }
 
-func handleServiceRoot(w http.ResponseWriter, r *http.Request, store *storage.Store) {
+func handleServiceRoot(w http.ResponseWriter, r *http.Request, store *storage.Store, credential s3creds.Credential) {
 	if r.Method != http.MethodGet {
 		writeS3Error(w, r, http.StatusMethodNotAllowed, "MethodNotAllowed", "method is not supported on the service root")
 		return
@@ -201,6 +232,9 @@ func handleServiceRoot(w http.ResponseWriter, r *http.Request, store *storage.St
 
 	items := make([]bucketEntry, 0, len(buckets))
 	for _, bucket := range buckets {
+		if !credential.AllowsBucket(bucket.Name) {
+			continue
+		}
 		items = append(items, bucketEntry{
 			Name:         bucket.Name,
 			CreationDate: formatS3Time(bucket.CreatedAt),
@@ -212,6 +246,38 @@ func handleServiceRoot(w http.ResponseWriter, r *http.Request, store *storage.St
 		Owner:   ownerInfo{ID: "bares3-local", DisplayName: config.ProductName},
 		Buckets: bucketsBlock{Items: items},
 	})
+}
+
+func requestRequiresWrite(r *http.Request, key string) bool {
+	if strings.TrimSpace(key) == "" {
+		switch r.Method {
+		case http.MethodPut, http.MethodDelete:
+			return true
+		default:
+			return false
+		}
+	}
+	if hasQueryValue(r, "uploadId") || hasQueryValue(r, "uploads") {
+		return true
+	}
+	switch r.Method {
+	case http.MethodPut, http.MethodPost, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+func authorizeBucketRequest(w http.ResponseWriter, r *http.Request, credential s3creds.Credential, bucket string, write bool) bool {
+	if !credential.AllowsBucket(bucket) {
+		writeS3Error(w, r, http.StatusForbidden, "AccessDenied", "bucket is outside this access key scope")
+		return false
+	}
+	if !credential.AllowsOperation(write) {
+		writeS3Error(w, r, http.StatusForbidden, "AccessDenied", "access key is read-only")
+		return false
+	}
+	return true
 }
 
 func handleBucketRequest(w http.ResponseWriter, r *http.Request, store *storage.Store, shareLinks *sharelink.Store, bucket string) {

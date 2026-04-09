@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"bares3-server/internal/config"
+	"bares3-server/internal/s3creds"
 	"bares3-server/internal/sigv4"
 	"bares3-server/internal/storage"
 	"go.uber.org/zap"
@@ -125,6 +126,112 @@ func TestUnsignedRequestIsRejected(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "AccessDenied") {
 		t.Fatalf("expected AccessDenied response, got %s", recorder.Body.String())
+	}
+}
+
+func TestManagedS3CredentialWorksWithoutConfigKey(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Auth.S3.AccessKeyID = ""
+	cfg.Auth.S3.SecretAccessKey = ""
+
+	store := storage.New(cfg, zap.NewNop())
+	creds, err := s3creds.New(cfg.Paths.DataDir, s3creds.BootstrapCredential{}, zap.NewNop())
+	if err != nil {
+		t.Fatalf("s3creds.New failed: %v", err)
+	}
+	created, err := creds.Create(context.Background(), s3creds.CreateInput{Label: "CI key"})
+	if err != nil {
+		t.Fatalf("Create credential failed: %v", err)
+	}
+	handler := NewHandler(cfg, store, creds, zap.NewNop())
+
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	putBody := []byte("hello managed key")
+	putRequest := httptest.NewRequest(http.MethodPut, "/gallery/managed.txt", bytes.NewReader(putBody))
+	signedCfg := cfg
+	signedCfg.Auth.S3.AccessKeyID = created.AccessKeyID
+	signedCfg.Auth.S3.SecretAccessKey = created.SecretAccessKey
+	signHeaderRequest(t, putRequest, signedCfg, putBody)
+	putRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(putRecorder, putRequest)
+	if putRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected managed put status: %d body=%s", putRecorder.Code, putRecorder.Body.String())
+	}
+	active, err := creds.GetActive(context.Background(), created.AccessKeyID)
+	if err != nil {
+		t.Fatalf("GetActive failed: %v", err)
+	}
+	if active.LastUsedAt == nil {
+		t.Fatalf("expected managed credential last_used_at to be recorded")
+	}
+}
+
+func TestScopedReadOnlyCredentialRestrictsBucketsAndWrites(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Auth.S3.AccessKeyID = ""
+	cfg.Auth.S3.SecretAccessKey = ""
+
+	store := storage.New(cfg, zap.NewNop())
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket gallery failed: %v", err)
+	}
+	if _, err := store.CreateBucket(context.Background(), "archive", 0); err != nil {
+		t.Fatalf("CreateBucket archive failed: %v", err)
+	}
+	if _, err := store.PutObject(context.Background(), storage.PutObjectInput{Bucket: "gallery", Key: "notes/readme.txt", Body: bytes.NewBufferString("hello")}); err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	creds, err := s3creds.New(cfg.Paths.DataDir, s3creds.BootstrapCredential{}, zap.NewNop())
+	if err != nil {
+		t.Fatalf("s3creds.New failed: %v", err)
+	}
+	created, err := creds.Create(context.Background(), s3creds.CreateInput{Label: "reader", Permission: s3creds.PermissionReadOnly, Buckets: []string{"gallery"}})
+	if err != nil {
+		t.Fatalf("Create credential failed: %v", err)
+	}
+	handler := NewHandler(cfg, store, creds, zap.NewNop())
+	signedCfg := cfg
+	signedCfg.Auth.S3.AccessKeyID = created.AccessKeyID
+	signedCfg.Auth.S3.SecretAccessKey = created.SecretAccessKey
+
+	allowedRequest := httptest.NewRequest(http.MethodGet, "/gallery/notes/readme.txt", nil)
+	signHeaderRequest(t, allowedRequest, signedCfg, nil)
+	allowedRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(allowedRecorder, allowedRequest)
+	if allowedRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected allowed scoped read status: %d body=%s", allowedRecorder.Code, allowedRecorder.Body.String())
+	}
+
+	blockedBucketRequest := httptest.NewRequest(http.MethodGet, "/archive?list-type=2", nil)
+	signHeaderRequest(t, blockedBucketRequest, signedCfg, nil)
+	blockedBucketRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(blockedBucketRecorder, blockedBucketRequest)
+	if blockedBucketRecorder.Code != http.StatusForbidden {
+		t.Fatalf("unexpected blocked bucket status: %d body=%s", blockedBucketRecorder.Code, blockedBucketRecorder.Body.String())
+	}
+
+	writeBody := []byte("nope")
+	blockedWriteRequest := httptest.NewRequest(http.MethodPut, "/gallery/new.txt", bytes.NewReader(writeBody))
+	signHeaderRequest(t, blockedWriteRequest, signedCfg, writeBody)
+	blockedWriteRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(blockedWriteRecorder, blockedWriteRequest)
+	if blockedWriteRecorder.Code != http.StatusForbidden {
+		t.Fatalf("unexpected blocked write status: %d body=%s", blockedWriteRecorder.Code, blockedWriteRecorder.Body.String())
 	}
 }
 
@@ -387,7 +494,7 @@ func newTestHandler(t *testing.T) (*storage.Store, http.Handler) {
 	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
 
 	store := storage.New(cfg, zap.NewNop())
-	handler := NewHandler(cfg, store, zap.NewNop())
+	handler := NewHandler(cfg, store, nil, zap.NewNop())
 
 	return store, handler
 }
