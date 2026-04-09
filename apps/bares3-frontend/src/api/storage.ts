@@ -49,6 +49,14 @@ export type RuntimeInfo = {
   };
 };
 
+export type SystemSettings = {
+  public_base_url: string;
+  s3_base_url: string;
+  region: string;
+  metadata_layout: string;
+  tmp_dir: string;
+};
+
 export type SyncStatusState = 'pending' | 'verifying' | 'downloading' | 'ready' | 'error' | 'conflict';
 
 export type SyncObjectStatus = {
@@ -340,6 +348,20 @@ export function updateStorageLimit(maxBytes: number) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ max_bytes: maxBytes }),
+  });
+}
+
+export function getSystemSettings() {
+  return request<SystemSettings>('/api/v1/settings/system');
+}
+
+export function updateSystemSettings(payload: SystemSettings) {
+  return request<SystemSettings>('/api/v1/settings/system', {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
   });
 }
 

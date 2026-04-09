@@ -845,6 +845,11 @@ a {
   overflow-wrap: anywhere;
 }
 
+.settings-field-control {
+  min-width: 0;
+  flex: 1 1 280px;
+}
+
 .settings-inline-control {
   display: inline-flex;
   align-items: center;
@@ -1804,6 +1809,11 @@ a {
   }
 
   .settings-field-surface {
+    width: 100%;
+    flex-basis: 100%;
+  }
+
+  .settings-field-control {
     width: 100%;
     flex-basis: 100%;
   }
