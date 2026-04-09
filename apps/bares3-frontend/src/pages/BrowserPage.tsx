@@ -38,8 +38,16 @@ import { Section } from '../components/Section';
 import { useBucketObjects } from '../hooks/useBucketObjects';
 import { useBucketsData } from '../hooks/useBucketsData';
 import { useObjectDetail } from '../hooks/useObjectDetail';
+import { useRuntimeData } from '../hooks/useRuntimeData';
 import { copyText, formatBytes, formatDateTime, formatRelativeTime, normalizeApiError } from '../utils';
 import { useSearchParams } from 'react-router-dom';
+
+function encodeObjectKeyPath(key: string) {
+  return key
+    .split('/')
+    .map((part) => encodeURIComponent(part))
+    .join('/');
+}
 
 type BrowserEntry =
   | {
@@ -202,6 +210,7 @@ export function BrowserPage() {
   const requestedQuery = searchParams.get('q')?.trim() ?? '';
   const requestedPath = normalizePrefix(searchParams.get('path'));
   const { items: buckets, loading: bucketsLoading } = useBucketsData();
+  const { runtime } = useRuntimeData();
   const [selectedBucket, setSelectedBucket] = useState<string | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [selectedFolderPrefix, setSelectedFolderPrefix] = useState<string | null>(null);
@@ -263,6 +272,8 @@ export function BrowserPage() {
   }, [moveDragging]);
 
   const currentPrefix = selectedBucket === requestedBucket ? requestedPath : '';
+  const selectedBucketInfo = useMemo(() => buckets.find((item) => item.name === selectedBucket) ?? null, [buckets, selectedBucket]);
+  const selectedBucketIsPublic = selectedBucketInfo?.access_mode === 'public';
   const pathSignature = `${selectedBucket ?? ''}:${currentPrefix}`;
   const { items: objects, loading: objectsLoading, loadingMore, hasMore, refresh, loadMore } = useBucketObjects(
     selectedBucket,
@@ -1022,6 +1033,14 @@ export function BrowserPage() {
 
   const currentPath = selectedBucket ? `${selectedBucket}/${currentPrefix}` : '';
   const selectedFolderObjectCount = selectedFolder ? objects.filter((item) => item.key.startsWith(selectedFolder.prefix)).length : 0;
+  const publicObjectURL = useMemo(() => {
+    const baseURL = runtime?.storage.public_base_url?.trim();
+    if (!selectedBucketIsPublic || !baseURL || !selectedBucket || !selectedObject) {
+      return null;
+    }
+
+    return `${baseURL.replace(/\/+$/, '')}/pub/${encodeURIComponent(selectedBucket)}/${encodeObjectKeyPath(selectedObject.key)}`;
+  }, [runtime?.storage.public_base_url, selectedBucket, selectedBucketIsPublic, selectedObject]);
 
   const handleCopyCurrentPath = async () => {
     if (!currentPath) {
@@ -1485,9 +1504,15 @@ export function BrowserPage() {
                               </div>
 
                               <Space size={8} wrap>
-                                <Button loading={presigningKey === selectedObject?.key} onClick={() => void handleCopyDownloadUrl()} size="small">
-                                  Copy download URL
-                                </Button>
+                                {selectedBucketIsPublic && publicObjectURL ? (
+                                  <Button href={publicObjectURL} rel="noreferrer" size="small" target="_blank">
+                                    Open
+                                  </Button>
+                                ) : (
+                                  <Button loading={presigningKey === selectedObject?.key} onClick={() => void handleCopyDownloadUrl()} size="small">
+                                    Copy download URL
+                                  </Button>
+                                )}
                                 <Button loading={objectDetailLoading} onClick={() => void refreshObjectDetail()} size="small">
                                   Refresh
                                 </Button>
