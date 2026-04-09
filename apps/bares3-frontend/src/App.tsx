@@ -24,6 +24,11 @@ const BucketAccessPage = lazy(async () => {
   return { default: module.BucketAccessPage };
 });
 
+const AccessKeysPage = lazy(async () => {
+  const module = await import('./pages/AccessKeysPage');
+  return { default: module.AccessKeysPage };
+});
+
 const BrowserPage = lazy(async () => {
   const module = await import('./pages/BrowserPage');
   return { default: module.BrowserPage };
@@ -95,6 +100,14 @@ export default function App() {
                 element={
                   <ProtectedRoute>
                     <BucketAccessPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/access-keys"
+                element={
+                  <ProtectedRoute>
+                    <AccessKeysPage />
                   </ProtectedRoute>
                 }
               />

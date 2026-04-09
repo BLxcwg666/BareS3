@@ -1,5 +1,5 @@
 import type { DescriptionsProps } from 'antd';
-import { ApiError, type BucketAccessAction, type BucketAccessMode, type BucketInfo } from './api';
+import { ApiError, type BucketAccessAction, type BucketAccessMode, type BucketInfo, type S3CredentialPermission } from './api';
 import { sizeUnitOptions } from './constants';
 import type { BucketDisplayRow, SizeUnit } from './types';
 
@@ -110,6 +110,14 @@ export function bucketAccessActionLabel(value?: string) {
     default:
       return 'Require auth';
   }
+}
+
+export function s3CredentialPermissionLabel(value?: string): string {
+  return value === 'read_only' ? 'Read only' : 'Read & write';
+}
+
+export function s3CredentialBucketScopeLabel(values?: string[]) {
+  return values && values.length > 0 ? values.join(', ') : 'All buckets';
 }
 
 export function usagePercentLabel(usedBytes: number, quotaBytes: number) {

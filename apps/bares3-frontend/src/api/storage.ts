@@ -80,6 +80,24 @@ export type BucketInfo = {
   object_count: number;
 };
 
+export type S3CredentialPermission = 'read_write' | 'read_only';
+
+export type S3CredentialInfo = {
+  access_key_id: string;
+  label?: string;
+  source?: string;
+  permission: S3CredentialPermission;
+  buckets: string[];
+  created_at: string;
+  last_used_at?: string;
+  revoked_at?: string;
+  status: 'active' | 'revoked';
+};
+
+export type CreatedS3Credential = S3CredentialInfo & {
+  secret_access_key: string;
+};
+
 export type BucketUsageSample = {
   recorded_at: string;
   used_bytes: number;
@@ -231,6 +249,43 @@ export function updateStorageLimit(maxBytes: number) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ max_bytes: maxBytes }),
+  });
+}
+
+export async function listS3Credentials() {
+  const payload = await request<{ items: S3CredentialInfo[] }>('/api/v1/settings/s3/credentials');
+  return payload.items;
+}
+
+export function createS3Credential(label: string, permission: S3CredentialPermission, buckets: string[]) {
+  return request<CreatedS3Credential>('/api/v1/settings/s3/credentials', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ label, permission, buckets }),
+  });
+}
+
+export function updateS3Credential(accessKeyID: string, label: string, permission: S3CredentialPermission, buckets: string[]) {
+  return request<S3CredentialInfo>(`/api/v1/settings/s3/credentials/${encodeURIComponent(accessKeyID)}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ label, permission, buckets }),
+  });
+}
+
+export function revokeS3Credential(accessKeyID: string) {
+  return request<S3CredentialInfo>(`/api/v1/settings/s3/credentials/${encodeURIComponent(accessKeyID)}`, {
+    method: 'DELETE',
+  });
+}
+
+export function removeS3Credential(accessKeyID: string) {
+  return request<void>(`/api/v1/settings/s3/credentials/${encodeURIComponent(accessKeyID)}/remove`, {
+    method: 'DELETE',
   });
 }
 
