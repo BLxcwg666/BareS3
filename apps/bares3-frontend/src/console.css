@@ -701,6 +701,204 @@ a {
   padding: 0;
 }
 
+.settings-collapse {
+  background: transparent;
+}
+
+.settings-collapse.ant-collapse {
+  border: 0;
+  background: transparent;
+}
+
+.settings-collapse > .ant-collapse-item {
+  border: 0 !important;
+  border-top: 1px solid var(--line) !important;
+  border-radius: 0 !important;
+}
+
+.settings-collapse > .ant-collapse-item:first-child {
+  border-top: 0 !important;
+}
+
+.settings-collapse > .ant-collapse-item > .ant-collapse-header {
+  align-items: center !important;
+  padding: 14px !important;
+}
+
+.settings-collapse > .ant-collapse-item > .ant-collapse-content {
+  border-top: 1px solid var(--line);
+  background: color-mix(in oklab, var(--surface-soft) 36%, var(--surface));
+}
+
+.settings-collapse > .ant-collapse-item > .ant-collapse-content > .ant-collapse-content-box {
+  padding: 16px 14px !important;
+}
+
+.settings-category-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  min-width: 0;
+}
+
+.settings-category-label {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.settings-category-summary {
+  flex: 1;
+  color: var(--muted);
+  text-align: right;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.settings-detail-stack,
+.settings-detail-section,
+.settings-field-list,
+.settings-managed-main {
+  display: grid;
+}
+
+.settings-detail-stack {
+  gap: 18px;
+}
+
+.settings-detail-section,
+.settings-managed-main {
+  gap: 8px;
+}
+
+.settings-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.settings-detail-head-actions {
+  align-items: center;
+}
+
+.settings-detail-title {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.settings-detail-note,
+.settings-field-hint,
+.settings-managed-note {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.settings-field-list {
+  gap: 10px;
+}
+
+.settings-field {
+  display: grid;
+  grid-template-columns: minmax(170px, 220px) minmax(0, 1fr);
+  align-items: start;
+  gap: 10px 16px;
+}
+
+.settings-field-main {
+  display: grid;
+  gap: 2px;
+  padding-top: 8px;
+}
+
+.settings-field-label {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.settings-field-body {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.settings-field-surface {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  min-width: 0;
+  flex: 1 1 280px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: color-mix(in oklab, var(--surface-soft) 82%, var(--surface));
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.settings-inline-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.settings-note-banner {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in oklab, #d04f58 28%, var(--line));
+  border-radius: 6px;
+  background: color-mix(in oklab, var(--surface-soft) 72%, #fbe6e8);
+  color: var(--ink);
+}
+
+.settings-managed-list {
+  display: grid;
+  gap: 0;
+}
+
+.settings-managed-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.settings-managed-row:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.settings-managed-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px 12px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.settings-managed-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.settings-empty {
+  padding: 4px 0;
+}
+
 .inspector-stack {
   display: grid;
   gap: 14px;
@@ -1521,6 +1719,14 @@ a {
     border-left: 0;
     border-top: 1px solid var(--line);
   }
+
+  .settings-field {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-field-main {
+    padding-top: 0;
+  }
 }
 
 @media (max-width: 768px) {
@@ -1579,6 +1785,27 @@ a {
   .inspector-actions-row,
   .inspector-share-controls {
     align-items: stretch;
+  }
+
+  .settings-category-header,
+  .settings-managed-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .settings-category-summary {
+    width: 100%;
+    text-align: left;
+  }
+
+  .settings-field-body,
+  .settings-managed-actions {
+    width: 100%;
+  }
+
+  .settings-field-surface {
+    width: 100%;
+    flex-basis: 100%;
   }
 
   .login-aside,

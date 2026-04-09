@@ -1,99 +1,111 @@
-import { useState } from 'react';
-import { Button, Descriptions, Empty, Skeleton } from 'antd';
+import { useMemo, useState, type ReactNode } from 'react';
+import { Button, Collapse, Empty, Skeleton, Typography } from 'antd';
+import { type S3CredentialInfo } from '../api';
 import { ConsoleShell } from '../components/ConsoleShell';
+import { S3CredentialModal } from '../components/S3CredentialModal';
 import { Section } from '../components/Section';
 import { StorageLimitModal } from '../components/StorageLimitModal';
+import { useBucketsData } from '../hooks/useBucketsData';
 import { useRuntimeData } from '../hooks/useRuntimeData';
-import { formatBytes, nodeSummaryToItems, quotaLabel } from '../utils';
+import { useS3CredentialsData } from '../hooks/useS3CredentialsData';
+import { formatBytes, formatCount, quotaLabel } from '../utils';
+
+const { Text } = Typography;
+
+function SettingsField({ label, hint, action, children }: { label: string; hint?: string; action?: ReactNode; children: ReactNode }) {
+  return (
+      <div className="settings-field" style={{ alignItems: 'flex-start' }}>
+        <div className="settings-field-main" style={{ paddingTop: 0, transform: 'translateY(-3px)' }}>
+          <div className="settings-field-label">{label}</div>
+          {hint ? <Text className="settings-field-hint">{hint}</Text> : null}
+        </div>
+        <div className="settings-field-body">
+          <div className="settings-field-surface">{children}</div>
+          {action}
+        </div>
+      </div>
+  );
+}
 
 export function SettingsPage() {
-  const { runtime, loading, refresh } = useRuntimeData();
+  const { runtime, loading: runtimeLoading, refresh: refreshRuntime } = useRuntimeData();
+  const { items: buckets } = useBucketsData();
+  const { refresh: refreshCredentials } = useS3CredentialsData();
+
   const [isStorageModalOpen, setIsStorageModalOpen] = useState(false);
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [editingCredential, setEditingCredential] = useState<S3CredentialInfo | null>(null);
 
-  const groups = runtime
-    ? [
-        {
-          title: 'Endpoint identity',
-          items: [
-            { label: 'Console name', value: runtime.app.name },
-            { label: 'Environment', value: runtime.app.env },
-            { label: 'Config source', value: runtime.config.used ? runtime.config.path : 'Defaults only (no config file loaded)' },
-          ],
-        },
-        {
-          title: 'Storage paths',
-          items: [
-            { label: 'Data directory', value: runtime.paths.data_dir },
-            { label: 'Temp directory', value: runtime.paths.tmp_dir },
-            { label: 'Log directory', value: runtime.paths.log_dir },
-          ],
-        },
-        {
-          title: 'Delivery defaults',
-          items: [
-            { label: 'S3 endpoint', value: runtime.storage.s3_base_url },
-            { label: 'Public base URL', value: runtime.storage.public_base_url },
-            { label: 'Metadata mode', value: runtime.storage.metadata_layout },
-          ],
-        },
-      ]
-    : [];
-
+  const bucketNames = useMemo(() => buckets.map((bucket) => bucket.name), [buckets]);
   const maxBytes = runtime?.storage.max_bytes ?? 0;
   const usedBytes = runtime?.storage.used_bytes ?? 0;
-  const remainingValue =
-    maxBytes > 0
-      ? usedBytes > maxBytes
-        ? `Over by ${formatBytes(usedBytes - maxBytes)}`
-        : formatBytes(maxBytes - usedBytes)
-      : 'Unlimited';
 
-  const capacityItems = [
-    { label: 'Instance limit', value: quotaLabel(maxBytes) },
-    { label: 'Used now', value: formatBytes(usedBytes) },
-    { label: 'Remaining', value: remainingValue },
+  const storageSummary = runtimeLoading
+    ? 'Loading storage settings'
+    : !runtime
+      ? 'Runtime settings unavailable'
+      : `${quotaLabel(maxBytes)} limit · ${formatBytes(usedBytes)} used · ${formatCount(runtime.storage.bucket_count)} bucket${runtime.storage.bucket_count === 1 ? '' : 's'}`;
+
+  const panelItems = [
+    {
+      key: 'storage',
+      label: (
+        <div className="settings-category-header">
+          <div className="settings-category-label">Storage</div>
+          <Text className="settings-category-summary">{storageSummary}</Text>
+        </div>
+      ),
+      children: runtimeLoading ? (
+        <Skeleton active paragraph={{ rows: 6 }} title={false} />
+      ) : !runtime ? (
+        <div className="settings-empty">
+          <Empty description="Storage settings are unavailable" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        </div>
+      ) : (
+        <div className="settings-detail-stack">
+          <div className="settings-detail-section">
+            <div className="settings-field-list">
+              <SettingsField
+                  action={
+                    <Button onClick={() => setIsStorageModalOpen(true)}>
+                      Edit limit
+                    </Button>
+                  }
+                  hint="Total bytes this node may consume across bucket data and metadata."
+                  label="Space limit"
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Text strong>
+                    {maxBytes > 0 ? quotaLabel(maxBytes) : 'Unlimited'}
+                  </Text>
+                  <Text type="secondary">
+                    / {formatBytes(usedBytes)} used
+                  </Text>
+                </div>
+              </SettingsField>
+            </div>
+          </div>
+        </div>
+      ),
+    }
   ];
 
   return (
     <ConsoleShell>
-      {loading ? (
-        <div className="workspace-stack">
-          <Section title="Runtime">
-            <Skeleton active paragraph={{ rows: 8 }} title={false} />
-          </Section>
-        </div>
-      ) : !runtime ? (
-        <div className="workspace-stack">
-          <Section title="Runtime">
-            <Empty description="Runtime settings are unavailable" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-          </Section>
-        </div>
-      ) : (
-        <div className="workspace-stack">
-          <StorageLimitModal
-            currentMaxBytes={maxBytes}
-            onCancel={() => setIsStorageModalOpen(false)}
-            onSaved={() => refresh()}
-            open={isStorageModalOpen}
-          />
+      <div className="workspace-stack">
+        <StorageLimitModal
+          currentMaxBytes={maxBytes}
+          onCancel={() => setIsStorageModalOpen(false)}
+          onSaved={() => refreshRuntime()}
+          open={isStorageModalOpen}
+        />
+        <S3CredentialModal bucketNames={bucketNames} credential={null} onCancel={() => setIsCreateModalOpen(false)} onSaved={() => refreshCredentials()} open={isCreateModalOpen} />
+        <S3CredentialModal bucketNames={bucketNames} credential={editingCredential} onCancel={() => setEditingCredential(null)} onSaved={() => refreshCredentials()} open={Boolean(editingCredential)} />
 
-          <Section
-            title="Capacity"
-            note="Set the total space this BareS3 node is allowed to consume."
-            extra={<Button onClick={() => setIsStorageModalOpen(true)}>Edit limit</Button>}
-          >
-            <Descriptions column={1} items={nodeSummaryToItems(capacityItems)} size="small" />
-          </Section>
-
-          <div className="workspace-grid workspace-grid-thirds">
-            {groups.map((group) => (
-              <Section key={group.title} title={group.title}>
-                <Descriptions column={1} items={nodeSummaryToItems(group.items)} size="small" />
-              </Section>
-            ))}
-          </div>
-        </div>
-      )}
+        <Section flush title="Settings">
+          <Collapse accordion className="settings-collapse" defaultActiveKey={['storage']} expandIconPosition="start" items={panelItems} />
+        </Section>
+      </div>
     </ConsoleShell>
   );
 }
