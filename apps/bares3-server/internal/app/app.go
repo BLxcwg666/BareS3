@@ -14,6 +14,7 @@ import (
 	"bares3-server/internal/config"
 	"bares3-server/internal/fileserve"
 	"bares3-server/internal/logx"
+	"bares3-server/internal/replication"
 	"bares3-server/internal/s3api"
 	"bares3-server/internal/s3creds"
 	"bares3-server/internal/storage"
@@ -87,6 +88,10 @@ func (a *App) Run(ctx context.Context) error {
 			return serve(groupCtx, srv, spec)
 		})
 	}
+	group.Go(func() error {
+		worker := replication.NewWorker(a.cfg, a.store, logx.MustChild(a.logger, "replication"))
+		return worker.Run(groupCtx)
+	})
 
 	group.Go(func() error {
 		<-groupCtx.Done()

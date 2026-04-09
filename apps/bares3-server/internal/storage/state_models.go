@@ -29,6 +29,10 @@ type storageObjectRecord struct {
 	Key                string `bun:"key,pk"`
 	Size               int64  `bun:"size"`
 	ETag               string `bun:"etag"`
+	ChecksumSHA256     string `bun:"checksum_sha256"`
+	Revision           int64  `bun:"revision"`
+	OriginNodeID       string `bun:"origin_node_id"`
+	LastChangeID       string `bun:"last_change_id"`
 	ContentType        string `bun:"content_type"`
 	CacheControl       string `bun:"cache_control"`
 	ContentDisposition string `bun:"content_disposition"`
@@ -125,6 +129,10 @@ func newStorageObjectRecord(meta objectMetadata) (storageObjectRecord, error) {
 		Key:                strings.TrimSpace(meta.Key),
 		Size:               meta.Size,
 		ETag:               strings.TrimSpace(meta.ETag),
+		ChecksumSHA256:     strings.TrimSpace(meta.ChecksumSHA256),
+		Revision:           meta.Revision,
+		OriginNodeID:       strings.TrimSpace(meta.OriginNodeID),
+		LastChangeID:       strings.TrimSpace(meta.LastChangeID),
 		ContentType:        strings.TrimSpace(meta.ContentType),
 		CacheControl:       strings.TrimSpace(meta.CacheControl),
 		ContentDisposition: strings.TrimSpace(meta.ContentDisposition),
@@ -143,6 +151,10 @@ func (r storageObjectRecord) ObjectMetadata() (objectMetadata, error) {
 		Key:                strings.TrimSpace(r.Key),
 		Size:               r.Size,
 		ETag:               strings.TrimSpace(r.ETag),
+		ChecksumSHA256:     strings.TrimSpace(r.ChecksumSHA256),
+		Revision:           r.Revision,
+		OriginNodeID:       strings.TrimSpace(r.OriginNodeID),
+		LastChangeID:       strings.TrimSpace(r.LastChangeID),
 		ContentType:        strings.TrimSpace(r.ContentType),
 		CacheControl:       strings.TrimSpace(r.CacheControl),
 		ContentDisposition: strings.TrimSpace(r.ContentDisposition),

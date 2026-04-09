@@ -202,6 +202,8 @@ func writeStorageAsS3Error(w http.ResponseWriter, r *http.Request, bucket string
 	switch {
 	case errors.Is(err, storage.ErrBucketNotFound):
 		writeS3Error(w, r, bucket, http.StatusNotFound, "NoSuchBucket", err.Error())
+	case errors.Is(err, storage.ErrObjectSyncing):
+		writeS3Error(w, r, bucket, http.StatusServiceUnavailable, "ServiceUnavailable", err.Error())
 	case errors.Is(err, storage.ErrObjectNotFound):
 		writeS3Error(w, r, bucket, http.StatusNotFound, "NoSuchKey", err.Error())
 	case errors.Is(err, storage.ErrInvalidBucketName):

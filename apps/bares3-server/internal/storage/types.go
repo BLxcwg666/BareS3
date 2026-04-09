@@ -24,6 +24,9 @@ var (
 	ErrInvalidPartNumber     = errors.New("invalid multipart part number")
 	ErrInvalidBucketName     = errors.New("invalid bucket name")
 	ErrInvalidObjectKey      = errors.New("invalid object key")
+	ErrChecksumMismatch      = errors.New("object checksum mismatch")
+	ErrObjectSyncing         = errors.New("object syncing")
+	ErrObjectConflict        = errors.New("object conflict")
 )
 
 type BucketInfo struct {
@@ -92,11 +95,16 @@ type ObjectInfo struct {
 	MetadataPath       string            `json:"metadata_path"`
 	Size               int64             `json:"size"`
 	ETag               string            `json:"etag"`
+	ChecksumSHA256     string            `json:"checksum_sha256,omitempty"`
+	Revision           int64             `json:"revision,omitempty"`
+	OriginNodeID       string            `json:"origin_node_id,omitempty"`
+	LastChangeID       string            `json:"last_change_id,omitempty"`
 	ContentType        string            `json:"content_type"`
 	CacheControl       string            `json:"cache_control,omitempty"`
 	ContentDisposition string            `json:"content_disposition,omitempty"`
 	UserMetadata       map[string]string `json:"user_metadata,omitempty"`
 	LastModified       time.Time         `json:"last_modified"`
+	SyncStatus         *SyncObjectStatus `json:"sync_status,omitempty"`
 }
 
 type objectMetadata struct {
@@ -104,6 +112,10 @@ type objectMetadata struct {
 	Key                string            `json:"key"`
 	Size               int64             `json:"size"`
 	ETag               string            `json:"etag"`
+	ChecksumSHA256     string            `json:"checksum_sha256,omitempty"`
+	Revision           int64             `json:"revision,omitempty"`
+	OriginNodeID       string            `json:"origin_node_id,omitempty"`
+	LastChangeID       string            `json:"last_change_id,omitempty"`
 	ContentType        string            `json:"content_type"`
 	CacheControl       string            `json:"cache_control,omitempty"`
 	ContentDisposition string            `json:"content_disposition,omitempty"`
@@ -119,6 +131,35 @@ type PutObjectInput struct {
 	CacheControl       string
 	ContentDisposition string
 	UserMetadata       map[string]string
+}
+
+type ReplicaBucketInput struct {
+	Name           string
+	CreatedAt      time.Time
+	MetadataLayout string
+	AccessMode     string
+	AccessPolicy   BucketAccessPolicy
+	QuotaBytes     int64
+	Tags           []string
+	Note           string
+}
+
+type ReplicaObjectInput struct {
+	Bucket             string
+	Key                string
+	Body               io.Reader
+	Size               int64
+	ETag               string
+	ChecksumSHA256     string
+	Revision           int64
+	OriginNodeID       string
+	LastChangeID       string
+	Force              bool
+	ContentType        string
+	CacheControl       string
+	ContentDisposition string
+	UserMetadata       map[string]string
+	LastModified       time.Time
 }
 
 type ListObjectsOptions struct {

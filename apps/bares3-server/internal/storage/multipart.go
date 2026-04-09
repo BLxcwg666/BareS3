@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/md5"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -243,6 +244,7 @@ func (s *Store) CompleteMultipartUpload(ctx context.Context, bucket, key, upload
 	}()
 
 	compositeHash := md5.New()
+	checksumHasher := sha256.New()
 	var size int64
 	firstBytes := make([]byte, 0, 512)
 	buffer := make([]byte, 32*1024)
@@ -300,7 +302,7 @@ func (s *Store) CompleteMultipartUpload(ctx context.Context, bucket, key, upload
 			}
 		}
 
-		written, err := io.CopyBuffer(stagedObject, partFile, buffer)
+		written, err := io.CopyBuffer(io.MultiWriter(stagedObject, checksumHasher), partFile, buffer)
 		_ = partFile.Close()
 		if err != nil {
 			_ = stagedObject.Close()
@@ -331,6 +333,10 @@ func (s *Store) CompleteMultipartUpload(ctx context.Context, bucket, key, upload
 		Key:                meta.Key,
 		Size:               size,
 		ETag:               hex.EncodeToString(compositeHash.Sum(nil)) + "-" + strconv.Itoa(len(completed)),
+		ChecksumSHA256:     hex.EncodeToString(checksumHasher.Sum(nil)),
+		Revision:           s.nextObjectRevision(meta.Bucket, meta.Key),
+		OriginNodeID:       "local",
+		LastChangeID:       newChangeID(),
 		ContentType:        contentType,
 		CacheControl:       meta.CacheControl,
 		ContentDisposition: meta.ContentDisposition,
@@ -340,6 +346,9 @@ func (s *Store) CompleteMultipartUpload(ctx context.Context, bucket, key, upload
 
 	object, err := s.commitObjectWithQuota(ctx, bucket, key, stagedObjectPath, objectMeta)
 	if err != nil {
+		return ObjectInfo{}, err
+	}
+	if err := s.recordObjectUpsertEvent(objectMeta); err != nil {
 		return ObjectInfo{}, err
 	}
 	if err := os.RemoveAll(s.multipartUploadDir(bucket, uploadID)); err != nil {
@@ -502,6 +511,7 @@ func (s *Store) commitObjectFromStaged(bucket, key, stagedObjectPath string, met
 		MetadataPath:       "",
 		Size:               meta.Size,
 		ETag:               meta.ETag,
+		ChecksumSHA256:     meta.ChecksumSHA256,
 		ContentType:        meta.ContentType,
 		CacheControl:       meta.CacheControl,
 		ContentDisposition: meta.ContentDisposition,

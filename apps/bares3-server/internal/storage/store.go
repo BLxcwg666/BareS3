@@ -3,6 +3,8 @@ package storage
 import (
 	"context"
 	"crypto/md5"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -29,6 +31,8 @@ type Store struct {
 	commitMu       sync.Mutex
 	instanceQuota  atomic.Int64
 	metadata       *metadataStore
+	syncEvents     *syncEventHub
+	syncSettings   *syncSettingsHub
 	logger         *zap.Logger
 }
 
@@ -47,9 +51,21 @@ func New(cfg config.Config, logger *zap.Logger) *Store {
 		tmpDir:         cfg.Storage.TmpDir,
 		metadataLayout: cfg.Storage.MetadataLayout,
 		metadata:       metadata,
+		syncEvents:     newSyncEventHub(),
+		syncSettings:   newSyncSettingsHub(),
 		logger:         logger,
 	}
 	store.instanceQuota.Store(cfg.Storage.MaxBytes)
+	if err := store.bootstrapSyncSettings(cfg); err != nil {
+		panic(fmt.Sprintf("bootstrap sync settings: %v", err))
+	}
+	backfilled, err := store.backfillObjectChecksums()
+	if err != nil {
+		panic(fmt.Sprintf("backfill storage object checksums: %v", err))
+	}
+	if backfilled > 0 {
+		store.logger.Info("backfilled object checksums", zap.Int("count", backfilled))
+	}
 	return store
 }
 
@@ -141,6 +157,9 @@ func (s *Store) CreateBucketWithOptions(ctx context.Context, input CreateBucketI
 	}
 
 	if err := s.writeBucketMetadata(name, meta); err != nil {
+		return BucketInfo{}, err
+	}
+	if err := s.recordBucketUpsertEvent(meta); err != nil {
 		return BucketInfo{}, err
 	}
 	if err := s.recordBucketUsageSample(name, 0, 0, meta.QuotaBytes); err != nil {
@@ -321,9 +340,28 @@ func (s *Store) UpdateBucket(ctx context.Context, input UpdateBucketInput) (Buck
 	} else if err := s.writeBucketMetadata(nextName, meta); err != nil {
 		return BucketInfo{}, err
 	}
+	if renamed {
+		if err := s.recordBucketDeleteEvent(name); err != nil {
+			return BucketInfo{}, err
+		}
+	}
+	if err := s.recordBucketUpsertEvent(meta); err != nil {
+		return BucketInfo{}, err
+	}
 	if input.QuotaBytes != currentBucket.QuotaBytes {
 		if err := s.recordBucketUsageSample(nextName, currentBucket.UsedBytes, currentBucket.ObjectCount, input.QuotaBytes); err != nil {
 			return BucketInfo{}, err
+		}
+	}
+	if renamed {
+		objects, err := s.ListObjects(ctx, nextName, ListObjectsOptions{})
+		if err != nil {
+			return BucketInfo{}, err
+		}
+		for _, object := range objects {
+			if err := s.recordObjectUpsertEvent(objectMetadataFromObjectInfo(object)); err != nil {
+				return BucketInfo{}, err
+			}
 		}
 	}
 
@@ -418,6 +456,9 @@ func (s *Store) UpdateBucketAccess(ctx context.Context, input UpdateBucketAccess
 	meta.AccessMode = mode
 	meta.AccessPolicy = policy
 	if err := s.writeBucketMetadata(bucket.Name, meta); err != nil {
+		return BucketAccessConfig{}, err
+	}
+	if err := s.recordBucketUpsertEvent(meta); err != nil {
 		return BucketAccessConfig{}, err
 	}
 
@@ -588,11 +629,23 @@ func (s *Store) collectObjects(ctx context.Context, bucket, prefix string) ([]Ob
 			MetadataPath:       "",
 			Size:               meta.Size,
 			ETag:               meta.ETag,
+			ChecksumSHA256:     meta.ChecksumSHA256,
+			Revision:           meta.Revision,
+			OriginNodeID:       meta.OriginNodeID,
+			LastChangeID:       meta.LastChangeID,
 			ContentType:        meta.ContentType,
 			CacheControl:       meta.CacheControl,
 			ContentDisposition: meta.ContentDisposition,
 			UserMetadata:       cloneStringMap(meta.UserMetadata),
 			LastModified:       meta.LastModified,
+		}
+		if status, err := s.GetObjectSyncStatus(ctx, meta.Bucket, meta.Key); err == nil {
+			statusCopy := status
+			item := objectsByKey[meta.Key]
+			item.SyncStatus = &statusCopy
+			objectsByKey[meta.Key] = item
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
 		}
 	}
 
@@ -634,6 +687,9 @@ func objectMatchesQuery(object ObjectInfo, query string) bool {
 		return true
 	}
 	if strings.Contains(strings.ToLower(object.ETag), query) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(object.ChecksumSHA256), query) {
 		return true
 	}
 	for key, value := range object.UserMetadata {
@@ -688,6 +744,7 @@ func (s *Store) PutObject(ctx context.Context, input PutObjectInput) (ObjectInfo
 	}()
 
 	hasher := md5.New()
+	checksumHasher := sha256.New()
 	buf := make([]byte, 32*1024)
 	firstBytes := make([]byte, 0, 512)
 	var size int64
@@ -716,6 +773,10 @@ func (s *Store) PutObject(ctx context.Context, input PutObjectInput) (ObjectInfo
 			if _, err := hasher.Write(chunk); err != nil {
 				_ = stagedObject.Close()
 				return ObjectInfo{}, fmt.Errorf("hash object data: %w", err)
+			}
+			if _, err := checksumHasher.Write(chunk); err != nil {
+				_ = stagedObject.Close()
+				return ObjectInfo{}, fmt.Errorf("hash object checksum: %w", err)
 			}
 			size += int64(n)
 		}
@@ -751,6 +812,10 @@ func (s *Store) PutObject(ctx context.Context, input PutObjectInput) (ObjectInfo
 		Key:                input.Key,
 		Size:               size,
 		ETag:               hex.EncodeToString(hasher.Sum(nil)),
+		ChecksumSHA256:     hex.EncodeToString(checksumHasher.Sum(nil)),
+		Revision:           s.nextObjectRevision(input.Bucket, input.Key),
+		OriginNodeID:       "local",
+		LastChangeID:       newChangeID(),
 		ContentType:        contentType,
 		CacheControl:       strings.TrimSpace(input.CacheControl),
 		ContentDisposition: strings.TrimSpace(input.ContentDisposition),
@@ -759,6 +824,9 @@ func (s *Store) PutObject(ctx context.Context, input PutObjectInput) (ObjectInfo
 	}
 	info, err := s.commitObjectWithQuota(ctx, input.Bucket, input.Key, stagedObjectPath, meta)
 	if err != nil {
+		return ObjectInfo{}, err
+	}
+	if err := s.recordObjectUpsertEvent(meta); err != nil {
 		return ObjectInfo{}, err
 	}
 
@@ -784,7 +852,7 @@ func (s *Store) StatObject(ctx context.Context, bucket, key string) (ObjectInfo,
 	meta, err := s.readObjectMetadata(bucket, key)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return ObjectInfo{}, fmt.Errorf("%w: %s/%s", ErrObjectNotFound, bucket, key)
+			return ObjectInfo{}, s.objectUnavailableError(ctx, bucket, key, fmt.Errorf("%w: %s/%s", ErrObjectNotFound, bucket, key))
 		}
 		return ObjectInfo{}, err
 	}
@@ -796,7 +864,7 @@ func (s *Store) StatObject(ctx context.Context, bucket, key string) (ObjectInfo,
 	fileInfo, err := os.Stat(objectPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return ObjectInfo{}, fmt.Errorf("%w: %s/%s", ErrObjectNotFound, bucket, key)
+			return ObjectInfo{}, s.objectUnavailableError(ctx, bucket, key, fmt.Errorf("%w: %s/%s", ErrObjectNotFound, bucket, key))
 		}
 		return ObjectInfo{}, err
 	}
@@ -808,11 +876,21 @@ func (s *Store) StatObject(ctx context.Context, bucket, key string) (ObjectInfo,
 		MetadataPath:       "",
 		Size:               meta.Size,
 		ETag:               meta.ETag,
+		ChecksumSHA256:     meta.ChecksumSHA256,
+		Revision:           meta.Revision,
+		OriginNodeID:       meta.OriginNodeID,
+		LastChangeID:       meta.LastChangeID,
 		ContentType:        meta.ContentType,
 		CacheControl:       meta.CacheControl,
 		ContentDisposition: meta.ContentDisposition,
 		UserMetadata:       cloneStringMap(meta.UserMetadata),
 		LastModified:       meta.LastModified,
+	}
+	if status, err := s.GetObjectSyncStatus(ctx, bucket, key); err == nil {
+		statusCopy := status
+		object.SyncStatus = &statusCopy
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return ObjectInfo{}, err
 	}
 
 	if object.Size == 0 && fileInfo.Size() > 0 {
@@ -857,6 +935,9 @@ func (s *Store) DeleteObject(ctx context.Context, bucket, key string) error {
 	if err := s.deleteObjectLocked(bucket, key); err != nil {
 		return err
 	}
+	if err := s.recordObjectDeleteEvent(bucket, key); err != nil {
+		return err
+	}
 	return s.recordBucketUsageSamples(ctx, bucket)
 }
 
@@ -887,6 +968,9 @@ func (s *Store) DeletePrefix(ctx context.Context, bucket, prefix string) (int, e
 	deleted := 0
 	for _, object := range objects {
 		if err := s.deleteObjectLocked(bucket, object.Key); err != nil {
+			return deleted, err
+		}
+		if err := s.recordObjectDeleteEvent(bucket, object.Key); err != nil {
 			return deleted, err
 		}
 		deleted += 1
@@ -923,6 +1007,10 @@ func (s *Store) UpdateObjectMetadata(ctx context.Context, input UpdateObjectMeta
 		Key:                key,
 		Size:               object.Size,
 		ETag:               object.ETag,
+		ChecksumSHA256:     object.ChecksumSHA256,
+		Revision:           object.Revision + 1,
+		OriginNodeID:       "local",
+		LastChangeID:       newChangeID(),
 		ContentType:        strings.TrimSpace(input.ContentType),
 		CacheControl:       strings.TrimSpace(input.CacheControl),
 		ContentDisposition: strings.TrimSpace(input.ContentDisposition),
@@ -934,6 +1022,9 @@ func (s *Store) UpdateObjectMetadata(ctx context.Context, input UpdateObjectMeta
 	}
 
 	if err := s.writeObjectMetadata(meta); err != nil {
+		return ObjectInfo{}, err
+	}
+	if err := s.recordObjectUpsertEvent(meta); err != nil {
 		return ObjectInfo{}, err
 	}
 
@@ -1019,6 +1110,12 @@ func (s *Store) MoveObject(ctx context.Context, input MoveObjectInput) (ObjectIn
 	if err != nil {
 		return ObjectInfo{}, err
 	}
+	if err := s.recordObjectDeleteEvent(object.Bucket, object.Key); err != nil {
+		return ObjectInfo{}, err
+	}
+	if err := s.recordObjectUpsertEvent(objectMetadataFromObjectInfo(moved)); err != nil {
+		return ObjectInfo{}, err
+	}
 	if object.Bucket != moved.Bucket {
 		if err := s.recordBucketUsageSamples(ctx, object.Bucket, moved.Bucket); err != nil {
 			return ObjectInfo{}, err
@@ -1091,7 +1188,14 @@ func (s *Store) MovePrefix(ctx context.Context, input MovePrefixInput) (MoveResu
 	}
 
 	for _, plan := range plans {
-		if _, err := s.moveObjectLocked(plan.object, destinationBucket, plan.destinationKey); err != nil {
+		moved, err := s.moveObjectLocked(plan.object, destinationBucket, plan.destinationKey)
+		if err != nil {
+			return MoveResult{}, err
+		}
+		if err := s.recordObjectDeleteEvent(plan.object.Bucket, plan.object.Key); err != nil {
+			return MoveResult{}, err
+		}
+		if err := s.recordObjectUpsertEvent(objectMetadataFromObjectInfo(moved)); err != nil {
 			return MoveResult{}, err
 		}
 	}
@@ -1139,6 +1243,9 @@ func (s *Store) DeleteBucket(ctx context.Context, name string) error {
 		return fmt.Errorf("remove bucket dir: %w", err)
 	}
 	if err := s.metadata.deleteBucket(name); err != nil {
+		return err
+	}
+	if err := s.recordBucketDeleteEvent(name); err != nil {
 		return err
 	}
 
@@ -1357,6 +1464,10 @@ func (s *Store) moveObjectLocked(object ObjectInfo, destinationBucket, destinati
 		Key:                destinationKey,
 		Size:               object.Size,
 		ETag:               object.ETag,
+		ChecksumSHA256:     object.ChecksumSHA256,
+		Revision:           object.Revision + 1,
+		OriginNodeID:       "local",
+		LastChangeID:       newChangeID(),
 		ContentType:        object.ContentType,
 		CacheControl:       object.CacheControl,
 		ContentDisposition: object.ContentDisposition,
@@ -1383,6 +1494,10 @@ func (s *Store) moveObjectLocked(object ObjectInfo, destinationBucket, destinati
 		MetadataPath:       "",
 		Size:               object.Size,
 		ETag:               object.ETag,
+		ChecksumSHA256:     object.ChecksumSHA256,
+		Revision:           meta.Revision,
+		OriginNodeID:       meta.OriginNodeID,
+		LastChangeID:       meta.LastChangeID,
 		ContentType:        object.ContentType,
 		CacheControl:       object.CacheControl,
 		ContentDisposition: object.ContentDisposition,
@@ -1451,4 +1566,87 @@ func dirHasEntries(path string) bool {
 		return false
 	}
 	return len(entries) > 0
+}
+
+func (s *Store) backfillObjectChecksums() (int, error) {
+	metas, err := s.metadata.listObjectsMissingChecksum()
+	if err != nil {
+		return 0, err
+	}
+
+	backfilled := 0
+	for _, meta := range metas {
+		objectPath, _, err := s.resolveObjectPaths(meta.Bucket, meta.Key)
+		if err != nil {
+			return backfilled, err
+		}
+		checksum, err := checksumFileSHA256(objectPath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				s.logger.Warn(
+					"skip checksum backfill for missing object",
+					zap.String("bucket", meta.Bucket),
+					zap.String("key", meta.Key),
+					zap.String("path", objectPath),
+				)
+				continue
+			}
+			return backfilled, fmt.Errorf("backfill object checksum for %s/%s: %w", meta.Bucket, meta.Key, err)
+		}
+		meta.ChecksumSHA256 = checksum
+		if err := s.writeObjectMetadata(meta); err != nil {
+			return backfilled, err
+		}
+		if err := s.recordObjectUpsertEvent(meta); err != nil {
+			return backfilled, err
+		}
+		backfilled++
+	}
+	return backfilled, nil
+}
+
+func checksumFileSHA256(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	hasher := sha256.New()
+	if _, err := io.CopyBuffer(hasher, file, make([]byte, 32*1024)); err != nil {
+		return "", fmt.Errorf("hash object file: %w", err)
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func (s *Store) nextObjectRevision(bucket, key string) int64 {
+	meta, err := s.readObjectMetadata(bucket, key)
+	if err != nil {
+		return 1
+	}
+	if meta.Revision <= 0 {
+		return 1
+	}
+	return meta.Revision + 1
+}
+
+func newChangeID() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("fallback-%d", time.Now().UTC().UnixNano())
+	}
+	return hex.EncodeToString(buf)
+}
+
+func (s *Store) bootstrapSyncSettings(cfg config.Config) error {
+	ctx := context.Background()
+	if _, err := s.SyncSettings(ctx); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	_, err := s.SetSyncSettings(ctx, SyncSettings{
+		Enabled: cfg.Sync.Enabled,
+	})
+	return err
 }

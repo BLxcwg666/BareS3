@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -19,6 +21,8 @@ import (
 	"bares3-server/internal/config"
 	"bares3-server/internal/consoleauth"
 	"bares3-server/internal/httpx"
+	"bares3-server/internal/remotes"
+	"bares3-server/internal/replication"
 	"bares3-server/internal/s3creds"
 	"bares3-server/internal/sharelink"
 	"bares3-server/internal/sigv4"
@@ -62,6 +66,10 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 			panic(fmt.Sprintf("initialize s3 credential store: %v", err))
 		}
 	}
+	remoteStore, err := remotes.New(cfg.Paths.DataDir, logger.Named("remotes"))
+	if err != nil {
+		panic(fmt.Sprintf("initialize replication store: %v", err))
+	}
 
 	router := chi.NewRouter()
 	uiHandler := webui.NewHandler()
@@ -80,10 +88,12 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 	})
 	router.Handle("/readyz", httpx.ReadyHandler("admin",
 		httpx.ReadinessCheck{Name: "storage", Check: store.Check},
+		httpx.ReadinessCheck{Name: "replication", Check: remoteStore.Check},
 		httpx.ReadinessCheck{Name: "share_links", Check: shareLinks.Check},
 		httpx.ReadinessCheck{Name: "s3_credentials", Check: credentials.Check},
 	))
 	router.Handle("/metrics", httpx.MetricsHandler())
+	router.Mount("/internal/sync", replication.NewLeaderHandler(cfg, store, logger.Named("sync")))
 
 	router.Route("/api/v1", func(api chi.Router) {
 		api.NotFound(func(w http.ResponseWriter, r *http.Request) {
@@ -177,6 +187,7 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 
 		api.Group(func(protected chi.Router) {
 			protected.Use(requireSession(manager))
+			protected.Use(rejectFollowerMutations(store))
 
 			protected.Get("/search", func(w http.ResponseWriter, r *http.Request) {
 				query := strings.TrimSpace(r.URL.Query().Get("query"))
@@ -298,6 +309,16 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 					})
 					return
 				}
+				syncSettings, err := store.SyncSettings(r.Context())
+				if errors.Is(err, os.ErrNotExist) {
+					syncSettings = storage.DefaultSyncSettings()
+				} else if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
 
 				httpx.WriteJSON(w, http.StatusOK, map[string]any{
 					"app": map[string]any{
@@ -330,6 +351,9 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 						"bucket_count":      len(buckets),
 						"active_link_count": activeLinkCount,
 					},
+					"sync": map[string]any{
+						"enabled": syncSettings.Enabled,
+					},
 				})
 			})
 
@@ -340,6 +364,204 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 					return
 				}
 				httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
+			})
+
+			protected.Get("/replication/tokens", func(w http.ResponseWriter, r *http.Request) {
+				items, err := remoteStore.ListAccessTokens(r.Context())
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": err.Error()})
+					return
+				}
+				httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
+			})
+
+			protected.Post("/replication/tokens", func(w http.ResponseWriter, r *http.Request) {
+				payload := struct {
+					Label string `json:"label"`
+				}{}
+				decoder := json.NewDecoder(r.Body)
+				decoder.DisallowUnknownFields()
+				if err := decoder.Decode(&payload); err != nil && !errors.Is(err, io.EOF) {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "message": "invalid request body"})
+					return
+				}
+				token, err := remoteStore.CreateAccessToken(r.Context(), remotes.CreateAccessTokenInput{Label: payload.Label, CreatedBy: actorFromRequest(r)})
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": err.Error()})
+					return
+				}
+				recordAudit(logger, auditRecorder, auditlog.Entry{Actor: actorFromRequest(r), Action: "replication.token.create", Title: fmt.Sprintf("Created replication token %s", token.ID), Detail: fmt.Sprintf("Label %s", nonEmptyLabel(token.Label, "(none)")), Target: token.ID, Remote: requestRemote(r), Status: "success"})
+				httpx.WriteJSON(w, http.StatusCreated, token)
+			})
+
+			protected.Delete("/replication/tokens/{id}", func(w http.ResponseWriter, r *http.Request) {
+				token, err := remoteStore.RevokeAccessToken(r.Context(), chi.URLParam(r, "id"))
+				if err != nil {
+					status := http.StatusInternalServerError
+					if errors.Is(err, remotes.ErrTokenNotFound) {
+						status = http.StatusNotFound
+					}
+					httpx.WriteJSON(w, status, map[string]any{"status": "error", "message": err.Error()})
+					return
+				}
+				recordAudit(logger, auditRecorder, auditlog.Entry{Actor: actorFromRequest(r), Action: "replication.token.revoke", Title: fmt.Sprintf("Revoked replication token %s", token.ID), Target: token.ID, Remote: requestRemote(r), Status: "success"})
+				httpx.WriteJSON(w, http.StatusOK, token)
+			})
+
+			protected.Delete("/replication/tokens/{id}/remove", func(w http.ResponseWriter, r *http.Request) {
+				token, err := remoteStore.DeleteAccessToken(r.Context(), chi.URLParam(r, "id"))
+				if err != nil {
+					status := http.StatusInternalServerError
+					switch {
+					case errors.Is(err, remotes.ErrTokenNotFound):
+						status = http.StatusNotFound
+					case errors.Is(err, remotes.ErrTokenActive):
+						status = http.StatusConflict
+					}
+					httpx.WriteJSON(w, status, map[string]any{"status": "error", "message": err.Error()})
+					return
+				}
+				recordAudit(logger, auditRecorder, auditlog.Entry{Actor: actorFromRequest(r), Action: "replication.token.delete", Title: fmt.Sprintf("Deleted replication token %s", token.ID), Target: token.ID, Remote: requestRemote(r), Status: "success"})
+				httpx.WriteJSON(w, http.StatusOK, token)
+			})
+
+			protected.Get("/replication/remotes", func(w http.ResponseWriter, r *http.Request) {
+				items, err := remoteStore.ListRemotes(r.Context())
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": err.Error()})
+					return
+				}
+				views, err := buildRemoteViews(r.Context(), store, items)
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": err.Error()})
+					return
+				}
+				httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": views})
+			})
+
+			protected.Post("/replication/remotes", func(w http.ResponseWriter, r *http.Request) {
+				payload := struct {
+					DisplayName   string `json:"display_name"`
+					Endpoint      string `json:"endpoint"`
+					Token         string `json:"token"`
+					FollowChanges *bool  `json:"follow_changes"`
+					BootstrapMode string `json:"bootstrap_mode"`
+				}{}
+				decoder := json.NewDecoder(r.Body)
+				decoder.DisallowUnknownFields()
+				if err := decoder.Decode(&payload); err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "message": "invalid request body"})
+					return
+				}
+				manifest, err := fetchRemoteManifestForBootstrap(r.Context(), strings.TrimSpace(payload.Endpoint), strings.TrimSpace(payload.Token))
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "message": err.Error()})
+					return
+				}
+				cursor := int64(0)
+				if remotes.NormalizeBootstrapMode(payload.BootstrapMode) == remotes.BootstrapModeFromNow {
+					cursor = manifest.Cursor
+				}
+				followChanges := true
+				if payload.FollowChanges != nil {
+					followChanges = *payload.FollowChanges
+				}
+				remote, err := remoteStore.CreateRemote(r.Context(), remotes.CreateRemoteInput{DisplayName: payload.DisplayName, Endpoint: payload.Endpoint, Token: payload.Token, FollowChanges: followChanges, BootstrapMode: payload.BootstrapMode, Cursor: cursor})
+				if err != nil {
+					status := http.StatusInternalServerError
+					if errors.Is(err, remotes.ErrInvalidBootstrapMode) {
+						status = http.StatusBadRequest
+					}
+					httpx.WriteJSON(w, status, map[string]any{"status": "error", "message": err.Error()})
+					return
+				}
+				recordAudit(logger, auditRecorder, auditlog.Entry{Actor: actorFromRequest(r), Action: "replication.remote.create", Title: fmt.Sprintf("Added replication remote %s", remote.DisplayName), Detail: fmt.Sprintf("Endpoint %s · Mode %s", remote.Endpoint, remote.BootstrapMode), Target: remote.ID, Remote: requestRemote(r), Status: "success"})
+				view, err := buildRemoteView(r.Context(), store, remote)
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": err.Error()})
+					return
+				}
+				httpx.WriteJSON(w, http.StatusCreated, view)
+			})
+
+			protected.Patch("/replication/remotes/{id}", func(w http.ResponseWriter, r *http.Request) {
+				payload := struct {
+					FollowChanges *bool `json:"follow_changes"`
+				}{}
+				decoder := json.NewDecoder(r.Body)
+				decoder.DisallowUnknownFields()
+				if err := decoder.Decode(&payload); err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "message": "invalid request body"})
+					return
+				}
+				if payload.FollowChanges == nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "message": "follow_changes is required"})
+					return
+				}
+				remote, err := remoteStore.GetRemote(r.Context(), chi.URLParam(r, "id"))
+				if err != nil {
+					status := http.StatusInternalServerError
+					if errors.Is(err, remotes.ErrRemoteNotFound) {
+						status = http.StatusNotFound
+					}
+					httpx.WriteJSON(w, status, map[string]any{"status": "error", "message": err.Error()})
+					return
+				}
+				if err := remoteStore.UpdateRemoteState(r.Context(), remotes.UpdateRemoteStateInput{ID: remote.ID, FollowChanges: payload.FollowChanges}); err != nil {
+					status := http.StatusInternalServerError
+					if errors.Is(err, remotes.ErrRemoteNotFound) {
+						status = http.StatusNotFound
+					}
+					httpx.WriteJSON(w, status, map[string]any{"status": "error", "message": err.Error()})
+					return
+				}
+				updatedRemote, err := remoteStore.GetRemote(r.Context(), remote.ID)
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": err.Error()})
+					return
+				}
+				view, err := buildRemoteView(r.Context(), store, updatedRemote)
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": err.Error()})
+					return
+				}
+				recordAudit(logger, auditRecorder, auditlog.Entry{Actor: actorFromRequest(r), Action: "replication.remote.update", Title: fmt.Sprintf("Updated replication remote %s", updatedRemote.DisplayName), Detail: fmt.Sprintf("Follow changes %t", updatedRemote.FollowChanges), Target: updatedRemote.ID, Remote: requestRemote(r), Status: "success"})
+				httpx.WriteJSON(w, http.StatusOK, view)
+			})
+
+			protected.Delete("/replication/remotes/{id}", func(w http.ResponseWriter, r *http.Request) {
+				remote, err := remoteStore.GetRemote(r.Context(), chi.URLParam(r, "id"))
+				if err != nil {
+					status := http.StatusInternalServerError
+					if errors.Is(err, remotes.ErrRemoteNotFound) {
+						status = http.StatusNotFound
+					}
+					httpx.WriteJSON(w, status, map[string]any{"status": "error", "message": err.Error()})
+					return
+				}
+				if err := remoteStore.DeleteRemote(r.Context(), remote.ID); err != nil {
+					status := http.StatusInternalServerError
+					if errors.Is(err, remotes.ErrRemoteNotFound) {
+						status = http.StatusNotFound
+					}
+					httpx.WriteJSON(w, status, map[string]any{"status": "error", "message": err.Error()})
+					return
+				}
+				if err := store.DeleteSyncStatusesBySource(r.Context(), remote.ID); err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": err.Error()})
+					return
+				}
+				recordAudit(logger, auditRecorder, auditlog.Entry{Actor: actorFromRequest(r), Action: "replication.remote.delete", Title: fmt.Sprintf("Removed replication remote %s", remote.DisplayName), Target: remote.ID, Remote: requestRemote(r), Status: "success"})
+				view, err := buildRemoteView(r.Context(), store, remote)
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": err.Error()})
+					return
+				}
+				httpx.WriteJSON(w, http.StatusOK, view)
+			})
+
+			protected.Get("/replication/stream", func(w http.ResponseWriter, r *http.Request) {
+				serveReplicationAdminStream(w, r, store, remoteStore, logger)
 			})
 
 			protected.Post("/settings/s3/credentials", func(w http.ResponseWriter, r *http.Request) {
@@ -645,6 +867,125 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 				httpx.WriteJSON(w, http.StatusOK, map[string]any{
 					"max_bytes": store.InstanceQuotaBytes(),
 				})
+			})
+
+			protected.Get("/settings/sync", func(w http.ResponseWriter, r *http.Request) {
+				settings, err := store.SyncSettings(r.Context())
+				if errors.Is(err, os.ErrNotExist) {
+					settings = storage.DefaultSyncSettings()
+				} else if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
+				currentCursor, err := store.CurrentSyncCursor(r.Context())
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
+				reconcileCounts, err := store.SyncStatusCounts(r.Context(), "")
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
+				reconcileSummary, err := store.SyncStatusSummary(r.Context(), "")
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
+				conflictItems, err := store.ConflictItems(r.Context(), "", 20)
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
+				httpx.WriteJSON(w, http.StatusOK, map[string]any{
+					"enabled":           settings.Enabled,
+					"leader_cursor":     currentCursor,
+					"reconcile_counts":  reconcileCounts,
+					"reconcile_summary": reconcileSummary,
+					"conflict_items":    conflictItems,
+				})
+			})
+
+			protected.Put("/settings/sync", func(w http.ResponseWriter, r *http.Request) {
+				payload := struct {
+					Enabled bool `json:"enabled"`
+				}{}
+
+				decoder := json.NewDecoder(r.Body)
+				decoder.DisallowUnknownFields()
+				if err := decoder.Decode(&payload); err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+						"status":  "error",
+						"message": "invalid request body",
+					})
+					return
+				}
+
+				updated, err := store.SetSyncSettings(r.Context(), storage.SyncSettings{Enabled: payload.Enabled})
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
+
+				recordAudit(logger, auditRecorder, auditlog.Entry{
+					Actor:  actorFromRequest(r),
+					Action: "settings.sync.update",
+					Title:  "Updated sync settings",
+					Detail: fmt.Sprintf("Sync enabled %t", updated.Enabled),
+					Remote: requestRemote(r),
+					Status: "success",
+				})
+				httpx.WriteJSON(w, http.StatusOK, map[string]any{
+					"enabled": updated.Enabled,
+				})
+			})
+
+			protected.Post("/settings/sync/conflicts/resolve", func(w http.ResponseWriter, r *http.Request) {
+				payload := struct {
+					Bucket string `json:"bucket"`
+					Key    string `json:"key"`
+				}{}
+				decoder := json.NewDecoder(r.Body)
+				decoder.DisallowUnknownFields()
+				if err := decoder.Decode(&payload); err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "message": "invalid request body"})
+					return
+				}
+				statusItem, err := store.GetObjectSyncStatus(r.Context(), payload.Bucket, payload.Key)
+				if err != nil {
+					writeStorageError(w, err)
+					return
+				}
+				if _, err := store.SyncSettings(r.Context()); errors.Is(err, os.ErrNotExist) {
+					// Sync settings may be absent until first toggle; conflict resolution relies on remotes only.
+				} else if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": err.Error()})
+					return
+				}
+				if err := refetchObjectFromSource(r.Context(), store, remoteStore, statusItem, payload.Bucket, payload.Key); err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": err.Error()})
+					return
+				}
+				recordAudit(logger, auditRecorder, auditlog.Entry{Actor: actorFromRequest(r), Action: "sync.conflict.resolve", Title: fmt.Sprintf("Resolved conflict for %s/%s", payload.Bucket, payload.Key), Target: payload.Bucket + "/" + payload.Key, Remote: requestRemote(r), Status: "success"})
+				httpx.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 			})
 
 			protected.Put("/settings/storage", func(w http.ResponseWriter, r *http.Request) {
@@ -1273,6 +1614,14 @@ func requireSession(manager *consoleauth.Manager) func(http.Handler) http.Handle
 	}
 }
 
+func rejectFollowerMutations(store *storage.Store) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 func writeStorageError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	switch {
@@ -1282,6 +1631,8 @@ func writeStorageError(w http.ResponseWriter, err error) {
 		status = http.StatusConflict
 	case errors.Is(err, storage.ErrBucketNotEmpty), errors.Is(err, storage.ErrBucketQuotaExceeded), errors.Is(err, storage.ErrInstanceQuotaExceeded):
 		status = http.StatusConflict
+	case errors.Is(err, storage.ErrObjectSyncing):
+		status = http.StatusServiceUnavailable
 	case errors.Is(err, storage.ErrBucketNotFound), errors.Is(err, storage.ErrObjectNotFound):
 		status = http.StatusNotFound
 	}
@@ -1290,6 +1641,14 @@ func writeStorageError(w http.ResponseWriter, err error) {
 		"status":  "error",
 		"message": err.Error(),
 	})
+}
+
+func parseInt64OrZero(value string) int64 {
+	parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return parsed
 }
 
 func writeShareLinkError(w http.ResponseWriter, err error) {

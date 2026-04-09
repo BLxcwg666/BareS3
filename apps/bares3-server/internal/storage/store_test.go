@@ -3,6 +3,8 @@ package storage
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -317,6 +319,10 @@ func TestPutObjectWritesDataAndMetadata(t *testing.T) {
 	if object.MetadataPath != "" {
 		t.Fatalf("expected metadata path to be empty, got %q", object.MetadataPath)
 	}
+	expectedChecksum := checksumHexForTest("hello world")
+	if object.ChecksumSHA256 != expectedChecksum {
+		t.Fatalf("unexpected object checksum: %s", object.ChecksumSHA256)
+	}
 	_, metadataPath, err := store.resolveObjectPaths("gallery", "2026/launch/mock-02.png")
 	if err != nil {
 		t.Fatalf("resolveObjectPaths failed: %v", err)
@@ -334,6 +340,9 @@ func TestPutObjectWritesDataAndMetadata(t *testing.T) {
 	}
 	if stated.ETag == "" {
 		t.Fatalf("expected non-empty etag in sqlite metadata")
+	}
+	if stated.ChecksumSHA256 != expectedChecksum {
+		t.Fatalf("unexpected checksum from sqlite metadata: %s", stated.ChecksumSHA256)
 	}
 	if stated.CacheControl != "public, max-age=3600" {
 		t.Fatalf("unexpected cache control from sqlite metadata: %q", stated.CacheControl)
@@ -549,6 +558,9 @@ func TestMoveObjectRenamesAcrossBuckets(t *testing.T) {
 	if stated.ContentType != "text/plain" {
 		t.Fatalf("unexpected moved content type: %s", stated.ContentType)
 	}
+	if stated.ChecksumSHA256 != checksumHexForTest("hello") {
+		t.Fatalf("unexpected moved checksum: %s", stated.ChecksumSHA256)
+	}
 }
 
 func TestMovePrefixMovesFolderContents(t *testing.T) {
@@ -644,6 +656,9 @@ func TestUpdateObjectMetadataPersistsChanges(t *testing.T) {
 	if stated.ContentType != "text/markdown" || stated.CacheControl != "public, max-age=60" || stated.ContentDisposition != "inline" {
 		t.Fatalf("unexpected persisted metadata: %+v", stated)
 	}
+	if stated.ChecksumSHA256 != checksumHexForTest("hello") {
+		t.Fatalf("unexpected persisted checksum after metadata update: %s", stated.ChecksumSHA256)
+	}
 }
 
 func TestDeletePrefixRemovesNestedObjects(t *testing.T) {
@@ -702,6 +717,147 @@ func TestDeleteBucketRequiresEmptyBucket(t *testing.T) {
 	}
 	if _, err := store.GetBucket(context.Background(), "gallery"); !errors.Is(err, ErrBucketNotFound) {
 		t.Fatalf("expected ErrBucketNotFound after delete, got %v", err)
+	}
+}
+
+func TestNewBackfillsMissingObjectChecksums(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	store := newTestStoreAt(t, root)
+	ctx := context.Background()
+	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	if _, err := store.PutObject(ctx, PutObjectInput{
+		Bucket: "gallery",
+		Key:    "notes/legacy.txt",
+		Body:   bytes.NewBufferString("legacy data"),
+	}); err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	db, err := store.metadata.openDB()
+	if err != nil {
+		t.Fatalf("openDB failed: %v", err)
+	}
+	if _, err := db.NewUpdate().Model((*storageObjectRecord)(nil)).
+		Set("checksum_sha256 = ''").
+		Where("bucket = ?", "gallery").
+		Where("key = ?", "notes/legacy.txt").
+		Exec(ctx); err != nil {
+		_ = db.Close()
+		t.Fatalf("clear checksum failed: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db failed: %v", err)
+	}
+
+	meta, err := store.readObjectMetadata("gallery", "notes/legacy.txt")
+	if err != nil {
+		t.Fatalf("readObjectMetadata failed: %v", err)
+	}
+	if meta.ChecksumSHA256 != "" {
+		t.Fatalf("expected checksum to be cleared before reopen, got %s", meta.ChecksumSHA256)
+	}
+
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	reopened := newTestStoreAt(t, root)
+	stated, err := reopened.StatObject(ctx, "gallery", "notes/legacy.txt")
+	if err != nil {
+		t.Fatalf("StatObject after reopen failed: %v", err)
+	}
+	expectedChecksum := checksumHexForTest("legacy data")
+	if stated.ChecksumSHA256 != expectedChecksum {
+		t.Fatalf("unexpected backfilled checksum: %s", stated.ChecksumSHA256)
+	}
+}
+
+func TestStatObjectServesExistingVersionWhileObjectStatusIsNotReady(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	ctx := context.Background()
+	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	if _, err := store.PutObject(ctx, PutObjectInput{
+		Bucket: "gallery",
+		Key:    "notes/readme.txt",
+		Body:   bytes.NewBufferString("hello"),
+	}); err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+	if err := store.SetObjectSyncStatus(ctx, SyncObjectStatus{
+		Bucket:                 "gallery",
+		Key:                    "notes/readme.txt",
+		Status:                 SyncStatusPending,
+		ExpectedChecksumSHA256: checksumHexForTest("hello"),
+	}); err != nil {
+		t.Fatalf("SetObjectSyncStatus existing object failed: %v", err)
+	}
+	stated, err := store.StatObject(ctx, "gallery", "notes/readme.txt")
+	if err != nil {
+		t.Fatalf("expected existing object to remain readable, got %v", err)
+	}
+	if stated.ChecksumSHA256 != checksumHexForTest("hello") {
+		t.Fatalf("unexpected existing object checksum: %s", stated.ChecksumSHA256)
+	}
+
+	if err := store.SetObjectSyncStatus(ctx, SyncObjectStatus{
+		Bucket:                 "gallery",
+		Key:                    "notes/pending.txt",
+		Status:                 SyncStatusDownloading,
+		ExpectedChecksumSHA256: checksumHexForTest("pending"),
+	}); err != nil {
+		t.Fatalf("SetObjectSyncStatus missing object failed: %v", err)
+	}
+	if _, err := store.StatObject(ctx, "gallery", "notes/pending.txt"); !errors.Is(err, ErrObjectSyncing) {
+		t.Fatalf("expected ErrObjectSyncing for pending object, got %v", err)
+	}
+
+	if err := store.SetObjectSyncStatus(ctx, SyncObjectStatus{
+		Bucket:                 "gallery",
+		Key:                    "notes/readme.txt",
+		Status:                 SyncStatusReady,
+		ExpectedChecksumSHA256: checksumHexForTest("hello"),
+	}); err != nil {
+		t.Fatalf("SetObjectSyncStatus ready failed: %v", err)
+	}
+	if _, err := store.StatObject(ctx, "gallery", "notes/readme.txt"); err != nil {
+		t.Fatalf("expected ready object to stat successfully, got %v", err)
+	}
+}
+
+func TestApplyReplicaObjectRejectsOlderRevision(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	ctx := context.Background()
+	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	local, err := store.PutObject(ctx, PutObjectInput{Bucket: "gallery", Key: "notes/readme.txt", Body: bytes.NewBufferString("hello")})
+	if err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+	_, err = store.ApplyReplicaObject(ctx, ReplicaObjectInput{
+		Bucket:         "gallery",
+		Key:            "notes/readme.txt",
+		Body:           bytes.NewBufferString("remote"),
+		Size:           int64(len("remote")),
+		ETag:           "etag-remote",
+		ChecksumSHA256: checksumHexForTest("remote"),
+		Revision:       local.Revision - 1,
+		OriginNodeID:   "node-b",
+		LastChangeID:   "change-b-1",
+		LastModified:   time.Now().UTC(),
+	})
+	if !errors.Is(err, ErrObjectConflict) {
+		t.Fatalf("expected ErrObjectConflict, got %v", err)
 	}
 }
 
@@ -764,7 +920,12 @@ func TestMultipartLegacySessionIgnoresLegacyFiles(t *testing.T) {
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 
-	root := t.TempDir()
+	return newTestStoreAt(t, t.TempDir())
+}
+
+func newTestStoreAt(t *testing.T, root string) *Store {
+	t.Helper()
+
 	cfg := config.Default()
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
@@ -781,6 +942,11 @@ func newTestStore(t *testing.T) *Store {
 		_ = store.Close()
 	})
 	return store
+}
+
+func checksumHexForTest(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }
 
 func writeJSONFileForTest(t *testing.T, path string, value any) {

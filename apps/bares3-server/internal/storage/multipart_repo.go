@@ -48,8 +48,9 @@ var storageMultipartMigrations = []statedb.Migration{
 }
 
 func allStorageMigrations() []statedb.Migration {
-	migrations := make([]statedb.Migration, 0, len(storageMetadataMigrations)+len(storageMultipartMigrations))
+	migrations := make([]statedb.Migration, 0, len(storageMetadataMigrations)+len(storageSyncMigrations)+len(storageMultipartMigrations))
 	migrations = append(migrations, storageMetadataMigrations...)
+	migrations = append(migrations, storageSyncMigrations...)
 	migrations = append(migrations, storageMultipartMigrations...)
 	return migrations
 }

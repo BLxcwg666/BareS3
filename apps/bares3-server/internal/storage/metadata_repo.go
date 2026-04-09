@@ -53,6 +53,20 @@ var storageMetadataMigrations = []statedb.Migration{
 		},
 	},
 	{
+		Name: "storage_objects_checksum_v1",
+		Statements: []string{
+			`ALTER TABLE storage_objects ADD COLUMN checksum_sha256 TEXT NOT NULL DEFAULT ''`,
+		},
+	},
+	{
+		Name: "storage_objects_revision_v1",
+		Statements: []string{
+			`ALTER TABLE storage_objects ADD COLUMN revision INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE storage_objects ADD COLUMN origin_node_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE storage_objects ADD COLUMN last_change_id TEXT NOT NULL DEFAULT ''`,
+		},
+	},
+	{
 		Name: "storage_bucket_usage_history_v1",
 		Statements: []string{
 			`
@@ -347,6 +361,10 @@ func (s *metadataStore) upsertObject(meta objectMetadata) error {
 		On("CONFLICT (bucket, key) DO UPDATE").
 		Set("size = EXCLUDED.size").
 		Set("etag = EXCLUDED.etag").
+		Set("checksum_sha256 = EXCLUDED.checksum_sha256").
+		Set("revision = EXCLUDED.revision").
+		Set("origin_node_id = EXCLUDED.origin_node_id").
+		Set("last_change_id = EXCLUDED.last_change_id").
 		Set("content_type = EXCLUDED.content_type").
 		Set("cache_control = EXCLUDED.cache_control").
 		Set("content_disposition = EXCLUDED.content_disposition").
@@ -378,6 +396,10 @@ func (s *metadataStore) moveObject(sourceBucket, sourceKey string, meta objectMe
 		Set("key = ?", record.Key).
 		Set("size = ?", record.Size).
 		Set("etag = ?", record.ETag).
+		Set("checksum_sha256 = ?", record.ChecksumSHA256).
+		Set("revision = ?", record.Revision).
+		Set("origin_node_id = ?", record.OriginNodeID).
+		Set("last_change_id = ?", record.LastChangeID).
 		Set("content_type = ?", record.ContentType).
 		Set("cache_control = ?", record.CacheControl).
 		Set("content_disposition = ?", record.ContentDisposition).
@@ -495,6 +517,36 @@ func (s *metadataStore) appendBucketUsageSample(bucket string, sample BucketUsag
 		return fmt.Errorf("trim bucket usage history: %w", err)
 	}
 	return nil
+}
+
+func (s *metadataStore) listObjectsMissingChecksum() ([]objectMetadata, error) {
+	ctx := context.Background()
+	db, err := s.openDB()
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = db.Close()
+	}()
+
+	records := make([]storageObjectRecord, 0)
+	err = db.NewSelect().Model(&records).
+		Where("COALESCE(checksum_sha256, '') = ''").
+		OrderExpr("bucket ASC, key ASC").
+		Scan(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list object metadata missing checksum: %w", err)
+	}
+
+	items := make([]objectMetadata, 0, len(records))
+	for _, record := range records {
+		meta, err := record.ObjectMetadata()
+		if err != nil {
+			return nil, fmt.Errorf("scan object metadata missing checksum: %w", err)
+		}
+		items = append(items, meta)
+	}
+	return items, nil
 }
 
 func (s *metadataStore) openDB() (*statedb.BunSession, error) {

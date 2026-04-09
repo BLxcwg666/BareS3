@@ -315,7 +315,6 @@ func handleS3Request(w http.ResponseWriter, r *http.Request, cfg config.Config, 
 	if !authorizeBucketRequest(w, r, credential, bucket, requestRequiresWrite(r, key)) {
 		return
 	}
-
 	if key == "" {
 		handleBucketRequest(w, r, store, shareLinks, bucket)
 		return
@@ -1313,7 +1312,6 @@ func findMultipartStartIndex(items []multipartListItem, keyMarker, uploadIDMarke
 		return 0
 	}
 	startIndex := 0
-	markerMatched := strings.TrimSpace(uploadIDMarker) == ""
 	for startIndex < len(items) {
 		item := items[startIndex]
 		if item.Value < keyMarker {
@@ -1327,20 +1325,14 @@ func findMultipartStartIndex(items []multipartListItem, keyMarker, uploadIDMarke
 			startIndex++
 			continue
 		}
-		if markerMatched {
+		if strings.TrimSpace(uploadIDMarker) == "" {
 			startIndex++
 			continue
 		}
+		startIndex++
 		if item.Upload.UploadID == uploadIDMarker {
-			markerMatched = true
-			startIndex++
-			continue
+			return startIndex
 		}
-		if item.Upload.UploadID <= uploadIDMarker {
-			startIndex++
-			continue
-		}
-		break
 	}
 	return startIndex
 }
@@ -1552,6 +1544,8 @@ func writeStorageAsS3Error(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, storage.ErrBucketNotFound):
 		writeS3Error(w, r, http.StatusNotFound, "NoSuchBucket", err.Error())
+	case errors.Is(err, storage.ErrObjectSyncing):
+		writeS3Error(w, r, http.StatusServiceUnavailable, "ServiceUnavailable", err.Error())
 	case errors.Is(err, storage.ErrObjectNotFound):
 		writeS3Error(w, r, http.StatusNotFound, "NoSuchKey", err.Error())
 	case errors.Is(err, storage.ErrInvalidBucketName):

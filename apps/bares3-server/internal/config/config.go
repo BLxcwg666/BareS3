@@ -15,8 +15,6 @@ import (
 const (
 	ProductName           = "BareS3"
 	defaultConfigFilename = "config.yml"
-	defaultDevAccessKeyID = "bares3-dev"
-	defaultDevSecretKey   = "bares3-dev-secret"
 )
 
 type Config struct {
@@ -26,6 +24,7 @@ type Config struct {
 	Auth    AuthConfig    `yaml:"auth"`
 	Storage StorageConfig `yaml:"storage"`
 	Logging LoggingConfig `yaml:"logging"`
+	Sync    SyncConfig    `yaml:"sync"`
 	Runtime RuntimeConfig `yaml:"-"`
 }
 
@@ -77,6 +76,10 @@ type LoggingConfig struct {
 	RotateKeep   int    `yaml:"rotate_keep"`
 }
 
+type SyncConfig struct {
+	Enabled bool `yaml:"enabled"`
+}
+
 type RuntimeConfig struct {
 	BaseDir    string
 	ConfigPath string
@@ -102,10 +105,6 @@ func Default() Config {
 				Username:          "admin",
 				SessionTTLMinutes: 7 * 24 * 60,
 			},
-			S3: S3AuthConfig{
-				AccessKeyID:     defaultDevAccessKeyID,
-				SecretAccessKey: defaultDevSecretKey,
-			},
 		},
 		Storage: StorageConfig{
 			Region:         "home-lab-1",
@@ -116,6 +115,9 @@ func Default() Config {
 			Format:       "pretty",
 			RotateSizeMB: 16,
 			RotateKeep:   10,
+		},
+		Sync: SyncConfig{
+			Enabled: false,
 		},
 	}
 }
@@ -222,9 +224,6 @@ func (c Config) Validate() error {
 	if (accessKeyID == "") != (secretAccessKey == "") {
 		return errors.New("auth.s3.access_key_id and auth.s3.secret_access_key must both be set or both be empty")
 	}
-	if accessKeyID != "" && !isDevelopmentEnv(c.App.Env) && usesDefaultDevelopmentS3Credentials(c.Auth.S3) {
-		return errors.New("auth.s3 credentials must be changed from the bundled development defaults outside development")
-	}
 	layout := strings.ToLower(strings.TrimSpace(c.Storage.MetadataLayout))
 	if layout != "" && layout != "hidden-dir" {
 		return fmt.Errorf("storage.metadata_layout must be hidden-dir, got %q", c.Storage.MetadataLayout)
@@ -308,10 +307,6 @@ func derivePublicBaseURL(listenAddr string) string {
 		host = "127.0.0.1"
 	}
 	return (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, port)}).String()
-}
-
-func usesDefaultDevelopmentS3Credentials(auth S3AuthConfig) bool {
-	return strings.TrimSpace(auth.AccessKeyID) == defaultDevAccessKeyID && strings.TrimSpace(auth.SecretAccessKey) == defaultDevSecretKey
 }
 
 func isDevelopmentEnv(value string) bool {

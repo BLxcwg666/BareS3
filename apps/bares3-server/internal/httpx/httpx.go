@@ -1,7 +1,11 @@
 package httpx
 
 import (
+	"bufio"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"time"
 
@@ -26,6 +30,36 @@ func (r *responseRecorder) Write(payload []byte) (int, error) {
 	n, err := r.ResponseWriter.Write(payload)
 	r.bytes += n
 	return n, err
+}
+
+func (r *responseRecorder) Flush() {
+	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (r *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("response writer does not support hijacking")
+	}
+	return hijacker.Hijack()
+}
+
+func (r *responseRecorder) ReadFrom(reader io.Reader) (int64, error) {
+	if readFrom, ok := r.ResponseWriter.(io.ReaderFrom); ok {
+		if r.status == 0 {
+			r.status = http.StatusOK
+		}
+		n, err := readFrom.ReadFrom(reader)
+		r.bytes += int(n)
+		return n, err
+	}
+	return io.Copy(r.ResponseWriter, reader)
+}
+
+func (r *responseRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
 }
 
 func RequestLogger(logger *zap.Logger, service string) func(http.Handler) http.Handler {

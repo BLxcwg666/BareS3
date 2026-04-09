@@ -941,6 +941,30 @@ func TestMultipartUploadLifecycle(t *testing.T) {
 	}
 }
 
+func TestSyncEnabledDoesNotShortCircuitS3Writes(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Sync.Enabled = true
+
+	store := storage.New(cfg, zap.NewNop())
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+	handler := newHandler(cfg, store, newShareLinksForTest(t, cfg.Paths.DataDir), newCredentialsForTest(t, cfg), zap.NewNop())
+
+	body := []byte("hello")
+	request := httptest.NewRequest(http.MethodPut, "/gallery/notes/readme.txt", bytes.NewReader(body))
+	signHeaderRequest(t, request, cfg, body)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	assertS3Error(t, recorder, http.StatusNotFound, "NoSuchBucket", cfg.Storage.Region, "gallery")
+}
+
 func TestUploadPartCopyLifecycle(t *testing.T) {
 	t.Parallel()
 

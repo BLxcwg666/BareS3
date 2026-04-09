@@ -141,6 +141,41 @@ func TestLoginAndProtectedRuntime(t *testing.T) {
 	}
 }
 
+func TestProtectedMutationsRemainAllowedWhenSyncEnabled(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	hash, err := consoleauth.HashPassword("secret-password")
+	if err != nil {
+		t.Fatalf("HashPassword failed: %v", err)
+	}
+	cfg.Auth.Console.PasswordHash = hash
+	cfg.Auth.Console.SessionSecret = "test-session-secret"
+	cfg.Sync.Enabled = true
+
+	store := newStorageStoreForTest(t, cfg)
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	cookie := loginCookie(t, handler)
+
+	body, _ := json.Marshal(map[string]any{"name": "gallery"})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/buckets", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("unexpected mutation status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestLoginSetsSecureCookieForHTTPSRequests(t *testing.T) {
 	t.Parallel()
 
@@ -453,6 +488,241 @@ func TestUpdateStorageSettingsPersistsAndAppliesImmediately(t *testing.T) {
 	}
 	if stored.Storage.MaxBytes != 1024 {
 		t.Fatalf("unexpected stored max bytes: %d", stored.Storage.MaxBytes)
+	}
+}
+
+func TestUpdateSyncSettingsPersistsToDB(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	hash, err := consoleauth.HashPassword("secret-password")
+	if err != nil {
+		t.Fatalf("HashPassword failed: %v", err)
+	}
+	cfg.Auth.Console.PasswordHash = hash
+	cfg.Auth.Console.SessionSecret = "test-session-secret"
+	cfg.Runtime.ConfigPath = filepath.Join(root, "config.yml")
+	cfg.Runtime.ConfigUsed = true
+	if err := config.Save(cfg.Runtime.ConfigPath, cfg); err != nil {
+		t.Fatalf("Save config failed: %v", err)
+	}
+
+	store := newStorageStoreForTest(t, cfg)
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	cookie := loginCookie(t, handler)
+
+	body, _ := json.Marshal(map[string]any{
+		"enabled": true,
+	})
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/settings/sync", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected sync settings status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	stored, err := store.SyncSettings(context.Background())
+	if err != nil {
+		t.Fatalf("SyncSettings failed: %v", err)
+	}
+	if !stored.Enabled {
+		t.Fatalf("unexpected stored sync config: %+v", stored)
+	}
+
+	getRequest := httptest.NewRequest(http.MethodGet, "/api/v1/settings/sync", nil)
+	getRequest.AddCookie(cookie)
+	getRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(getRecorder, getRequest)
+	if getRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected get sync settings status: %d body=%s", getRecorder.Code, getRecorder.Body.String())
+	}
+}
+
+func TestReplicationTokenCreateListRemoteAndDeleteFlow(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	hash, err := consoleauth.HashPassword("secret-password")
+	if err != nil {
+		t.Fatalf("HashPassword failed: %v", err)
+	}
+	cfg.Auth.Console.PasswordHash = hash
+	cfg.Auth.Console.SessionSecret = "test-session-secret"
+
+	store := newStorageStoreForTest(t, cfg)
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	cookie := loginCookie(t, handler)
+
+	tokenBody, _ := json.Marshal(map[string]string{"label": "Peer A"})
+	tokenRequest := httptest.NewRequest(http.MethodPost, "/api/v1/replication/tokens", bytes.NewReader(tokenBody))
+	tokenRequest.Header.Set("Content-Type", "application/json")
+	tokenRequest.AddCookie(cookie)
+	tokenRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(tokenRecorder, tokenRequest)
+	if tokenRecorder.Code != http.StatusCreated {
+		t.Fatalf("unexpected token create status: %d body=%s", tokenRecorder.Code, tokenRecorder.Body.String())
+	}
+	token := struct {
+		ID    string `json:"id"`
+		Token string `json:"token"`
+	}{}
+	if err := json.Unmarshal(tokenRecorder.Body.Bytes(), &token); err != nil {
+		t.Fatalf("unmarshal token failed: %v", err)
+	}
+	if token.ID == "" || token.Token == "" {
+		t.Fatalf("expected token id and value, got %+v", token)
+	}
+
+	tokensRequest := httptest.NewRequest(http.MethodGet, "/api/v1/replication/tokens", nil)
+	tokensRequest.AddCookie(cookie)
+	tokensRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(tokensRecorder, tokensRequest)
+	if tokensRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected list token status: %d body=%s", tokensRecorder.Code, tokensRecorder.Body.String())
+	}
+
+	remoteBody, _ := json.Marshal(map[string]string{
+		"display_name":   "Loopback source",
+		"endpoint":       server.URL,
+		"token":          token.Token,
+		"bootstrap_mode": "full",
+	})
+	remoteRequest := httptest.NewRequest(http.MethodPost, "/api/v1/replication/remotes", bytes.NewReader(remoteBody))
+	remoteRequest.Header.Set("Content-Type", "application/json")
+	remoteRequest.AddCookie(cookie)
+	remoteRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(remoteRecorder, remoteRequest)
+	if remoteRecorder.Code != http.StatusCreated {
+		t.Fatalf("unexpected remote create status: %d body=%s", remoteRecorder.Code, remoteRecorder.Body.String())
+	}
+	remote := struct {
+		ID            string `json:"id"`
+		DisplayName   string `json:"display_name"`
+		BootstrapMode string `json:"bootstrap_mode"`
+	}{}
+	if err := json.Unmarshal(remoteRecorder.Body.Bytes(), &remote); err != nil {
+		t.Fatalf("unmarshal remote failed: %v", err)
+	}
+	if remote.ID == "" || remote.DisplayName != "Loopback source" || remote.BootstrapMode != "full" {
+		t.Fatalf("unexpected remote payload: %+v", remote)
+	}
+
+	remotesRequest := httptest.NewRequest(http.MethodGet, "/api/v1/replication/remotes", nil)
+	remotesRequest.AddCookie(cookie)
+	remotesRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(remotesRecorder, remotesRequest)
+	if remotesRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected list remotes status: %d body=%s", remotesRecorder.Code, remotesRecorder.Body.String())
+	}
+
+	deleteRemoteRequest := httptest.NewRequest(http.MethodDelete, "/api/v1/replication/remotes/"+remote.ID, nil)
+	deleteRemoteRequest.AddCookie(cookie)
+	deleteRemoteRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(deleteRemoteRecorder, deleteRemoteRequest)
+	if deleteRemoteRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected delete remote status: %d body=%s", deleteRemoteRecorder.Code, deleteRemoteRecorder.Body.String())
+	}
+
+	revokeTokenRequest := httptest.NewRequest(http.MethodDelete, "/api/v1/replication/tokens/"+token.ID, nil)
+	revokeTokenRequest.AddCookie(cookie)
+	revokeTokenRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(revokeTokenRecorder, revokeTokenRequest)
+	if revokeTokenRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected revoke token status: %d body=%s", revokeTokenRecorder.Code, revokeTokenRecorder.Body.String())
+	}
+
+	deleteTokenRequest := httptest.NewRequest(http.MethodDelete, "/api/v1/replication/tokens/"+token.ID+"/remove", nil)
+	deleteTokenRequest.AddCookie(cookie)
+	deleteTokenRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(deleteTokenRecorder, deleteTokenRequest)
+	if deleteTokenRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected delete token status: %d body=%s", deleteTokenRecorder.Code, deleteTokenRecorder.Body.String())
+	}
+}
+
+func TestAddRemoteFromNowStartsAtCurrentCursor(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Storage.TmpDir = filepath.Join(root, "tmp")
+	cfg.Storage.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Storage.S3BaseURL = "http://127.0.0.1:9000"
+	hash, err := consoleauth.HashPassword("secret-password")
+	if err != nil {
+		t.Fatalf("HashPassword failed: %v", err)
+	}
+	cfg.Auth.Console.PasswordHash = hash
+	cfg.Auth.Console.SessionSecret = "test-session-secret"
+
+	store := newStorageStoreForTest(t, cfg)
+	ctx := context.Background()
+	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	if _, err := store.PutObject(ctx, storage.PutObjectInput{Bucket: "gallery", Key: "notes/readme.txt", Body: bytes.NewBufferString("hello")}); err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	cookie := loginCookie(t, handler)
+
+	tokenBody, _ := json.Marshal(map[string]string{"label": "Peer B"})
+	tokenRequest := httptest.NewRequest(http.MethodPost, "/api/v1/replication/tokens", bytes.NewReader(tokenBody))
+	tokenRequest.Header.Set("Content-Type", "application/json")
+	tokenRequest.AddCookie(cookie)
+	tokenRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(tokenRecorder, tokenRequest)
+	token := struct {
+		Token string `json:"token"`
+	}{}
+	if err := json.Unmarshal(tokenRecorder.Body.Bytes(), &token); err != nil {
+		t.Fatalf("unmarshal token failed: %v", err)
+	}
+
+	remoteBody, _ := json.Marshal(map[string]string{
+		"display_name":   "Loopback source",
+		"endpoint":       server.URL,
+		"token":          token.Token,
+		"bootstrap_mode": "from_now",
+	})
+	remoteRequest := httptest.NewRequest(http.MethodPost, "/api/v1/replication/remotes", bytes.NewReader(remoteBody))
+	remoteRequest.Header.Set("Content-Type", "application/json")
+	remoteRequest.AddCookie(cookie)
+	remoteRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(remoteRecorder, remoteRequest)
+	if remoteRecorder.Code != http.StatusCreated {
+		t.Fatalf("unexpected remote create status: %d body=%s", remoteRecorder.Code, remoteRecorder.Body.String())
+	}
+	remote := struct {
+		Cursor int64 `json:"cursor"`
+	}{}
+	if err := json.Unmarshal(remoteRecorder.Body.Bytes(), &remote); err != nil {
+		t.Fatalf("unmarshal remote failed: %v", err)
+	}
+	if remote.Cursor == 0 {
+		t.Fatalf("expected from_now remote to start at current cursor")
 	}
 }
 
