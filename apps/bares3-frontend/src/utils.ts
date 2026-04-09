@@ -1,5 +1,5 @@
 import type { DescriptionsProps } from 'antd';
-import { ApiError, type BucketAccessAction, type BucketAccessMode, type BucketInfo, type S3CredentialPermission } from './api';
+import { ApiError, type BucketAccessAction, type BucketAccessMode, type BucketInfo, type S3CredentialPermission, type SyncStatusState } from './api';
 import { sizeUnitOptions } from './constants';
 import type { BucketDisplayRow, SizeUnit } from './types';
 
@@ -62,6 +62,13 @@ export function formatBytes(bytes: number) {
   return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[index]}`;
 }
 
+export function formatTransferRate(bytesPerSecond: number) {
+	if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) {
+		return '0 B/s';
+	}
+	return `${formatBytes(bytesPerSecond)}/s`;
+}
+
 export function formatCount(value: number) {
   return new Intl.NumberFormat().format(value);
 }
@@ -118,6 +125,23 @@ export function s3CredentialPermissionLabel(value?: string): string {
 
 export function s3CredentialBucketScopeLabel(values?: string[]) {
   return values && values.length > 0 ? values.join(', ') : 'All buckets';
+}
+
+export function syncStatusLabel(value?: SyncStatusState) {
+  switch (value) {
+    case 'pending':
+      return 'Queued';
+    case 'verifying':
+      return 'Verifying';
+    case 'downloading':
+      return 'Syncing';
+    case 'error':
+      return 'Error';
+    case 'conflict':
+      return 'Conflict';
+    default:
+      return 'Ready';
+  }
 }
 
 export function usagePercentLabel(usedBytes: number, quotaBytes: number) {

@@ -9,6 +9,7 @@ import {
   LinkOutlined,
   LockOutlined,
   SettingOutlined,
+  SyncOutlined,
 } from '@ant-design/icons';
 import { Button, Grid, Layout, Menu, Space, Tag, Typography } from 'antd';
 import type { MenuProps } from 'antd';
@@ -49,6 +50,7 @@ export function ConsoleShell({ children, actions, showHeaderSearch = true, meta:
       { key: '/access-keys', icon: <KeyOutlined />, label: 'Access keys' },
       { key: '/audit', icon: <HistoryOutlined />, label: 'Audit logs' },
       { key: '/links', icon: <LinkOutlined />, label: 'Share links' },
+      { key: '/sync', icon: <SyncOutlined />, label: 'Replication' },
       { key: '/settings', icon: <SettingOutlined />, label: 'Settings' },
     ],
     [],

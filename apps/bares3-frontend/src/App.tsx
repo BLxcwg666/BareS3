@@ -49,6 +49,11 @@ const SettingsPage = lazy(async () => {
   return { default: module.SettingsPage };
 });
 
+const SyncPage = lazy(async () => {
+  const module = await import('./pages/SyncPage');
+  return { default: module.SyncPage };
+});
+
 function RouteFallback() {
   return (
     <div
@@ -132,6 +137,14 @@ export default function App() {
                 element={
                   <ProtectedRoute>
                     <LinksPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/sync"
+                element={
+                  <ProtectedRoute>
+                    <SyncPage />
                   </ProtectedRoute>
                 }
               />

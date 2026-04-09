@@ -61,6 +61,8 @@ export default defineConfig(({ mode }) => {
         '/api': {
           target: env.VITE_ADMIN_PROXY || 'http://127.0.0.1:19080',
           changeOrigin: true,
+          ws: true,
+          rewriteWsOrigin: true,
         },
       },
     },

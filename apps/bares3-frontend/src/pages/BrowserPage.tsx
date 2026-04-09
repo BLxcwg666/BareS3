@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, DragEvent } from 'react';
-import { CheckOutlined, CloseOutlined, CopyOutlined, EditOutlined, FileOutlined, FolderOpenOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, CheckOutlined, CloseCircleOutlined, CloseOutlined, CloudSyncOutlined, CopyOutlined, EditOutlined, FileOutlined, FolderOpenOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons';
 import {
   App as AntApp,
   Button,
@@ -39,7 +39,7 @@ import { useBucketObjects } from '../hooks/useBucketObjects';
 import { useBucketsData } from '../hooks/useBucketsData';
 import { useObjectDetail } from '../hooks/useObjectDetail';
 import { useRuntimeData } from '../hooks/useRuntimeData';
-import { copyText, formatBytes, formatDateTime, formatRelativeTime, normalizeApiError } from '../utils';
+import { copyText, formatBytes, formatDateTime, formatRelativeTime, normalizeApiError, syncStatusLabel } from '../utils';
 import { useSearchParams } from 'react-router-dom';
 
 function encodeObjectKeyPath(key: string) {
@@ -211,6 +211,7 @@ export function BrowserPage() {
   const requestedPath = normalizePrefix(searchParams.get('path'));
   const { items: buckets, loading: bucketsLoading } = useBucketsData();
   const { runtime } = useRuntimeData();
+  const syncEnabled = Boolean(runtime?.sync.enabled);
   const [selectedBucket, setSelectedBucket] = useState<string | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [selectedFolderPrefix, setSelectedFolderPrefix] = useState<string | null>(null);
@@ -1098,6 +1099,114 @@ export function BrowserPage() {
     </div>
   );
 
+  const renderObjectSyncStatus = (object: ObjectInfo) => {
+    if (!syncEnabled) {
+      return null;
+    }
+
+    const state = object.sync_status?.status;
+    if (!state || state === 'ready') {
+      return (
+        <Tooltip title="Replica is up to date">
+          <span className="browser-sync-icon browser-sync-icon-ready" aria-label="Ready">
+            <CheckCircleOutlined />
+          </span>
+        </Tooltip>
+      );
+    }
+
+    if (state === 'error') {
+      return (
+        <Tooltip title={object.sync_status?.last_error?.trim() || 'Latest sync attempt failed'}>
+          <span className="browser-sync-icon browser-sync-icon-error" aria-label="Sync error">
+            <CloseCircleOutlined />
+          </span>
+        </Tooltip>
+      );
+    }
+
+    if (state === 'conflict') {
+      return (
+        <Tooltip title={object.sync_status?.last_error?.trim() || 'Replication conflict detected'}>
+          <span className="browser-sync-icon browser-sync-icon-error" aria-label="Conflict">
+            <CloseCircleOutlined />
+          </span>
+        </Tooltip>
+      );
+    }
+
+    if (state === 'verifying') {
+      return (
+        <Tooltip title="Verifying local replica against cluster baseline">
+          <span className="browser-sync-icon browser-sync-icon-active" aria-label="Verifying">
+            <CloudSyncOutlined />
+          </span>
+        </Tooltip>
+      );
+    }
+
+    return (
+      <Tooltip title={state === 'pending' ? 'Waiting to sync latest version' : 'Syncing latest version'}>
+        <span className="browser-sync-icon browser-sync-icon-active" aria-label="Syncing">
+          <CloudSyncOutlined />
+        </span>
+      </Tooltip>
+    );
+  };
+
+  const renderInspectorSyncTag = (object: ObjectInfo) => {
+    if (!syncEnabled) {
+      return null;
+    }
+
+    const state = object.sync_status?.status;
+    if (!state) {
+      return (
+        <Tag color="success" icon={<CheckCircleOutlined />}>
+          Ready
+        </Tag>
+      );
+    }
+    switch (state) {
+      case 'pending':
+        return (
+          <Tag color="processing" icon={<CloudSyncOutlined />}>
+            Queued
+          </Tag>
+        );
+      case 'verifying':
+        return (
+          <Tag color="processing" icon={<CloudSyncOutlined />}>
+            Verifying
+          </Tag>
+        );
+      case 'downloading':
+        return (
+          <Tag color="processing" icon={<CloudSyncOutlined />}>
+            Syncing
+          </Tag>
+        );
+      case 'error':
+        return (
+          <Tag color="error" icon={<CloseCircleOutlined />}>
+            Error
+          </Tag>
+        );
+      case 'conflict':
+        return (
+          <Tag color="error" icon={<CloseCircleOutlined />}>
+            Conflict
+          </Tag>
+        );
+      default:
+        return (
+          <Tag color="success" icon={<CheckCircleOutlined />}>
+            Ready
+          </Tag>
+        );
+    }
+  };
+
   const browserColumns = useMemo<TableColumnsType<BrowserEntry>>(
     () => [
       {
@@ -1119,6 +1228,7 @@ export function BrowserPage() {
             <div className="browser-entry">
               <FileOutlined />
               <div className="row-title">{row.name}</div>
+              {renderObjectSyncStatus(row.object)}
             </div>
           ),
       },
@@ -1448,6 +1558,12 @@ export function BrowserPage() {
                                 },
                               ),
                               renderInspectorRow('ETag', inspectorObject.etag || 'Not set'),
+                              ...(syncEnabled
+                                ? [
+                                    renderInspectorRow('Sync', syncStatusLabel(inspectorObject.sync_status?.status)),
+                                    renderInspectorRow('Checksum', inspectorObject.sync_status?.expected_checksum_sha256 || 'Not tracked'),
+                                  ]
+                                : []),
                               renderInspectorRow(
                                 'User metadata',
                                 metadataEditState?.field === 'user_metadata'
@@ -1488,6 +1604,12 @@ export function BrowserPage() {
                         {inspectorObject ? (
                           <>
                             <div className="inspector-actions-row">
+                              {syncEnabled ? (
+                                <div className="inspector-share-controls inspector-sync-controls">
+                                  <span className="inspector-field-label">Replication</span>
+                                  {renderInspectorSyncTag(inspectorObject)}
+                                </div>
+                              ) : null}
                               <div className="inspector-share-controls">
                                 <span className="inspector-field-label">Share TTL seconds</span>
                                 <InputNumber

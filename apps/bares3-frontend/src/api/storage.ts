@@ -44,6 +44,96 @@ export type RuntimeInfo = {
     bucket_count: number;
     active_link_count: number;
   };
+  sync: {
+    enabled: boolean;
+  };
+};
+
+export type SyncStatusState = 'pending' | 'verifying' | 'downloading' | 'ready' | 'error' | 'conflict';
+
+export type SyncObjectStatus = {
+  bucket: string;
+  key: string;
+  status: SyncStatusState;
+  expected_checksum_sha256?: string;
+  last_error?: string;
+  updated_at: string;
+};
+
+export type SyncSettings = {
+  local_node_id?: string;
+  enabled: boolean;
+  role: string;
+  leader_url: string;
+  shared_secret: string;
+  poll_interval_seconds: number;
+  leader_cursor?: number;
+  applied_cursor?: number;
+  reconcile_counts?: {
+    pending: number;
+    verifying: number;
+    downloading: number;
+    ready: number;
+    error: number;
+    conflict: number;
+  };
+  reconcile_summary?: {
+    baseline_node_id?: string;
+    last_error?: string;
+  };
+  conflict_items?: Array<{
+    bucket: string;
+    key: string;
+    source?: string;
+    baseline_node_id?: string;
+    last_error?: string;
+    updated_at: string;
+  }>;
+};
+
+export type SyncAccessToken = {
+  id: string;
+  token: string;
+  label?: string;
+  created_by?: string;
+  created_at: string;
+  status: 'active' | 'revoked';
+  revoked_at?: string;
+};
+
+export type ReplicationRemote = {
+  id: string;
+  display_name: string;
+  endpoint: string;
+  follow_changes: boolean;
+  status: 'pending' | 'syncing' | 'idle' | 'error';
+  connection_status: 'disconnected' | 'connecting' | 'connected';
+  bootstrap_mode: 'full' | 'from_now';
+  cursor: number;
+  last_error?: string;
+  last_sync_started_at?: string;
+  last_heartbeat_at?: string;
+  last_sync_at?: string;
+  peer_cursor: number;
+  peer_used_bytes: number;
+  peer_bucket_count: number;
+  peer_object_count: number;
+  objects_total: number;
+  objects_completed: number;
+  bytes_total: number;
+  bytes_completed: number;
+  download_rate_bps: number;
+  upload_rate_bps: number;
+  sync_counts?: {
+    pending: number;
+    verifying: number;
+    downloading: number;
+    ready: number;
+    error: number;
+    conflict: number;
+  };
+  created_at: string;
+  updated_at: string;
 };
 
 export type BucketAccessMode = 'private' | 'public' | 'custom';
@@ -125,6 +215,7 @@ export type ObjectInfo = {
   content_disposition?: string;
   user_metadata?: Record<string, string>;
   last_modified: string;
+  sync_status?: SyncObjectStatus;
 };
 
 export type ListObjectsOptions = {
@@ -249,6 +340,94 @@ export function updateStorageLimit(maxBytes: number) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ max_bytes: maxBytes }),
+  });
+}
+
+export function getSyncSettings() {
+  return request<SyncSettings>('/api/v1/settings/sync');
+}
+
+export function updateSyncSettings(payload: { enabled: boolean }) {
+  return request<SyncSettings>('/api/v1/settings/sync', {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function listReplicationTokens() {
+  const payload = await request<{ items: SyncAccessToken[] }>('/api/v1/replication/tokens');
+  return payload.items;
+}
+
+export function createReplicationToken(label = '') {
+  return request<SyncAccessToken>('/api/v1/replication/tokens', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ label }),
+  });
+}
+
+export function revokeReplicationToken(id: string) {
+  return request<SyncAccessToken>(`/api/v1/replication/tokens/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+export function deleteReplicationToken(id: string) {
+  return request<SyncAccessToken>(`/api/v1/replication/tokens/${encodeURIComponent(id)}/remove`, {
+    method: 'DELETE',
+  });
+}
+
+export async function listReplicationRemotes() {
+  const payload = await request<{ items: ReplicationRemote[] }>('/api/v1/replication/remotes');
+  return payload.items;
+}
+
+export function createReplicationRemote(payload: {
+  display_name: string;
+  endpoint: string;
+  token: string;
+  follow_changes: boolean;
+  bootstrap_mode: 'full' | 'from_now';
+}) {
+  return request<ReplicationRemote>('/api/v1/replication/remotes', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateReplicationRemote(id: string, payload: { follow_changes: boolean }) {
+  return request<ReplicationRemote>(`/api/v1/replication/remotes/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteReplicationRemote(id: string) {
+  return request<ReplicationRemote>(`/api/v1/replication/remotes/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+export function resolveSyncConflict(bucket: string, key: string) {
+  return request<{ status: string }>('/api/v1/settings/sync/conflicts/resolve', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ bucket, key }),
   });
 }
 
