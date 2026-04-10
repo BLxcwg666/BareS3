@@ -198,6 +198,11 @@ type UpdateRemoteStateInput struct {
 	BytesCompleted    *int64
 	DownloadRateBps   *int64
 	UploadRateBps     *int64
+	ResetProgress     bool
+	ResetSyncCursor   bool
+	ResetLastSyncAt   bool
+	ResetHeartbeat    bool
+	ResetPeerStatus   bool
 }
 
 type accessTokenRecord struct {
@@ -592,11 +597,26 @@ func (s *Store) UpdateRemoteState(ctx context.Context, input UpdateRemoteStateIn
 	if input.LastSyncStartedAt != nil {
 		query = query.Set("last_sync_started_at = ?", formatTime(input.LastSyncStartedAt.UTC()))
 	}
+	if input.ResetHeartbeat {
+		query = query.Set("last_heartbeat_at = NULL")
+	}
 	if input.LastHeartbeatAt != nil {
 		query = query.Set("last_heartbeat_at = ?", formatTime(input.LastHeartbeatAt.UTC()))
 	}
+	if input.ResetLastSyncAt {
+		query = query.Set("last_sync_at = NULL")
+	}
 	if input.LastSyncAt != nil {
 		query = query.Set("last_sync_at = ?", formatTime(input.LastSyncAt.UTC()))
+	}
+	if input.ResetSyncCursor {
+		query = query.Set("cursor = ?", "0")
+	}
+	if input.ResetPeerStatus {
+		query = query.Set("peer_cursor = ?", 0)
+		query = query.Set("peer_used_bytes = ?", 0)
+		query = query.Set("peer_bucket_count = ?", 0)
+		query = query.Set("peer_object_count = ?", 0)
 	}
 	if input.PeerCursor != nil {
 		query = query.Set("peer_cursor = ?", *input.PeerCursor)
@@ -627,6 +647,16 @@ func (s *Store) UpdateRemoteState(ctx context.Context, input UpdateRemoteStateIn
 	}
 	if input.UploadRateBps != nil {
 		query = query.Set("upload_rate_bps = ?", *input.UploadRateBps)
+	}
+	if input.ResetProgress {
+		query = query.Set("objects_total = ?", 0)
+		query = query.Set("objects_completed = ?", 0)
+		query = query.Set("bytes_total = ?", 0)
+		query = query.Set("bytes_completed = ?", 0)
+		query = query.Set("download_rate_bps = ?", 0)
+		query = query.Set("upload_rate_bps = ?", 0)
+		query = query.Set("last_error = ?", "")
+		query = query.Set("last_sync_started_at = NULL")
 	}
 	result, err := query.Exec(ctx)
 	if err != nil {

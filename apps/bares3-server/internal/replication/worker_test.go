@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"bares3-server/internal/config"
 	"bares3-server/internal/remotes"
@@ -341,6 +342,89 @@ func TestWorkerSyncOnceKeepsExistingObjectReadableWhileUpdating(t *testing.T) {
 	}
 	if afterObject.ChecksumSHA256 != checksumHexForString("new version") {
 		t.Fatalf("unexpected checksum after sync: %s", afterObject.ChecksumSHA256)
+	}
+}
+
+func TestWorkerSyncOnceCatchesUpAcrossPagedIncrementalManifests(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	leaderCfg := newSyncConfig(t, filepath.Join(t.TempDir(), "leader"))
+	leaderStore := newStoreForTest(t, leaderCfg)
+	if _, err := leaderStore.CreateBucket(ctx, "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	for i := range 5005 {
+		key := fmt.Sprintf("notes/%04d.txt", i)
+		if _, err := leaderStore.PutObject(ctx, storage.PutObjectInput{Bucket: "gallery", Key: key, Body: bytes.NewBufferString(key)}); err != nil {
+			t.Fatalf("PutObject(%s) failed: %v", key, err)
+		}
+	}
+
+	server := newLeaderServer(t, leaderCfg, leaderStore)
+	defer server.Close()
+
+	followerCfg := newSyncConfig(t, filepath.Join(t.TempDir(), "follower"))
+	followerStore := newStoreForTest(t, followerCfg)
+	if _, err := configureRemoteForTest(ctx, leaderCfg, followerCfg, server.URL, "Leader A", remotes.BootstrapModeFromNow); err != nil {
+		t.Fatalf("configureRemoteForTest failed: %v", err)
+	}
+	if _, err := followerStore.SetSyncSettings(ctx, storage.SyncSettings{Enabled: true}); err != nil {
+		t.Fatalf("SetSyncSettings failed: %v", err)
+	}
+
+	remoteStore := newRemoteStoreForTest(t, followerCfg)
+	items, err := remoteStore.ListRemotes(ctx)
+	if err != nil {
+		t.Fatalf("ListRemotes failed: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one remote, got %d", len(items))
+	}
+	zero := int64(0)
+	if err := remoteStore.UpdateRemoteState(ctx, remotes.UpdateRemoteStateInput{ID: items[0].ID, Cursor: &zero}); err != nil {
+		t.Fatalf("UpdateRemoteState failed: %v", err)
+	}
+
+	worker := replication.NewWorker(followerCfg, followerStore, zap.NewNop())
+	if err := worker.SyncOnce(ctx); err != nil {
+		t.Fatalf("SyncOnce failed: %v", err)
+	}
+
+	for _, key := range []string{"notes/0000.txt", "notes/4999.txt", "notes/5004.txt"} {
+		object, err := followerStore.StatObject(ctx, "gallery", key)
+		if err != nil {
+			t.Fatalf("StatObject(%s) failed: %v", key, err)
+		}
+		if object.Key != key {
+			t.Fatalf("unexpected object after catch-up: %+v", object)
+		}
+	}
+	trackedRemote, err := remoteStore.GetRemote(ctx, items[0].ID)
+	if err != nil {
+		t.Fatalf("GetRemote failed: %v", err)
+	}
+	currentCursor, err := leaderStore.CurrentSyncCursor(ctx)
+	if err != nil {
+		t.Fatalf("CurrentSyncCursor failed: %v", err)
+	}
+	if trackedRemote.Cursor != currentCursor {
+		t.Fatalf("expected remote cursor %d, got %+v", currentCursor, trackedRemote)
+	}
+	if trackedRemote.Status != remotes.RemoteStatusIdle {
+		t.Fatalf("expected idle remote after catch-up, got %+v", trackedRemote)
+	}
+	if trackedRemote.ObjectsCompleted != trackedRemote.ObjectsTotal {
+		t.Fatalf("expected completed objects to match plan after catch-up, got %+v", trackedRemote)
+	}
+	if trackedRemote.ObjectsTotal == 0 {
+		t.Fatalf("expected catch-up run to record non-zero object plan, got %+v", trackedRemote)
+	}
+	if trackedRemote.LastSyncAt == nil {
+		t.Fatalf("expected sync timestamp after catch-up, got %+v", trackedRemote)
+	}
+	if trackedRemote.LastSyncAt.Before(trackedRemote.UpdatedAt.Add(-time.Minute)) {
+		t.Fatalf("unexpected stale sync timestamp: %+v", trackedRemote)
 	}
 }
 

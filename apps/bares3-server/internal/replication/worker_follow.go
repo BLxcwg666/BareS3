@@ -158,6 +158,7 @@ func (w *Worker) consumeRemoteStream(ctx context.Context, remoteID string, conn 
 		now := time.Now().UTC()
 		connected := remotes.ConnectionStatusConnected
 		state := remotes.UpdateRemoteStateInput{ID: remoteID, ConnectionStatus: &connected, LastHeartbeatAt: &now}
+		shouldSync := false
 		if message.Source != nil {
 			state.PeerCursor = &message.Source.Cursor
 			peerUsedBytes := message.Source.UsedBytes
@@ -166,6 +167,10 @@ func (w *Worker) consumeRemoteStream(ctx context.Context, remoteID string, conn 
 			state.PeerUsedBytes = &peerUsedBytes
 			state.PeerBucketCount = &peerBucketCount
 			state.PeerObjectCount = &peerObjectCount
+			remote, err := w.remotes.GetRemote(ctx, remoteID)
+			if err == nil && message.Source.Cursor > remote.Cursor {
+				shouldSync = true
+			}
 		}
 		_ = w.remotes.UpdateRemoteState(ctx, state)
 		switch message.Type {
@@ -174,8 +179,18 @@ func (w *Worker) consumeRemoteStream(ctx context.Context, remoteID string, conn 
 				w.logger.Warn("sync remote after hint failed", zap.String("remote_id", remoteID), zap.Error(err))
 			}
 		case StreamTypeHello:
+			if shouldSync {
+				if err := w.syncRemoteByID(ctx, remoteID); err != nil && ctx.Err() == nil {
+					w.logger.Warn("sync remote after hello failed", zap.String("remote_id", remoteID), zap.Error(err))
+				}
+			}
 			continue
 		case StreamTypeHeartbeat:
+			if shouldSync {
+				if err := w.syncRemoteByID(ctx, remoteID); err != nil && ctx.Err() == nil {
+					w.logger.Warn("sync remote after heartbeat failed", zap.String("remote_id", remoteID), zap.Error(err))
+				}
+			}
 			continue
 		}
 	}

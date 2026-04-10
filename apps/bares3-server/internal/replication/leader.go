@@ -47,6 +47,15 @@ func NewLeaderHandler(cfg config.Config, store *storage.Store, logger *zap.Logge
 		}
 		writeJSON(w, http.StatusOK, manifest)
 	})
+	router.Get("/status", func(w http.ResponseWriter, r *http.Request) {
+		status, err := buildSourceStatus(r.Context(), store)
+		if err != nil {
+			logger.Error("build sync source status failed", zap.Error(err))
+			writeJSONError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, status)
+	})
 	router.Get("/stream", func(w http.ResponseWriter, r *http.Request) {
 		serveSyncStream(w, r, store, logger)
 	})
@@ -183,7 +192,28 @@ func buildIncrementalManifest(ctx context.Context, store *storage.Store, afterCu
 	manifest.Objects = sortedObjectManifestValues(objectUpserts)
 	manifest.DeletedBuckets = sortedStringKeys(bucketDeletes)
 	manifest.DeletedObjects = sortedDeletedObjectValues(objectDeletes)
+	currentCursor, err := store.CurrentSyncCursor(ctx)
+	if err != nil {
+		return Manifest{}, err
+	}
+	manifest.HasMore = manifest.Cursor < currentCursor
 	return manifest, nil
+}
+
+func buildSourceStatus(ctx context.Context, store *storage.Store) (SourceStatus, error) {
+	usedBytes, objectCount, err := store.UsageSummary(ctx)
+	if err != nil {
+		return SourceStatus{}, err
+	}
+	buckets, err := store.ListBuckets(ctx)
+	if err != nil {
+		return SourceStatus{}, err
+	}
+	cursor, err := store.CurrentSyncCursor(ctx)
+	if err != nil {
+		return SourceStatus{}, err
+	}
+	return SourceStatus{Cursor: cursor, UsedBytes: usedBytes, BucketCount: len(buckets), ObjectCount: objectCount}, nil
 }
 
 func requireReplicationAuth(remoteStore *remotes.Store) func(http.Handler) http.Handler {

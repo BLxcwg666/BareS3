@@ -23,21 +23,14 @@ const (
 	remoteReconnectDelay    = 2 * time.Second
 )
 
-type StreamSourceStatus struct {
-	Cursor      int64 `json:"cursor"`
-	UsedBytes   int64 `json:"used_bytes"`
-	BucketCount int   `json:"bucket_count"`
-	ObjectCount int   `json:"object_count"`
-}
-
 type StreamMessage struct {
-	Type   string              `json:"type"`
-	Cursor int64               `json:"cursor,omitempty"`
-	Kind   string              `json:"kind,omitempty"`
-	Bucket string              `json:"bucket,omitempty"`
-	Key    string              `json:"key,omitempty"`
-	Source *StreamSourceStatus `json:"source,omitempty"`
-	At     time.Time           `json:"at"`
+	Type   string        `json:"type"`
+	Cursor int64         `json:"cursor,omitempty"`
+	Kind   string        `json:"kind,omitempty"`
+	Bucket string        `json:"bucket,omitempty"`
+	Key    string        `json:"key,omitempty"`
+	Source *SourceStatus `json:"source,omitempty"`
+	At     time.Time     `json:"at"`
 }
 
 func serveSyncStream(w http.ResponseWriter, r *http.Request, store *storage.Store, logger *zap.Logger) {
@@ -89,20 +82,20 @@ func serveSyncStream(w http.ResponseWriter, r *http.Request, store *storage.Stor
 	}
 }
 
-func currentStreamSourceStatus(ctx context.Context, store *storage.Store) (StreamSourceStatus, error) {
+func currentStreamSourceStatus(ctx context.Context, store *storage.Store) (SourceStatus, error) {
 	usedBytes, objectCount, err := store.UsageSummary(ctx)
 	if err != nil {
-		return StreamSourceStatus{}, err
+		return SourceStatus{}, err
 	}
 	buckets, err := store.ListBuckets(ctx)
 	if err != nil {
-		return StreamSourceStatus{}, err
+		return SourceStatus{}, err
 	}
 	cursor, err := store.CurrentSyncCursor(ctx)
 	if err != nil {
-		return StreamSourceStatus{}, err
+		return SourceStatus{}, err
 	}
-	return StreamSourceStatus{Cursor: cursor, UsedBytes: usedBytes, BucketCount: len(buckets), ObjectCount: objectCount}, nil
+	return SourceStatus{Cursor: cursor, UsedBytes: usedBytes, BucketCount: len(buckets), ObjectCount: objectCount}, nil
 }
 
 func writeStreamMessage(ctx context.Context, conn *websocket.Conn, message StreamMessage) error {

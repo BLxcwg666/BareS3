@@ -16,24 +16,26 @@ import (
 	"bares3-server/internal/storage"
 )
 
+var replicationBootstrapHTTPClient = &http.Client{Timeout: 15 * time.Second}
+
 type remoteView struct {
 	remotes.Remote
 	SyncCounts storage.SyncStatusCounts `json:"sync_counts"`
 }
 
-func fetchRemoteManifestForBootstrap(ctx context.Context, endpoint, token string) (replication.Manifest, error) {
-	requestURL, err := joinReplicationURL(endpoint, "/internal/sync/manifest")
+func fetchRemoteStatusForBootstrap(ctx context.Context, endpoint, token string) (replication.SourceStatus, error) {
+	requestURL, err := joinReplicationURL(endpoint, "/internal/sync/status")
 	if err != nil {
-		return replication.Manifest{}, err
+		return replication.SourceStatus{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
-		return replication.Manifest{}, err
+		return replication.SourceStatus{}, err
 	}
 	req.Header.Set(replication.HeaderAccessToken, strings.TrimSpace(token))
-	res, err := http.DefaultClient.Do(req)
+	res, err := replicationBootstrapHTTPClient.Do(req)
 	if err != nil {
-		return replication.Manifest{}, err
+		return replication.SourceStatus{}, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
@@ -42,15 +44,15 @@ func fetchRemoteManifestForBootstrap(ctx context.Context, endpoint, token string
 		}{}
 		_ = json.NewDecoder(res.Body).Decode(&payload)
 		if strings.TrimSpace(payload.Message) == "" {
-			payload.Message = fmt.Sprintf("bootstrap manifest failed with status %d", res.StatusCode)
+			payload.Message = fmt.Sprintf("bootstrap status probe failed with status %d", res.StatusCode)
 		}
-		return replication.Manifest{}, fmt.Errorf("%s", payload.Message)
+		return replication.SourceStatus{}, fmt.Errorf("%s", payload.Message)
 	}
-	manifest := replication.Manifest{}
-	if err := json.NewDecoder(res.Body).Decode(&manifest); err != nil {
-		return replication.Manifest{}, err
+	status := replication.SourceStatus{}
+	if err := json.NewDecoder(res.Body).Decode(&status); err != nil {
+		return replication.SourceStatus{}, err
 	}
-	return manifest, nil
+	return status, nil
 }
 
 func refetchObjectFromSource(ctx context.Context, store *storage.Store, remoteStore *remotes.Store, statusItem storage.SyncObjectStatus, bucket, key string) error {

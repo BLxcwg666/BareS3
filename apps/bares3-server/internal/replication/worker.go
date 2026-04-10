@@ -149,10 +149,31 @@ func (w *Worker) syncRemote(ctx context.Context, remote remotes.Remote) error {
 	return nil
 }
 func (w *Worker) syncTarget(ctx context.Context, target syncTarget, tracker *syncRunTracker) (int64, error) {
-	manifest, err := w.fetchManifest(ctx, target, tracker)
+	sourceStatus, err := w.fetchSourceStatus(ctx, target, tracker)
 	if err != nil {
 		return target.Cursor, err
 	}
+	goalCursor := sourceStatus.Cursor
+	for {
+		manifest, err := w.fetchManifest(ctx, target, tracker)
+		if err != nil {
+			return target.Cursor, err
+		}
+		nextCursor, err := w.applyManifest(ctx, target, manifest, tracker)
+		if err != nil {
+			return target.Cursor, err
+		}
+		if nextCursor <= target.Cursor {
+			return nextCursor, nil
+		}
+		target.Cursor = nextCursor
+		if manifest.Full || !manifest.HasMore || target.Cursor >= goalCursor {
+			return target.Cursor, nil
+		}
+	}
+}
+
+func (w *Worker) applyManifest(ctx context.Context, target syncTarget, manifest Manifest, tracker *syncRunTracker) (int64, error) {
 	if err := w.reconcileBuckets(ctx, manifest.Buckets); err != nil {
 		return target.Cursor, err
 	}
@@ -177,6 +198,34 @@ func (w *Worker) syncTarget(ctx context.Context, target syncTarget, tracker *syn
 		return target.Cursor, err
 	}
 	return manifest.Cursor, nil
+}
+
+func (w *Worker) fetchSourceStatus(ctx context.Context, target syncTarget, tracker *syncRunTracker) (SourceStatus, error) {
+	requestURL, err := joinLeaderURL(target.Endpoint, "/internal/sync/status")
+	if err != nil {
+		return SourceStatus{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return SourceStatus{}, fmt.Errorf("build source status request: %w", err)
+	}
+	req.Header.Set(target.AuthHeader, target.AuthValue)
+	tracker.addUpload(estimateRequestBytes(req))
+	res, err := w.client.Do(req)
+	if err != nil {
+		return SourceStatus{}, fmt.Errorf("fetch source status: %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return SourceStatus{}, fmt.Errorf("fetch source status: unexpected status %d", res.StatusCode)
+	}
+	status := SourceStatus{}
+	if err := json.NewDecoder(newCountingReadCloser(res.Body, func(n int64) {
+		tracker.addControlDownload(n)
+	})).Decode(&status); err != nil {
+		return SourceStatus{}, fmt.Errorf("decode source status: %w", err)
+	}
+	return status, nil
 }
 
 func (w *Worker) fetchManifest(ctx context.Context, target syncTarget, tracker *syncRunTracker) (Manifest, error) {

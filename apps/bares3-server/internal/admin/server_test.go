@@ -14,6 +14,7 @@ import (
 
 	"bares3-server/internal/config"
 	"bares3-server/internal/consoleauth"
+	"bares3-server/internal/remotes"
 	"bares3-server/internal/s3creds"
 	"bares3-server/internal/sharelink"
 	"bares3-server/internal/storage"
@@ -717,6 +718,165 @@ func TestAddRemoteFromNowStartsAtCurrentCursor(t *testing.T) {
 	}
 	if remote.Cursor == 0 {
 		t.Fatalf("expected from_now remote to start at current cursor")
+	}
+}
+
+func TestUpdateRemoteBootstrapModeResetsCursorAndRunState(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
+	hash, err := consoleauth.HashPassword("secret-password")
+	if err != nil {
+		t.Fatalf("HashPassword failed: %v", err)
+	}
+	cfg.Auth.Console.PasswordHash = hash
+	cfg.Auth.Console.SessionSecret = "test-session-secret"
+
+	store := newStorageStoreForTest(t, cfg)
+	ctx := context.Background()
+	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	if _, err := store.PutObject(ctx, storage.PutObjectInput{Bucket: "gallery", Key: "notes/readme.txt", Body: bytes.NewBufferString("hello")}); err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	cookie := loginCookie(t, handler)
+
+	tokenBody, _ := json.Marshal(map[string]string{"label": "Peer C"})
+	tokenRequest := httptest.NewRequest(http.MethodPost, "/api/v1/replication/tokens", bytes.NewReader(tokenBody))
+	tokenRequest.Header.Set("Content-Type", "application/json")
+	tokenRequest.AddCookie(cookie)
+	tokenRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(tokenRecorder, tokenRequest)
+	if tokenRecorder.Code != http.StatusCreated {
+		t.Fatalf("unexpected token create status: %d body=%s", tokenRecorder.Code, tokenRecorder.Body.String())
+	}
+	token := struct {
+		Token string `json:"token"`
+	}{}
+	if err := json.Unmarshal(tokenRecorder.Body.Bytes(), &token); err != nil {
+		t.Fatalf("unmarshal token failed: %v", err)
+	}
+
+	remoteBody, _ := json.Marshal(map[string]any{
+		"display_name":   "Loopback source",
+		"endpoint":       server.URL,
+		"token":          token.Token,
+		"bootstrap_mode": "from_now",
+		"follow_changes": false,
+	})
+	remoteRequest := httptest.NewRequest(http.MethodPost, "/api/v1/replication/remotes", bytes.NewReader(remoteBody))
+	remoteRequest.Header.Set("Content-Type", "application/json")
+	remoteRequest.AddCookie(cookie)
+	remoteRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(remoteRecorder, remoteRequest)
+	if remoteRecorder.Code != http.StatusCreated {
+		t.Fatalf("unexpected remote create status: %d body=%s", remoteRecorder.Code, remoteRecorder.Body.String())
+	}
+	remote := struct {
+		ID     string `json:"id"`
+		Cursor int64  `json:"cursor"`
+	}{}
+	if err := json.Unmarshal(remoteRecorder.Body.Bytes(), &remote); err != nil {
+		t.Fatalf("unmarshal remote failed: %v", err)
+	}
+	if remote.Cursor == 0 {
+		t.Fatalf("expected from_now remote to start at current cursor")
+	}
+
+	remoteStore, err := remotes.New(cfg.Paths.DataDir, zap.NewNop())
+	if err != nil {
+		t.Fatalf("remotes.New failed: %v", err)
+	}
+	defer func() { _ = remoteStore.Close() }()
+	now := time.Now().UTC()
+	status := remotes.RemoteStatusIdle
+	connected := remotes.ConnectionStatusConnected
+	peerCursor := int64(777)
+	peerUsedBytes := int64(888)
+	peerBucketCount := int64(9)
+	peerObjectCount := int64(10)
+	objectsTotal := int64(11)
+	objectsCompleted := int64(12)
+	bytesTotal := int64(13)
+	bytesCompleted := int64(14)
+	downloadRate := int64(15)
+	uploadRate := int64(16)
+	lastError := "stale"
+	if err := remoteStore.UpdateRemoteState(ctx, remotes.UpdateRemoteStateInput{
+		ID:                remote.ID,
+		Status:            &status,
+		ConnectionStatus:  &connected,
+		LastSyncAt:        &now,
+		LastSyncStartedAt: &now,
+		LastHeartbeatAt:   &now,
+		PeerCursor:        &peerCursor,
+		PeerUsedBytes:     &peerUsedBytes,
+		PeerBucketCount:   &peerBucketCount,
+		PeerObjectCount:   &peerObjectCount,
+		ObjectsTotal:      &objectsTotal,
+		ObjectsCompleted:  &objectsCompleted,
+		BytesTotal:        &bytesTotal,
+		BytesCompleted:    &bytesCompleted,
+		DownloadRateBps:   &downloadRate,
+		UploadRateBps:     &uploadRate,
+		LastError:         &lastError,
+	}); err != nil {
+		t.Fatalf("seed remote state failed: %v", err)
+	}
+
+	patchBody, _ := json.Marshal(map[string]any{
+		"display_name":   "Loopback source",
+		"endpoint":       server.URL,
+		"bootstrap_mode": "full",
+		"enabled":        true,
+		"follow_changes": false,
+	})
+	patchRequest := httptest.NewRequest(http.MethodPatch, "/api/v1/replication/remotes/"+remote.ID, bytes.NewReader(patchBody))
+	patchRequest.Header.Set("Content-Type", "application/json")
+	patchRequest.AddCookie(cookie)
+	patchRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(patchRecorder, patchRequest)
+	if patchRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected remote update status: %d body=%s", patchRecorder.Code, patchRecorder.Body.String())
+	}
+
+	updatedRemote, err := remoteStore.GetRemote(ctx, remote.ID)
+	if err != nil {
+		t.Fatalf("GetRemote failed: %v", err)
+	}
+	if updatedRemote.BootstrapMode != remotes.BootstrapModeFull {
+		t.Fatalf("expected full bootstrap after update, got %+v", updatedRemote)
+	}
+	if updatedRemote.Cursor != 0 {
+		t.Fatalf("expected cursor reset for full replay, got %+v", updatedRemote)
+	}
+	if updatedRemote.Status != remotes.RemoteStatusPending {
+		t.Fatalf("expected pending status after reset, got %+v", updatedRemote)
+	}
+	if updatedRemote.ConnectionStatus != remotes.ConnectionStatusDisconnected {
+		t.Fatalf("expected disconnected status after reset, got %+v", updatedRemote)
+	}
+	if updatedRemote.LastSyncAt != nil || updatedRemote.LastHeartbeatAt != nil {
+		t.Fatalf("expected sync timestamps to be cleared after reset, got %+v", updatedRemote)
+	}
+	if updatedRemote.ObjectsTotal != 0 || updatedRemote.ObjectsCompleted != 0 || updatedRemote.BytesTotal != 0 || updatedRemote.BytesCompleted != 0 {
+		t.Fatalf("expected progress reset after replay request, got %+v", updatedRemote)
+	}
+	if updatedRemote.PeerCursor != 0 || updatedRemote.PeerUsedBytes != 0 || updatedRemote.PeerBucketCount != 0 || updatedRemote.PeerObjectCount != 0 {
+		t.Fatalf("expected peer status reset after replay request, got %+v", updatedRemote)
+	}
+	if updatedRemote.LastError != "" {
+		t.Fatalf("expected last error to clear after reset, got %+v", updatedRemote)
 	}
 }
 

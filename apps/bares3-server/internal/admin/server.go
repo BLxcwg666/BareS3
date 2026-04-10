@@ -463,14 +463,14 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "message": "invalid request body"})
 					return
 				}
-				manifest, err := fetchRemoteManifestForBootstrap(r.Context(), strings.TrimSpace(payload.Endpoint), strings.TrimSpace(payload.Token))
+				status, err := fetchRemoteStatusForBootstrap(r.Context(), strings.TrimSpace(payload.Endpoint), strings.TrimSpace(payload.Token))
 				if err != nil {
 					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "message": err.Error()})
 					return
 				}
 				cursor := int64(0)
 				if remotes.NormalizeBootstrapMode(payload.BootstrapMode) == remotes.BootstrapModeFromNow {
-					cursor = manifest.Cursor
+					cursor = status.Cursor
 				}
 				followChanges := true
 				if payload.FollowChanges != nil {
@@ -522,7 +522,65 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 					httpx.WriteJSON(w, status, map[string]any{"status": "error", "message": err.Error()})
 					return
 				}
-				if err := remoteStore.UpdateRemoteState(r.Context(), remotes.UpdateRemoteStateInput{ID: remote.ID, DisplayName: payload.DisplayName, Endpoint: payload.Endpoint, Token: payload.Token, BootstrapMode: payload.BootstrapMode, Enabled: payload.Enabled, FollowChanges: payload.FollowChanges}); err != nil {
+				effectiveEndpoint := remote.Endpoint
+				if payload.Endpoint != nil {
+					effectiveEndpoint = strings.TrimSpace(*payload.Endpoint)
+				}
+				effectiveToken := remote.Token
+				if payload.Token != nil {
+					effectiveToken = strings.TrimSpace(*payload.Token)
+				}
+				effectiveBootstrapMode := remote.BootstrapMode
+				if payload.BootstrapMode != nil {
+					effectiveBootstrapMode = remotes.NormalizeBootstrapMode(*payload.BootstrapMode)
+					if effectiveBootstrapMode == "" {
+						httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "message": remotes.ErrInvalidBootstrapMode.Error()})
+						return
+					}
+				}
+				effectiveFollowChanges := remote.FollowChanges
+				if payload.FollowChanges != nil {
+					effectiveFollowChanges = *payload.FollowChanges
+				}
+				effectiveEnabled := remote.Enabled
+				if payload.Enabled != nil {
+					effectiveEnabled = *payload.Enabled
+				}
+				sourceChanged := effectiveEndpoint != remote.Endpoint || effectiveToken != remote.Token
+				bootstrapChanged := effectiveBootstrapMode != remote.BootstrapMode
+				snapshotReplayRequested := payload.Enabled != nil && *payload.Enabled && !remote.Enabled && !effectiveFollowChanges
+				needsReset := sourceChanged || bootstrapChanged || snapshotReplayRequested
+
+				updateInput := remotes.UpdateRemoteStateInput{ID: remote.ID, DisplayName: payload.DisplayName, Endpoint: payload.Endpoint, Token: payload.Token, BootstrapMode: payload.BootstrapMode, Enabled: payload.Enabled, FollowChanges: payload.FollowChanges}
+				if sourceChanged || (bootstrapChanged && effectiveBootstrapMode == remotes.BootstrapModeFromNow) {
+					status, err := fetchRemoteStatusForBootstrap(r.Context(), effectiveEndpoint, effectiveToken)
+					if err != nil {
+						httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "message": err.Error()})
+						return
+					}
+					if needsReset && effectiveBootstrapMode == remotes.BootstrapModeFromNow {
+						cursor := status.Cursor
+						updateInput.Cursor = &cursor
+					}
+				}
+				if needsReset {
+					status := remotes.RemoteStatusPending
+					disconnected := remotes.ConnectionStatusDisconnected
+					updateInput.Status = &status
+					updateInput.ConnectionStatus = &disconnected
+					updateInput.ResetProgress = true
+					updateInput.ResetLastSyncAt = true
+					updateInput.ResetHeartbeat = true
+					updateInput.ResetPeerStatus = true
+					if effectiveBootstrapMode == remotes.BootstrapModeFull {
+						updateInput.ResetSyncCursor = true
+					}
+				} else if payload.Enabled != nil && !effectiveEnabled {
+					disconnected := remotes.ConnectionStatusDisconnected
+					updateInput.ConnectionStatus = &disconnected
+					updateInput.ResetHeartbeat = true
+				}
+				if err := remoteStore.UpdateRemoteState(r.Context(), updateInput); err != nil {
 					status := http.StatusInternalServerError
 					if errors.Is(err, remotes.ErrRemoteNotFound) {
 						status = http.StatusNotFound
