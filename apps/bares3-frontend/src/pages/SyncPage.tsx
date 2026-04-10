@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { App as AntApp, Button, Descriptions, Divider, Empty, Form, Input, Modal, Popconfirm, Progress, Select, Skeleton, Space, Switch, Tag, Typography } from 'antd';
-import { CopyOutlined, DeleteOutlined, PlusOutlined, SyncOutlined, DatabaseOutlined, DownloadOutlined, UploadOutlined, HddOutlined, ApiOutlined, DesktopOutlined, ClockCircleOutlined, ControlOutlined, InboxOutlined, WarningOutlined, HeartOutlined, CheckCircleOutlined, CloseCircleOutlined, KeyOutlined, LinkOutlined } from '@ant-design/icons';
+import { CopyOutlined, DeleteOutlined, EditOutlined, PlusOutlined, SyncOutlined, DatabaseOutlined, DownloadOutlined, UploadOutlined, HddOutlined, ApiOutlined, DesktopOutlined, ClockCircleOutlined, ControlOutlined, InboxOutlined, WarningOutlined, HeartOutlined, CheckCircleOutlined, CloseCircleOutlined, KeyOutlined, LinkOutlined } from '@ant-design/icons';
 import { ConsoleShell } from '../components/ConsoleShell';
 import { Section } from '../components/Section';
 import { useSyncStream } from '../hooks/useSyncStream';
@@ -19,6 +19,7 @@ type RemoteFormValues = {
   display_name: string;
   endpoint: string;
   token: string;
+  enabled: boolean;
   follow_changes: boolean;
   bootstrap_mode: 'full' | 'from_now';
 };
@@ -29,9 +30,11 @@ export function SyncPage() {
   const { runtime } = useRuntimeData();
   const { tokens, loading: tokensLoading, refresh: refreshTokens } = useReplicationTokens();
   const [addRemoteOpen, setAddRemoteOpen] = useState(false);
+  const [editRemote, setEditRemote] = useState<ReplicationRemote | null>(null);
   const [saving, setSaving] = useState(false);
   const [creatingToken, setCreatingToken] = useState(false);
   const [addingRemote, setAddingRemote] = useState(false);
+  const [updatingRemoteID, setUpdatingRemoteID] = useState<string | null>(null);
   const [revokingTokenID, setRevokingTokenID] = useState<string | null>(null);
   const [deletingTokenID, setDeletingTokenID] = useState<string | null>(null);
   const [deletingRemoteID, setDeletingRemoteID] = useState<string | null>(null);
@@ -100,6 +103,7 @@ export function SyncPage() {
     try {
       await createReplicationRemote(values);
       remoteForm.resetFields();
+      remoteForm.setFieldValue('enabled', true);
       remoteForm.setFieldValue('bootstrap_mode', 'full');
       remoteForm.setFieldValue('follow_changes', true);
       message.success('Added replication remote');
@@ -160,6 +164,54 @@ export function SyncPage() {
     }
   };
 
+  const openEditRemoteModal = (item: ReplicationRemote) => {
+    setEditRemote(item);
+    remoteForm.setFieldsValue({
+      display_name: item.display_name,
+      endpoint: item.endpoint,
+      token: '',
+      enabled: item.enabled,
+      follow_changes: item.follow_changes,
+      bootstrap_mode: item.bootstrap_mode,
+    });
+  };
+
+  const closeRemoteModal = () => {
+    setAddRemoteOpen(false);
+    setEditRemote(null);
+    remoteForm.resetFields();
+    remoteForm.setFieldValue('enabled', true);
+    remoteForm.setFieldValue('bootstrap_mode', 'full');
+    remoteForm.setFieldValue('follow_changes', true);
+  };
+
+  const handleUpdateRemote = async (values: RemoteFormValues) => {
+    if (!editRemote) {
+      return;
+    }
+    setUpdatingRemoteID(editRemote.id);
+    try {
+      const payload: Parameters<typeof updateReplicationRemote>[1] = {
+        display_name: values.display_name,
+        endpoint: values.endpoint,
+        bootstrap_mode: values.bootstrap_mode,
+        enabled: values.enabled,
+        follow_changes: values.follow_changes,
+      };
+      if (values.token.trim()) {
+        payload.token = values.token.trim();
+      }
+      await updateReplicationRemote(editRemote.id, payload);
+      await refresh();
+      message.success(values.enabled ? `Updated ${editRemote.display_name}` : `Temporarily disabled ${editRemote.display_name}`);
+      closeRemoteModal();
+    } catch (error) {
+      message.error(normalizeApiError(error, 'Failed to update remote settings'));
+    } finally {
+      setUpdatingRemoteID(null);
+    }
+  };
+
   const handleResolveConflict = async (bucket: string, key: string) => {
     setResolvingConflictKey(`${bucket}/${key}`);
     try {
@@ -190,6 +242,9 @@ export function SyncPage() {
     if (!settings?.enabled) {
       return 'Sync disabled';
     }
+    if (!remote.enabled) {
+      return 'Node disabled';
+    }
     if (remote.status === 'syncing') {
       return 'Discovering remote state';
     }
@@ -204,6 +259,9 @@ export function SyncPage() {
 
   const renderRemoteStatus = (remote: ReplicationRemote) => {
     if (!settings?.enabled) {
+      return <Tag>Disabled</Tag>;
+    }
+    if (!remote.enabled) {
       return <Tag>Disabled</Tag>;
     }
     if (remote.connection_status === 'connecting') {
@@ -252,6 +310,7 @@ export function SyncPage() {
               : remote.connection_status === 'connecting'
                 ? <><SyncOutlined spin /> Connecting stream</>
                 : <><WarningOutlined /> Stream offline</>}
+            <Tag bordered={false} color={remote.enabled ? 'success' : 'default'} style={{ margin: 0 }}>{remote.enabled ? 'Enabled' : 'Disabled'}</Tag>
             <Tag bordered={false} color="processing" style={{ margin: 0 }}>{remote.follow_changes ? 'Live follow' : 'Snapshot only'}</Tag>
             <Tag bordered={false} style={{ margin: 0 }}>{remote.bootstrap_mode === 'from_now' ? 'From current cursor' : 'Full import'}</Tag>
           </span>
@@ -315,13 +374,18 @@ export function SyncPage() {
         <div className="sync-node-card-actions">
           <Space align="center" size="small">
             <Text type="secondary">Follow changes</Text>
-            <Switch checked={remote.follow_changes} onChange={(checked) => void handleToggleFollowChanges(remote, checked)} size="small" />
+            <Switch checked={remote.follow_changes} disabled={!remote.enabled} onChange={(checked) => void handleToggleFollowChanges(remote, checked)} size="small" />
           </Space>
-          <Popconfirm okText="Remove" onConfirm={() => void handleDeleteRemote(remote)} title={`Remove ${remote.display_name}?`}>
-            <Button danger icon={<DeleteOutlined />} loading={deletingRemoteID === remote.id} size="small">
-              Remove
+          <Space size="small" wrap>
+            <Button icon={<EditOutlined />} onClick={() => openEditRemoteModal(remote)} size="small">
+              Edit
             </Button>
-          </Popconfirm>
+            <Popconfirm okText="Remove" onConfirm={() => void handleDeleteRemote(remote)} title={`Remove ${remote.display_name}?`}>
+              <Button danger icon={<DeleteOutlined />} loading={deletingRemoteID === remote.id} size="small">
+                Remove
+              </Button>
+            </Popconfirm>
+          </Space>
         </div>
       </article>
     );
@@ -476,37 +540,39 @@ export function SyncPage() {
         </div>
       )}
 
-      <Modal destroyOnHidden footer={null} onCancel={() => setAddRemoteOpen(false)} open={addRemoteOpen} title="Add remote" width={720}>
+      <Modal destroyOnHidden footer={null} onCancel={closeRemoteModal} open={addRemoteOpen || Boolean(editRemote)} title={editRemote ? `Edit ${editRemote.display_name}` : 'Add remote'} width={720}>
         <div className="sync-modal-stack">
+          {!editRemote ? (
+            <section className="sync-modal-section">
+              <div className="sync-modal-head">
+                <div>
+                  <strong>Create pull token</strong>
+                  <div className="sync-modal-note">Generate a read token on this node so another node can pull from it.</div>
+                </div>
+              </div>
+
+              <Form<TokenFormValues> form={tokenForm} layout="vertical" onFinish={(values) => void handleCreateToken(values)}>
+                <Form.Item label="Label" name="label">
+                  <Input placeholder="Laptop B" />
+                </Form.Item>
+                <Space>
+                  <Button htmlType="submit" icon={<PlusOutlined />} loading={creatingToken} type="primary">
+                    Create token
+                  </Button>
+                </Space>
+              </Form>
+            </section>
+          ) : null}
+
           <section className="sync-modal-section">
             <div className="sync-modal-head">
               <div>
-                <strong>Create pull token</strong>
-                <div className="sync-modal-note">Generate a read token on this node so another node can pull from it.</div>
+                <strong>{editRemote ? 'Edit replication source' : 'Add replication source'}</strong>
+                <div className="sync-modal-note">{editRemote ? 'Update this source connection, rotate its token, or temporarily disable it without removing the node.' : 'Paste another node&apos;s token and admin endpoint. This link only pulls in one direction.'}</div>
               </div>
             </div>
 
-            <Form<TokenFormValues> form={tokenForm} layout="vertical" onFinish={(values) => void handleCreateToken(values)}>
-              <Form.Item label="Label" name="label">
-                <Input placeholder="Laptop B" />
-              </Form.Item>
-              <Space>
-                <Button htmlType="submit" icon={<PlusOutlined />} loading={creatingToken} type="primary">
-                  Create token
-                </Button>
-              </Space>
-            </Form>
-          </section>
-
-          <section className="sync-modal-section">
-            <div className="sync-modal-head">
-              <div>
-                <strong>Add replication source</strong>
-                <div className="sync-modal-note">Paste another node&apos;s token and admin endpoint. This link only pulls in one direction.</div>
-              </div>
-            </div>
-
-            <Form<RemoteFormValues> form={remoteForm} initialValues={{ bootstrap_mode: 'full', follow_changes: true }} layout="vertical" onFinish={(values) => void handleAddRemote(values)}>
+            <Form<RemoteFormValues> form={remoteForm} initialValues={{ enabled: true, bootstrap_mode: 'full', follow_changes: true }} layout="vertical" onFinish={(values) => void (editRemote ? handleUpdateRemote(values) : handleAddRemote(values))}>
               <Form.Item label="Display name" name="display_name" rules={[{ required: true, message: 'Display name is required' }]}> 
                 <Input placeholder="Office NAS" />
               </Form.Item>
@@ -521,18 +587,21 @@ export function SyncPage() {
                   ]}
                 />
               </Form.Item>
+              <Form.Item label="Enable node" name="enabled" valuePropName="checked">
+                <Switch />
+              </Form.Item>
               <Form.Item label="Follow remote changes" name="follow_changes" valuePropName="checked">
                 <Switch />
               </Form.Item>
-              <Form.Item label="Pull token" name="token" rules={[{ required: true, message: 'Pull token is required' }]}> 
-                <Input.TextArea autoSize={{ minRows: 2, maxRows: 4 }} placeholder="Paste the token generated on the source node" />
+              <Form.Item label="Pull token" name="token" rules={editRemote ? undefined : [{ required: true, message: 'Pull token is required' }]}> 
+                <Input.TextArea autoSize={{ minRows: 2, maxRows: 4 }} placeholder={editRemote ? 'Leave empty to keep the current token, or paste a new token to rotate it' : 'Paste the token generated on the source node'} />
               </Form.Item>
 
               <Space>
-                <Button htmlType="submit" icon={<SyncOutlined />} loading={addingRemote} type="primary">
-                  Add remote
+                <Button htmlType="submit" icon={editRemote ? <EditOutlined /> : <SyncOutlined />} loading={editRemote ? updatingRemoteID === editRemote.id : addingRemote} type="primary">
+                  {editRemote ? 'Save changes' : 'Add remote'}
                 </Button>
-                <Button onClick={() => setAddRemoteOpen(false)}>Close</Button>
+                <Button onClick={closeRemoteModal}>Close</Button>
               </Space>
             </Form>
           </section>

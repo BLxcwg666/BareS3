@@ -126,6 +126,7 @@ export type ReplicationRemote = {
   id: string;
   display_name: string;
   endpoint: string;
+  enabled: boolean;
   follow_changes: boolean;
   status: 'pending' | 'syncing' | 'idle' | 'error';
   connection_status: 'disconnected' | 'connecting' | 'connected';
@@ -442,6 +443,7 @@ export function createReplicationRemote(payload: {
   display_name: string;
   endpoint: string;
   token: string;
+  enabled?: boolean;
   follow_changes: boolean;
   bootstrap_mode: 'full' | 'from_now';
 }) {
@@ -454,7 +456,14 @@ export function createReplicationRemote(payload: {
   });
 }
 
-export function updateReplicationRemote(id: string, payload: { follow_changes: boolean }) {
+export function updateReplicationRemote(id: string, payload: {
+  display_name?: string;
+  endpoint?: string;
+  token?: string;
+  bootstrap_mode?: 'full' | 'from_now';
+  enabled?: boolean;
+  follow_changes?: boolean;
+}) {
   return request<ReplicationRemote>(`/api/v1/replication/remotes/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: {
