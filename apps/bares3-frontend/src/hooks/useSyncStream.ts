@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { getSyncSettings, listReplicationRemotes, type ReplicationRemote, type SyncSettings } from '../api';
+import { buildApiWebSocketUrl, getSyncSettings, listReplicationRemotes, type ReplicationRemote, type SyncSettings } from '../api';
 import { useAuth } from '../auth';
 
 type SyncStreamSnapshot = {
@@ -12,9 +12,7 @@ type SyncStreamSnapshot = {
 const reconnectDelayMs = 2000;
 
 function syncStreamURL() {
-  const url = new URL('/api/v1/replication/stream', window.location.origin);
-  url.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return url.toString();
+  return buildApiWebSocketUrl('/api/v1/replication/stream');
 }
 
 export function useSyncStream() {

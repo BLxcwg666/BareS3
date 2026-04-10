@@ -235,6 +235,7 @@ export function BrowserPage() {
   const [shareLinksLoading, setShareLinksLoading] = useState(false);
   const [revokingShareLinkId, setRevokingShareLinkId] = useState<string | null>(null);
   const [removingShareLinkId, setRemovingShareLinkId] = useState<string | null>(null);
+  const shareLinksRequestIdRef = useRef(0);
 
   useEffect(
     () => () => {
@@ -306,6 +307,13 @@ export function BrowserPage() {
     const matched = browserEntries.find((entry) => entry.kind === 'object' && entry.object.key === selectedKey);
     return matched?.kind === 'object' ? matched.object : null;
   }, [browserEntries, selectedKey]);
+  const selectedObjectKey = selectedObject?.key ?? null;
+
+  const selectedBucketRef = useRef<string | null>(selectedBucket);
+  const selectedObjectKeyRef = useRef<string | null>(selectedObjectKey);
+
+  selectedBucketRef.current = selectedBucket;
+  selectedObjectKeyRef.current = selectedObjectKey;
 
   const selectedFolder = useMemo(() => {
     const matched = browserEntries.find((entry) => entry.kind === 'folder' && entry.prefix === selectedFolderPrefix);
@@ -320,13 +328,18 @@ export function BrowserPage() {
 
   const { item: objectDetail, loading: objectDetailLoading, refresh: refreshObjectDetail } = useObjectDetail(
     selectedBucket,
-    selectedObject?.key ?? null,
+    selectedObjectKey,
   );
   const inspectorObject = objectDetail ?? selectedObject;
 
   const refreshShareLinks = useCallback(
     async (showError = true) => {
-      if (!selectedBucket || !selectedObject) {
+      const nextBucket = selectedBucketRef.current;
+      const nextKey = selectedObjectKeyRef.current;
+      const requestId = shareLinksRequestIdRef.current + 1;
+      shareLinksRequestIdRef.current = requestId;
+
+      if (!nextBucket || !nextKey) {
         setObjectShareLinks([]);
         setShareLinksLoading(false);
         return;
@@ -336,21 +349,37 @@ export function BrowserPage() {
       setShareLinksLoading(true);
       try {
         const links = await listShareLinks();
-        setObjectShareLinks(links.filter((item) => item.bucket === selectedBucket && item.key === selectedObject.key));
+        if (shareLinksRequestIdRef.current !== requestId) {
+          return;
+        }
+        if (selectedBucketRef.current !== nextBucket || selectedObjectKeyRef.current !== nextKey) {
+          return;
+        }
+
+        setObjectShareLinks(links.filter((item) => item.bucket === nextBucket && item.key === nextKey));
       } catch (error) {
+        if (shareLinksRequestIdRef.current !== requestId) {
+          return;
+        }
         if (showError) {
           message.error(normalizeApiError(error, 'Failed to load object share links'));
         }
       } finally {
-        setShareLinksLoading(false);
+        if (
+          shareLinksRequestIdRef.current === requestId
+          && selectedBucketRef.current === nextBucket
+          && selectedObjectKeyRef.current === nextKey
+        ) {
+          setShareLinksLoading(false);
+        }
       }
     },
-    [message, selectedBucket, selectedObject],
+    [message],
   );
 
   useEffect(() => {
     void refreshShareLinks(false);
-  }, [refreshShareLinks]);
+  }, [refreshShareLinks, selectedBucket, selectedObjectKey]);
 
   const syncSearchParams = useCallback(
     (nextBucket: string | null, nextPrefix = '', nextKey?: string | null, nextQuery?: string) => {

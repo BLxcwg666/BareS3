@@ -1,4 +1,4 @@
-export { ApiError, request } from './client';
+export { ApiError, buildApiWebSocketUrl, buildApiUrl, request } from './client';
 export { getSession, login, logout, type AuthSession } from './auth';
 export {
   createReplicationRemote,
