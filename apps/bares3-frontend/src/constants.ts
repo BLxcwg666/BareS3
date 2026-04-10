@@ -34,6 +34,7 @@ export const pageMeta: Record<string, { title: string; note: string }> = {
   '/browser': { title: 'Browser', note: 'Objects, metadata, and current path context.' },
   '/audit': { title: 'Audit Logs', note: 'Recent console actions and storage changes.' },
   '/links': { title: 'Share links', note: 'Revocable token links for previews and downloads.' },
+  '/domains': { title: 'Domains', note: 'Map public hostnames to bucket prefixes for static delivery.' },
   '/settings': { title: 'Settings', note: 'Defaults that make the storage layer predictable.' },
   '/sync': { title: 'Replication', note: 'Remote links, pull tokens, and replication health.' },
 };

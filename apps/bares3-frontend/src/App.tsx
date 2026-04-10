@@ -49,6 +49,11 @@ const SettingsPage = lazy(async () => {
   return { default: module.SettingsPage };
 });
 
+const DomainsPage = lazy(async () => {
+  const module = await import('./pages/DomainsPage');
+  return { default: module.DomainsPage };
+});
+
 const SyncPage = lazy(async () => {
   const module = await import('./pages/SyncPage');
   return { default: module.SyncPage };
@@ -145,6 +150,14 @@ export default function App() {
                 element={
                   <ProtectedRoute>
                     <SyncPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/domains"
+                element={
+                  <ProtectedRoute>
+                    <DomainsPage />
                   </ProtectedRoute>
                 }
               />

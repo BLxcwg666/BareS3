@@ -50,6 +50,7 @@ export function ConsoleShell({ children, actions, showHeaderSearch = true, meta:
       { key: '/access-keys', icon: <KeyOutlined />, label: 'Access keys' },
       { key: '/audit', icon: <HistoryOutlined />, label: 'Audit logs' },
       { key: '/links', icon: <LinkOutlined />, label: 'Share links' },
+      { key: '/domains', icon: <CloudServerOutlined />, label: 'Domains' },
       { key: '/sync', icon: <SyncOutlined />, label: 'Replication' },
       { key: '/settings', icon: <SettingOutlined />, label: 'Settings' },
     ],

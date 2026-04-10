@@ -39,6 +39,7 @@ export type RuntimeInfo = {
     public_base_url: string;
     s3_base_url: string;
     metadata_layout: string;
+    domain_bindings: PublicDomainBinding[];
     max_bytes: number;
     used_bytes: number;
     bucket_count: number;
@@ -55,6 +56,18 @@ export type SystemSettings = {
   region: string;
   metadata_layout: string;
   tmp_dir: string;
+};
+
+export type PublicDomainBinding = {
+  host: string;
+  bucket: string;
+  prefix?: string;
+  index_document?: boolean;
+  spa_fallback?: boolean;
+};
+
+export type DomainSettings = {
+  items: PublicDomainBinding[];
 };
 
 export type SyncStatusState = 'pending' | 'verifying' | 'downloading' | 'ready' | 'error' | 'conflict';
@@ -357,6 +370,20 @@ export function getSystemSettings() {
 
 export function updateSystemSettings(payload: SystemSettings) {
   return request<SystemSettings>('/api/v1/settings/system', {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getDomainSettings() {
+  return request<DomainSettings>('/api/v1/settings/domains');
+}
+
+export function updateDomainSettings(payload: DomainSettings) {
+  return request<DomainSettings>('/api/v1/settings/domains', {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
