@@ -7,6 +7,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -83,7 +85,7 @@ func RequestLogger(logger *zap.Logger, service string) func(http.Handler) http.H
 					zap.String("service", service),
 					zap.String("method", r.Method),
 					zap.String("path", r.URL.Path),
-					zap.String("query", r.URL.RawQuery),
+					zap.String("query", redactQueryString(r.URL.RawQuery)),
 					zap.Int("status", status),
 					zap.Int("bytes", recorder.bytes),
 					zap.Duration("duration", duration),
@@ -106,4 +108,40 @@ func WriteText(w http.ResponseWriter, status int, payload string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(payload))
+}
+
+func redactQueryString(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	query, err := url.ParseQuery(raw)
+	if err != nil {
+		return "[invalid]"
+	}
+	for key, values := range query {
+		if !sensitiveQueryKey(key) {
+			continue
+		}
+		for index := range values {
+			values[index] = "[redacted]"
+		}
+		query[key] = values
+	}
+	return query.Encode()
+}
+
+func sensitiveQueryKey(key string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	if normalized == "" {
+		return false
+	}
+	if strings.HasPrefix(normalized, "x-amz-") {
+		return true
+	}
+	switch normalized {
+	case "token", "signature", "sig", "access_token", "id_token", "refresh_token":
+		return true
+	default:
+		return false
+	}
 }

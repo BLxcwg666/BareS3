@@ -82,7 +82,7 @@ func TestLoginAndProtectedRuntime(t *testing.T) {
 	}
 
 	runtimeRequest := httptest.NewRequest(http.MethodGet, "/api/v1/runtime", nil)
-	runtimeRequest.AddCookie(loginRecorder.Result().Cookies()[0])
+	addSession(runtimeRequest, loginRecorder.Result().Cookies()[0])
 	runtimeRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(runtimeRecorder, runtimeRequest)
 	if runtimeRecorder.Code != http.StatusOK {
@@ -90,7 +90,7 @@ func TestLoginAndProtectedRuntime(t *testing.T) {
 	}
 
 	auditRequest := httptest.NewRequest(http.MethodGet, "/api/v1/audit/events?limit=5", nil)
-	auditRequest.AddCookie(loginRecorder.Result().Cookies()[0])
+	addSession(auditRequest, loginRecorder.Result().Cookies()[0])
 	auditRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(auditRecorder, auditRequest)
 	if auditRecorder.Code != http.StatusOK {
@@ -169,7 +169,7 @@ func TestProtectedMutationsRemainAllowedWhenSyncEnabled(t *testing.T) {
 	body, _ := json.Marshal(map[string]any{"name": "gallery"})
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/buckets", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
-	request.AddCookie(cookie)
+	addSession(request, cookie)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusCreated {
@@ -321,7 +321,7 @@ func TestObjectListingSupportsPaginationAndSearch(t *testing.T) {
 	cookie := loginCookie(t, handler)
 
 	listRequest := httptest.NewRequest(http.MethodGet, "/api/v1/buckets/gallery/objects?query=text/plain&limit=1", nil)
-	listRequest.AddCookie(cookie)
+	addSession(listRequest, cookie)
 	listRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(listRecorder, listRequest)
 	if listRecorder.Code != http.StatusOK {
@@ -345,7 +345,7 @@ func TestObjectListingSupportsPaginationAndSearch(t *testing.T) {
 	}
 
 	nextRequest := httptest.NewRequest(http.MethodGet, "/api/v1/buckets/gallery/objects?query=text/plain&limit=1&cursor=docs%2Falpha.txt", nil)
-	nextRequest.AddCookie(cookie)
+	addSession(nextRequest, cookie)
 	nextRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(nextRecorder, nextRequest)
 	if nextRecorder.Code != http.StatusOK {
@@ -401,7 +401,7 @@ func TestGlobalSearchEndpointReturnsBucketAndObjectHits(t *testing.T) {
 	cookie := loginCookie(t, handler)
 
 	searchRequest := httptest.NewRequest(http.MethodGet, "/api/v1/search?query=read&limit=5", nil)
-	searchRequest.AddCookie(cookie)
+	addSession(searchRequest, cookie)
 	searchRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(searchRecorder, searchRequest)
 	if searchRecorder.Code != http.StatusOK {
@@ -467,7 +467,7 @@ func TestUpdateStorageSettingsPersistsAndAppliesImmediately(t *testing.T) {
 	body, _ := json.Marshal(map[string]int64{"max_bytes": 1024})
 	request := httptest.NewRequest(http.MethodPut, "/api/v1/settings/storage", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
-	request.AddCookie(cookies[0])
+	addSession(request, cookies[0])
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
@@ -483,6 +483,42 @@ func TestUpdateStorageSettingsPersistsAndAppliesImmediately(t *testing.T) {
 	}
 	if runtimeSettings.MaxBytes != 1024 {
 		t.Fatalf("unexpected stored max bytes: %d", runtimeSettings.MaxBytes)
+	}
+}
+
+func TestProtectedMutationRejectsCrossSiteOrigin(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
+	hash, err := consoleauth.HashPassword("secret-password")
+	if err != nil {
+		t.Fatalf("HashPassword failed: %v", err)
+	}
+	cfg.Auth.Console.PasswordHash = hash
+	cfg.Auth.Console.SessionSecret = "test-session-secret"
+
+	store := newStorageStoreForTest(t, cfg)
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
+	cookie := loginCookie(t, handler)
+
+	body, _ := json.Marshal(map[string]int64{"max_bytes": 1024})
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/settings/storage", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", "https://evil.test")
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("unexpected cross-site mutation status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if got := store.InstanceQuotaBytes(); got != 0 {
+		t.Fatalf("expected quota to remain unchanged, got %d", got)
 	}
 }
 
@@ -519,7 +555,7 @@ func TestUpdateSyncSettingsPersistsToDB(t *testing.T) {
 	})
 	request := httptest.NewRequest(http.MethodPut, "/api/v1/settings/sync", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
-	request.AddCookie(cookie)
+	addSession(request, cookie)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
@@ -535,7 +571,7 @@ func TestUpdateSyncSettingsPersistsToDB(t *testing.T) {
 	}
 
 	getRequest := httptest.NewRequest(http.MethodGet, "/api/v1/settings/sync", nil)
-	getRequest.AddCookie(cookie)
+	addSession(getRequest, cookie)
 	getRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(getRecorder, getRequest)
 	if getRecorder.Code != http.StatusOK {
@@ -569,7 +605,7 @@ func TestReplicationTokenCreateListRemoteAndDeleteFlow(t *testing.T) {
 	tokenBody, _ := json.Marshal(map[string]string{"label": "Peer A"})
 	tokenRequest := httptest.NewRequest(http.MethodPost, "/api/v1/replication/tokens", bytes.NewReader(tokenBody))
 	tokenRequest.Header.Set("Content-Type", "application/json")
-	tokenRequest.AddCookie(cookie)
+	addSession(tokenRequest, cookie)
 	tokenRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(tokenRecorder, tokenRequest)
 	if tokenRecorder.Code != http.StatusCreated {
@@ -587,7 +623,7 @@ func TestReplicationTokenCreateListRemoteAndDeleteFlow(t *testing.T) {
 	}
 
 	tokensRequest := httptest.NewRequest(http.MethodGet, "/api/v1/replication/tokens", nil)
-	tokensRequest.AddCookie(cookie)
+	addSession(tokensRequest, cookie)
 	tokensRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(tokensRecorder, tokensRequest)
 	if tokensRecorder.Code != http.StatusOK {
@@ -602,7 +638,7 @@ func TestReplicationTokenCreateListRemoteAndDeleteFlow(t *testing.T) {
 	})
 	remoteRequest := httptest.NewRequest(http.MethodPost, "/api/v1/replication/remotes", bytes.NewReader(remoteBody))
 	remoteRequest.Header.Set("Content-Type", "application/json")
-	remoteRequest.AddCookie(cookie)
+	addSession(remoteRequest, cookie)
 	remoteRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(remoteRecorder, remoteRequest)
 	if remoteRecorder.Code != http.StatusCreated {
@@ -621,7 +657,7 @@ func TestReplicationTokenCreateListRemoteAndDeleteFlow(t *testing.T) {
 	}
 
 	remotesRequest := httptest.NewRequest(http.MethodGet, "/api/v1/replication/remotes", nil)
-	remotesRequest.AddCookie(cookie)
+	addSession(remotesRequest, cookie)
 	remotesRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(remotesRecorder, remotesRequest)
 	if remotesRecorder.Code != http.StatusOK {
@@ -629,7 +665,7 @@ func TestReplicationTokenCreateListRemoteAndDeleteFlow(t *testing.T) {
 	}
 
 	deleteRemoteRequest := httptest.NewRequest(http.MethodDelete, "/api/v1/replication/remotes/"+remote.ID, nil)
-	deleteRemoteRequest.AddCookie(cookie)
+	addSession(deleteRemoteRequest, cookie)
 	deleteRemoteRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(deleteRemoteRecorder, deleteRemoteRequest)
 	if deleteRemoteRecorder.Code != http.StatusOK {
@@ -637,7 +673,7 @@ func TestReplicationTokenCreateListRemoteAndDeleteFlow(t *testing.T) {
 	}
 
 	revokeTokenRequest := httptest.NewRequest(http.MethodDelete, "/api/v1/replication/tokens/"+token.ID, nil)
-	revokeTokenRequest.AddCookie(cookie)
+	addSession(revokeTokenRequest, cookie)
 	revokeTokenRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(revokeTokenRecorder, revokeTokenRequest)
 	if revokeTokenRecorder.Code != http.StatusOK {
@@ -645,7 +681,7 @@ func TestReplicationTokenCreateListRemoteAndDeleteFlow(t *testing.T) {
 	}
 
 	deleteTokenRequest := httptest.NewRequest(http.MethodDelete, "/api/v1/replication/tokens/"+token.ID+"/remove", nil)
-	deleteTokenRequest.AddCookie(cookie)
+	addSession(deleteTokenRequest, cookie)
 	deleteTokenRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(deleteTokenRecorder, deleteTokenRequest)
 	if deleteTokenRecorder.Code != http.StatusOK {
@@ -686,7 +722,7 @@ func TestAddRemoteFromNowStartsAtCurrentCursor(t *testing.T) {
 	tokenBody, _ := json.Marshal(map[string]string{"label": "Peer B"})
 	tokenRequest := httptest.NewRequest(http.MethodPost, "/api/v1/replication/tokens", bytes.NewReader(tokenBody))
 	tokenRequest.Header.Set("Content-Type", "application/json")
-	tokenRequest.AddCookie(cookie)
+	addSession(tokenRequest, cookie)
 	tokenRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(tokenRecorder, tokenRequest)
 	token := struct {
@@ -704,7 +740,7 @@ func TestAddRemoteFromNowStartsAtCurrentCursor(t *testing.T) {
 	})
 	remoteRequest := httptest.NewRequest(http.MethodPost, "/api/v1/replication/remotes", bytes.NewReader(remoteBody))
 	remoteRequest.Header.Set("Content-Type", "application/json")
-	remoteRequest.AddCookie(cookie)
+	addSession(remoteRequest, cookie)
 	remoteRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(remoteRecorder, remoteRequest)
 	if remoteRecorder.Code != http.StatusCreated {
@@ -754,7 +790,7 @@ func TestUpdateRemoteBootstrapModeResetsCursorAndRunState(t *testing.T) {
 	tokenBody, _ := json.Marshal(map[string]string{"label": "Peer C"})
 	tokenRequest := httptest.NewRequest(http.MethodPost, "/api/v1/replication/tokens", bytes.NewReader(tokenBody))
 	tokenRequest.Header.Set("Content-Type", "application/json")
-	tokenRequest.AddCookie(cookie)
+	addSession(tokenRequest, cookie)
 	tokenRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(tokenRecorder, tokenRequest)
 	if tokenRecorder.Code != http.StatusCreated {
@@ -776,7 +812,7 @@ func TestUpdateRemoteBootstrapModeResetsCursorAndRunState(t *testing.T) {
 	})
 	remoteRequest := httptest.NewRequest(http.MethodPost, "/api/v1/replication/remotes", bytes.NewReader(remoteBody))
 	remoteRequest.Header.Set("Content-Type", "application/json")
-	remoteRequest.AddCookie(cookie)
+	addSession(remoteRequest, cookie)
 	remoteRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(remoteRecorder, remoteRequest)
 	if remoteRecorder.Code != http.StatusCreated {
@@ -843,7 +879,7 @@ func TestUpdateRemoteBootstrapModeResetsCursorAndRunState(t *testing.T) {
 	})
 	patchRequest := httptest.NewRequest(http.MethodPatch, "/api/v1/replication/remotes/"+remote.ID, bytes.NewReader(patchBody))
 	patchRequest.Header.Set("Content-Type", "application/json")
-	patchRequest.AddCookie(cookie)
+	addSession(patchRequest, cookie)
 	patchRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(patchRecorder, patchRequest)
 	if patchRecorder.Code != http.StatusOK {
@@ -921,7 +957,7 @@ func TestCreateListAndRevokeShareLinks(t *testing.T) {
 	})
 	createRequest := httptest.NewRequest(http.MethodPost, "/api/v1/share-links", bytes.NewReader(createBody))
 	createRequest.Header.Set("Content-Type", "application/json")
-	createRequest.AddCookie(cookie)
+	addSession(createRequest, cookie)
 	createRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(createRecorder, createRequest)
 	if createRecorder.Code != http.StatusCreated {
@@ -945,7 +981,7 @@ func TestCreateListAndRevokeShareLinks(t *testing.T) {
 	}
 
 	listRequest := httptest.NewRequest(http.MethodGet, "/api/v1/share-links", nil)
-	listRequest.AddCookie(cookie)
+	addSession(listRequest, cookie)
 	listRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(listRecorder, listRequest)
 	if listRecorder.Code != http.StatusOK {
@@ -966,7 +1002,7 @@ func TestCreateListAndRevokeShareLinks(t *testing.T) {
 	}
 
 	runtimeRequest := httptest.NewRequest(http.MethodGet, "/api/v1/runtime", nil)
-	runtimeRequest.AddCookie(cookie)
+	addSession(runtimeRequest, cookie)
 	runtimeRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(runtimeRecorder, runtimeRequest)
 	if runtimeRecorder.Code != http.StatusOK {
@@ -985,7 +1021,7 @@ func TestCreateListAndRevokeShareLinks(t *testing.T) {
 	}
 
 	revokeRequest := httptest.NewRequest(http.MethodDelete, "/api/v1/share-links/"+created.ID, nil)
-	revokeRequest.AddCookie(cookie)
+	addSession(revokeRequest, cookie)
 	revokeRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(revokeRecorder, revokeRequest)
 	if revokeRecorder.Code != http.StatusOK {
@@ -1004,7 +1040,7 @@ func TestCreateListAndRevokeShareLinks(t *testing.T) {
 	}
 
 	removeRequest := httptest.NewRequest(http.MethodDelete, "/api/v1/share-links/"+created.ID+"/remove", nil)
-	removeRequest.AddCookie(cookie)
+	addSession(removeRequest, cookie)
 	removeRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(removeRecorder, removeRequest)
 	if removeRecorder.Code != http.StatusNoContent {
@@ -1012,7 +1048,7 @@ func TestCreateListAndRevokeShareLinks(t *testing.T) {
 	}
 
 	listAfterRemoveRequest := httptest.NewRequest(http.MethodGet, "/api/v1/share-links", nil)
-	listAfterRemoveRequest.AddCookie(cookie)
+	addSession(listAfterRemoveRequest, cookie)
 	listAfterRemoveRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(listAfterRemoveRecorder, listAfterRemoveRequest)
 	if listAfterRemoveRecorder.Code != http.StatusOK {
@@ -1077,7 +1113,7 @@ func TestMoveBrowserEntries(t *testing.T) {
 	})
 	shareOneRequest := httptest.NewRequest(http.MethodPost, "/api/v1/share-links", bytes.NewReader(shareOneBody))
 	shareOneRequest.Header.Set("Content-Type", "application/json")
-	shareOneRequest.AddCookie(cookie)
+	addSession(shareOneRequest, cookie)
 	shareOneRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(shareOneRecorder, shareOneRequest)
 	if shareOneRecorder.Code != http.StatusCreated {
@@ -1091,7 +1127,7 @@ func TestMoveBrowserEntries(t *testing.T) {
 	})
 	shareTwoRequest := httptest.NewRequest(http.MethodPost, "/api/v1/share-links", bytes.NewReader(shareTwoBody))
 	shareTwoRequest.Header.Set("Content-Type", "application/json")
-	shareTwoRequest.AddCookie(cookie)
+	addSession(shareTwoRequest, cookie)
 	shareTwoRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(shareTwoRecorder, shareTwoRequest)
 	if shareTwoRecorder.Code != http.StatusCreated {
@@ -1107,7 +1143,7 @@ func TestMoveBrowserEntries(t *testing.T) {
 	})
 	moveObjectRequest := httptest.NewRequest(http.MethodPost, "/api/v1/browser/move", bytes.NewReader(moveObjectBody))
 	moveObjectRequest.Header.Set("Content-Type", "application/json")
-	moveObjectRequest.AddCookie(cookie)
+	addSession(moveObjectRequest, cookie)
 	moveObjectRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(moveObjectRecorder, moveObjectRequest)
 	if moveObjectRecorder.Code != http.StatusOK {
@@ -1123,7 +1159,7 @@ func TestMoveBrowserEntries(t *testing.T) {
 	})
 	movePrefixRequest := httptest.NewRequest(http.MethodPost, "/api/v1/browser/move", bytes.NewReader(movePrefixBody))
 	movePrefixRequest.Header.Set("Content-Type", "application/json")
-	movePrefixRequest.AddCookie(cookie)
+	addSession(movePrefixRequest, cookie)
 	movePrefixRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(movePrefixRecorder, movePrefixRequest)
 	if movePrefixRecorder.Code != http.StatusOK {
@@ -1131,7 +1167,7 @@ func TestMoveBrowserEntries(t *testing.T) {
 	}
 
 	listArchiveRequest := httptest.NewRequest(http.MethodGet, "/api/v1/buckets/archive/objects", nil)
-	listArchiveRequest.AddCookie(cookie)
+	addSession(listArchiveRequest, cookie)
 	listArchiveRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(listArchiveRecorder, listArchiveRequest)
 	if listArchiveRecorder.Code != http.StatusOK {
@@ -1151,7 +1187,7 @@ func TestMoveBrowserEntries(t *testing.T) {
 	}
 
 	shareLinksRequest := httptest.NewRequest(http.MethodGet, "/api/v1/share-links", nil)
-	shareLinksRequest.AddCookie(cookie)
+	addSession(shareLinksRequest, cookie)
 	shareLinksRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(shareLinksRecorder, shareLinksRequest)
 	if shareLinksRecorder.Code != http.StatusOK {
@@ -1216,7 +1252,7 @@ func TestDeleteObjectAlsoRemovesShareLinks(t *testing.T) {
 	})
 	shareRequest := httptest.NewRequest(http.MethodPost, "/api/v1/share-links", bytes.NewReader(shareBody))
 	shareRequest.Header.Set("Content-Type", "application/json")
-	shareRequest.AddCookie(cookie)
+	addSession(shareRequest, cookie)
 	shareRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(shareRecorder, shareRequest)
 	if shareRecorder.Code != http.StatusCreated {
@@ -1224,7 +1260,7 @@ func TestDeleteObjectAlsoRemovesShareLinks(t *testing.T) {
 	}
 
 	deleteRequest := httptest.NewRequest(http.MethodDelete, "/api/v1/buckets/gallery/objects/notes/delete-me.txt", nil)
-	deleteRequest.AddCookie(cookie)
+	addSession(deleteRequest, cookie)
 	deleteRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(deleteRecorder, deleteRequest)
 	if deleteRecorder.Code != http.StatusNoContent {
@@ -1232,7 +1268,7 @@ func TestDeleteObjectAlsoRemovesShareLinks(t *testing.T) {
 	}
 
 	listRequest := httptest.NewRequest(http.MethodGet, "/api/v1/share-links", nil)
-	listRequest.AddCookie(cookie)
+	addSession(listRequest, cookie)
 	listRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(listRecorder, listRequest)
 	if listRecorder.Code != http.StatusOK {
@@ -1295,7 +1331,7 @@ func TestUpdateObjectMetadata(t *testing.T) {
 	})
 	request := httptest.NewRequest(http.MethodPut, "/api/v1/buckets/gallery/metadata/notes/edit.txt", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
-	request.AddCookie(cookie)
+	addSession(request, cookie)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
@@ -1353,7 +1389,7 @@ func TestDeletePrefixAlsoRemovesShareLinks(t *testing.T) {
 		shareBody, _ := json.Marshal(map[string]any{"bucket": "gallery", "key": key, "expires_seconds": 3600})
 		shareRequest := httptest.NewRequest(http.MethodPost, "/api/v1/share-links", bytes.NewReader(shareBody))
 		shareRequest.Header.Set("Content-Type", "application/json")
-		shareRequest.AddCookie(cookie)
+		addSession(shareRequest, cookie)
 		shareRecorder := httptest.NewRecorder()
 		handler.ServeHTTP(shareRecorder, shareRequest)
 		if shareRecorder.Code != http.StatusCreated {
@@ -1364,7 +1400,7 @@ func TestDeletePrefixAlsoRemovesShareLinks(t *testing.T) {
 	deleteBody, _ := json.Marshal(map[string]string{"kind": "prefix", "bucket": "gallery", "prefix": "folder/"})
 	deleteRequest := httptest.NewRequest(http.MethodPost, "/api/v1/browser/delete", bytes.NewReader(deleteBody))
 	deleteRequest.Header.Set("Content-Type", "application/json")
-	deleteRequest.AddCookie(cookie)
+	addSession(deleteRequest, cookie)
 	deleteRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(deleteRecorder, deleteRequest)
 	if deleteRecorder.Code != http.StatusOK {
@@ -1372,7 +1408,7 @@ func TestDeletePrefixAlsoRemovesShareLinks(t *testing.T) {
 	}
 
 	listRequest := httptest.NewRequest(http.MethodGet, "/api/v1/share-links", nil)
-	listRequest.AddCookie(cookie)
+	addSession(listRequest, cookie)
 	listRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(listRecorder, listRequest)
 	if listRecorder.Code != http.StatusOK {
@@ -1426,7 +1462,7 @@ func TestDeleteBucketAlsoRemovesShareLinks(t *testing.T) {
 	cookie := loginCookie(t, handler)
 
 	deleteRequest := httptest.NewRequest(http.MethodDelete, "/api/v1/buckets/gallery", nil)
-	deleteRequest.AddCookie(cookie)
+	addSession(deleteRequest, cookie)
 	deleteRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(deleteRecorder, deleteRequest)
 	if deleteRecorder.Code != http.StatusNoContent {
@@ -1434,7 +1470,7 @@ func TestDeleteBucketAlsoRemovesShareLinks(t *testing.T) {
 	}
 
 	listRequest := httptest.NewRequest(http.MethodGet, "/api/v1/share-links", nil)
-	listRequest.AddCookie(cookie)
+	addSession(listRequest, cookie)
 	listRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(listRecorder, listRequest)
 	if listRecorder.Code != http.StatusOK {
@@ -1499,7 +1535,7 @@ func TestUpdateBucketRenamesMetadataAndHistory(t *testing.T) {
 	})
 	updateRequest := httptest.NewRequest(http.MethodPut, "/api/v1/buckets/gallery", bytes.NewReader(updateBody))
 	updateRequest.Header.Set("Content-Type", "application/json")
-	updateRequest.AddCookie(cookie)
+	addSession(updateRequest, cookie)
 	updateRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(updateRecorder, updateRequest)
 	if updateRecorder.Code != http.StatusOK {
@@ -1523,7 +1559,7 @@ func TestUpdateBucketRenamesMetadataAndHistory(t *testing.T) {
 	}
 
 	historyRequest := httptest.NewRequest(http.MethodGet, "/api/v1/buckets/archive/history?limit=10", nil)
-	historyRequest.AddCookie(cookie)
+	addSession(historyRequest, cookie)
 	historyRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(historyRecorder, historyRequest)
 	if historyRecorder.Code != http.StatusOK {
@@ -1548,7 +1584,7 @@ func TestUpdateBucketRenamesMetadataAndHistory(t *testing.T) {
 	}
 
 	listRequest := httptest.NewRequest(http.MethodGet, "/api/v1/share-links", nil)
-	listRequest.AddCookie(cookie)
+	addSession(listRequest, cookie)
 	listRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(listRecorder, listRequest)
 	if listRecorder.Code != http.StatusOK {
@@ -1605,7 +1641,7 @@ func TestBucketAccessPolicyCRUD(t *testing.T) {
 	})
 	updateRequest := httptest.NewRequest(http.MethodPut, "/api/v1/buckets/gallery/access", bytes.NewReader(updateBody))
 	updateRequest.Header.Set("Content-Type", "application/json")
-	updateRequest.AddCookie(cookie)
+	addSession(updateRequest, cookie)
 	updateRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(updateRecorder, updateRequest)
 	if updateRecorder.Code != http.StatusOK {
@@ -1613,7 +1649,7 @@ func TestBucketAccessPolicyCRUD(t *testing.T) {
 	}
 
 	readRequest := httptest.NewRequest(http.MethodGet, "/api/v1/buckets/gallery/access", nil)
-	readRequest.AddCookie(cookie)
+	addSession(readRequest, cookie)
 	readRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(readRecorder, readRequest)
 	if readRecorder.Code != http.StatusOK {
@@ -1678,7 +1714,7 @@ func TestPublicDomainBindingsCRUD(t *testing.T) {
 	})
 	updateRequest := httptest.NewRequest(http.MethodPut, "/api/v1/settings/domains", bytes.NewReader(updateBody))
 	updateRequest.Header.Set("Content-Type", "application/json")
-	updateRequest.AddCookie(cookie)
+	addSession(updateRequest, cookie)
 	updateRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(updateRecorder, updateRequest)
 	if updateRecorder.Code != http.StatusOK {
@@ -1686,7 +1722,7 @@ func TestPublicDomainBindingsCRUD(t *testing.T) {
 	}
 
 	listRequest := httptest.NewRequest(http.MethodGet, "/api/v1/settings/domains", nil)
-	listRequest.AddCookie(cookie)
+	addSession(listRequest, cookie)
 	listRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(listRecorder, listRequest)
 	if listRecorder.Code != http.StatusOK {
@@ -1735,7 +1771,7 @@ func TestPublicDomainBindingsRejectDuplicateHosts(t *testing.T) {
 	})
 	request := httptest.NewRequest(http.MethodPut, "/api/v1/settings/domains", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
-	request.AddCookie(cookie)
+	addSession(request, cookie)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
@@ -1780,7 +1816,7 @@ func TestPublicDomainBindingsRejectSPAFallbackWithoutIndexDocument(t *testing.T)
 	})
 	request := httptest.NewRequest(http.MethodPut, "/api/v1/settings/domains", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
-	request.AddCookie(cookie)
+	addSession(request, cookie)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
@@ -1825,7 +1861,7 @@ func TestPublicDomainBindingsPreserveDisabledIndexDocument(t *testing.T) {
 	})
 	updateRequest := httptest.NewRequest(http.MethodPut, "/api/v1/settings/domains", bytes.NewReader(body))
 	updateRequest.Header.Set("Content-Type", "application/json")
-	updateRequest.AddCookie(cookie)
+	addSession(updateRequest, cookie)
 	updateRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(updateRecorder, updateRequest)
 	if updateRecorder.Code != http.StatusOK {
@@ -1833,7 +1869,7 @@ func TestPublicDomainBindingsPreserveDisabledIndexDocument(t *testing.T) {
 	}
 
 	listRequest := httptest.NewRequest(http.MethodGet, "/api/v1/settings/domains", nil)
-	listRequest.AddCookie(cookie)
+	addSession(listRequest, cookie)
 	listRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(listRecorder, listRequest)
 	if listRecorder.Code != http.StatusOK {
@@ -1876,7 +1912,7 @@ func TestS3CredentialCRUD(t *testing.T) {
 	createBody, _ := json.Marshal(map[string]any{"label": "CI automation", "permission": "read_only", "buckets": []string{"gallery", "archive"}})
 	createRequest := httptest.NewRequest(http.MethodPost, "/api/v1/settings/s3/credentials", bytes.NewReader(createBody))
 	createRequest.Header.Set("Content-Type", "application/json")
-	createRequest.AddCookie(cookie)
+	addSession(createRequest, cookie)
 	createRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(createRecorder, createRequest)
 	if createRecorder.Code != http.StatusCreated {
@@ -1900,7 +1936,7 @@ func TestS3CredentialCRUD(t *testing.T) {
 	updateBody, _ := json.Marshal(map[string]any{"label": "Updated automation", "permission": "read_write", "buckets": []string{"gallery"}})
 	updateRequest := httptest.NewRequest(http.MethodPut, "/api/v1/settings/s3/credentials/"+created.AccessKeyID, bytes.NewReader(updateBody))
 	updateRequest.Header.Set("Content-Type", "application/json")
-	updateRequest.AddCookie(cookie)
+	addSession(updateRequest, cookie)
 	updateRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(updateRecorder, updateRequest)
 	if updateRecorder.Code != http.StatusOK {
@@ -1908,7 +1944,7 @@ func TestS3CredentialCRUD(t *testing.T) {
 	}
 
 	listRequest := httptest.NewRequest(http.MethodGet, "/api/v1/settings/s3/credentials", nil)
-	listRequest.AddCookie(cookie)
+	addSession(listRequest, cookie)
 	listRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(listRecorder, listRequest)
 	if listRecorder.Code != http.StatusOK {
@@ -1925,12 +1961,15 @@ func TestS3CredentialCRUD(t *testing.T) {
 	if err := json.Unmarshal(listRecorder.Body.Bytes(), &listPayload); err != nil {
 		t.Fatalf("unmarshal listed credentials failed: %v", err)
 	}
-	if len(listPayload.Items) != 1 || listPayload.Items[0].AccessKeyID != created.AccessKeyID || listPayload.Items[0].Permission != s3creds.PermissionReadWrite || listPayload.Items[0].Status != "active" {
+	if len(listPayload.Items) != 2 {
+		t.Fatalf("unexpected listed credential count: %+v", listPayload.Items)
+	}
+	if listPayload.Items[0].AccessKeyID != created.AccessKeyID || listPayload.Items[0].Permission != s3creds.PermissionReadWrite || listPayload.Items[0].Status != "active" {
 		t.Fatalf("unexpected listed credential payload: %+v", listPayload.Items)
 	}
 
 	revokeRequest := httptest.NewRequest(http.MethodDelete, "/api/v1/settings/s3/credentials/"+created.AccessKeyID, nil)
-	revokeRequest.AddCookie(cookie)
+	addSession(revokeRequest, cookie)
 	revokeRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(revokeRecorder, revokeRequest)
 	if revokeRecorder.Code != http.StatusOK {
@@ -1938,7 +1977,7 @@ func TestS3CredentialCRUD(t *testing.T) {
 	}
 
 	removeRequest := httptest.NewRequest(http.MethodDelete, "/api/v1/settings/s3/credentials/"+created.AccessKeyID+"/remove", nil)
-	removeRequest.AddCookie(cookie)
+	addSession(removeRequest, cookie)
 	removeRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(removeRecorder, removeRequest)
 	if removeRecorder.Code != http.StatusNoContent {
@@ -1964,6 +2003,27 @@ func loginCookie(t *testing.T, handler http.Handler) *http.Cookie {
 	return cookies[0]
 }
 
+func addSession(request *http.Request, cookie *http.Cookie) {
+	if request == nil || cookie == nil {
+		return
+	}
+	request.AddCookie(cookie)
+	if request.Header.Get("Origin") == "" {
+		host := request.Host
+		if host == "" && request.URL != nil {
+			host = request.URL.Host
+		}
+		if host == "" {
+			host = "bares3.test"
+		}
+		scheme := "http"
+		if request.TLS != nil {
+			scheme = "https"
+		}
+		request.Header.Set("Origin", scheme+"://"+host)
+	}
+}
+
 func newStorageStoreForTest(t *testing.T, cfg config.Config) *storage.Store {
 	t.Helper()
 	store := storage.New(cfg, zap.NewNop())
@@ -1987,9 +2047,17 @@ func newShareLinksForTest(t *testing.T, dataDir string) *sharelink.Store {
 
 func newCredentialsForTest(t *testing.T, cfg config.Config) *s3creds.Store {
 	t.Helper()
-	creds, err := s3creds.New(cfg.Paths.DataDir, s3creds.BootstrapCredential{
+	bootstrap := s3creds.BootstrapCredential{
 		AccessKeyID:     cfg.Auth.S3.AccessKeyID,
 		SecretAccessKey: cfg.Auth.S3.SecretAccessKey,
+	}
+	if bootstrap.AccessKeyID == "" || bootstrap.SecretAccessKey == "" {
+		bootstrap.AccessKeyID = "test-access-key"
+		bootstrap.SecretAccessKey = "test-secret-key"
+	}
+	creds, err := s3creds.New(cfg.Paths.DataDir, s3creds.BootstrapCredential{
+		AccessKeyID:     bootstrap.AccessKeyID,
+		SecretAccessKey: bootstrap.SecretAccessKey,
 	}, zap.NewNop())
 	if err != nil {
 		t.Fatalf("s3creds.New failed: %v", err)

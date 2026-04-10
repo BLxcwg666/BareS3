@@ -107,10 +107,6 @@ func Default() Config {
 				Username:          "admin",
 				SessionTTLMinutes: 7 * 24 * 60,
 			},
-			S3: S3AuthConfig{
-				AccessKeyID:     defaultDevAccessKeyID,
-				SecretAccessKey: defaultDevSecretKey,
-			},
 		},
 		Settings: SettingsConfig{
 			Region:         "home-lab-1",

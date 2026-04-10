@@ -160,6 +160,10 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 			})
 
 			logoutHandler := func(w http.ResponseWriter, r *http.Request) {
+				if err := validateSameOriginRequest(r); err != nil {
+					httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"status": "error", "message": err.Error()})
+					return
+				}
 				if session, err := manager.SessionFromRequest(r); err == nil {
 					recordAudit(logger, auditRecorder, auditlog.Entry{
 						Actor:  session.Username,
@@ -187,6 +191,7 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 
 		api.Group(func(protected chi.Router) {
 			protected.Use(requireSession(manager))
+			protected.Use(requireSameOriginMutations)
 			protected.Use(rejectFollowerMutations(store))
 
 			protected.Get("/search", func(w http.ResponseWriter, r *http.Request) {
@@ -1870,6 +1875,95 @@ func requireSession(manager *consoleauth.Manager) func(http.Handler) http.Handle
 			next.ServeHTTP(w, r.WithContext(sessionWithContext(r.Context(), session)))
 		})
 	}
+}
+
+func requireSameOriginMutations(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !csrfProtectedMethod(r.Method) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if err := validateSameOriginRequest(r); err != nil {
+			httpx.WriteJSON(w, http.StatusForbidden, map[string]any{"status": "error", "message": err.Error()})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func csrfProtectedMethod(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+func validateSameOriginRequest(r *http.Request) error {
+	if r == nil {
+		return errors.New("forbidden cross-site request")
+	}
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		referer := strings.TrimSpace(r.Header.Get("Referer"))
+		if referer == "" {
+			return errors.New("origin or referer header is required")
+		}
+		parsedReferer, err := url.Parse(referer)
+		if err != nil || parsedReferer.Scheme == "" || parsedReferer.Host == "" {
+			return errors.New("referer header is invalid")
+		}
+		origin = parsedReferer.Scheme + "://" + parsedReferer.Host
+	}
+	parsedOrigin, err := url.Parse(origin)
+	if err != nil || parsedOrigin.Scheme == "" || parsedOrigin.Host == "" {
+		return errors.New("origin header is invalid")
+	}
+	if !sameOriginRequestHost(r, parsedOrigin) {
+		return errors.New("forbidden cross-site request")
+	}
+	return nil
+}
+
+func sameOriginRequestHost(r *http.Request, origin *url.URL) bool {
+	if r == nil || origin == nil {
+		return false
+	}
+	requestScheme := requestScheme(r)
+	requestHost := requestHost(r)
+	if requestScheme == "" || requestHost == "" {
+		return false
+	}
+	return strings.EqualFold(origin.Scheme, requestScheme) && strings.EqualFold(origin.Host, requestHost)
+}
+
+func requestScheme(r *http.Request) string {
+	if consoleauth.SecureCookiesForRequest(r) {
+		return "https"
+	}
+	return "http"
+}
+
+func requestHost(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if forwarded := firstHeaderToken(r.Header.Get("X-Forwarded-Host")); forwarded != "" {
+		return strings.TrimSpace(forwarded)
+	}
+	if host := strings.TrimSpace(r.Host); host != "" {
+		return host
+	}
+	return strings.TrimSpace(r.URL.Host)
+}
+
+func firstHeaderToken(value string) string {
+	if value == "" {
+		return ""
+	}
+	parts := strings.Split(value, ",")
+	return strings.TrimSpace(parts[0])
 }
 
 func rejectFollowerMutations(store *storage.Store) func(http.Handler) http.Handler {

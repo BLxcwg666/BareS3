@@ -2,7 +2,7 @@ package config
 
 import "testing"
 
-func TestValidateAllowsBundledS3CredentialsInDevelopment(t *testing.T) {
+func TestValidateAllowsDefaultConfigurationWithoutS3Credentials(t *testing.T) {
 	t.Parallel()
 
 	cfg := Default()
@@ -12,8 +12,11 @@ func TestValidateAllowsBundledS3CredentialsInDevelopment(t *testing.T) {
 	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
 	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
 
+	if cfg.Auth.S3.AccessKeyID != "" || cfg.Auth.S3.SecretAccessKey != "" {
+		t.Fatalf("expected default config to leave S3 credentials unset, got %+v", cfg.Auth.S3)
+	}
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("expected development defaults to validate, got %v", err)
+		t.Fatalf("expected default config without S3 credentials to validate, got %v", err)
 	}
 }
 
@@ -24,6 +27,8 @@ func TestValidateRejectsBundledS3CredentialsOutsideDevelopment(t *testing.T) {
 	cfg.App.Env = "production"
 	cfg.Auth.Console.PasswordHash = "hash"
 	cfg.Auth.Console.SessionSecret = "secret"
+	cfg.Auth.S3.AccessKeyID = defaultDevAccessKeyID
+	cfg.Auth.S3.SecretAccessKey = defaultDevSecretKey
 	cfg.Paths.TmpDir = "./tmp"
 	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
 	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
