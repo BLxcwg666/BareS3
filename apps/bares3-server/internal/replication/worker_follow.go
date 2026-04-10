@@ -50,7 +50,7 @@ func (w *Worker) reconcileRemoteRunners(ctx context.Context, runners map[string]
 	}
 	for id, runner := range runners {
 		remote, ok := desired[id]
-		if !ok || remoteRunnerSignature(remote) != runner.signature || (!remote.FollowChanges && remote.LastSyncAt != nil) {
+		if !ok || !remote.Enabled || remoteRunnerSignature(remote) != runner.signature || (!remote.FollowChanges && remote.LastSyncAt != nil) {
 			runner.cancel()
 			delete(runners, id)
 		}
@@ -58,6 +58,9 @@ func (w *Worker) reconcileRemoteRunners(ctx context.Context, runners map[string]
 	for _, remote := range items {
 		signature := remoteRunnerSignature(remote)
 		if _, ok := runners[remote.ID]; ok {
+			continue
+		}
+		if !remote.Enabled {
 			continue
 		}
 		if !remote.FollowChanges && remote.LastSyncAt != nil {

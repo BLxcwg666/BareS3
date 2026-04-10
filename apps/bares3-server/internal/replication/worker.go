@@ -110,6 +110,9 @@ func (w *Worker) SyncOnce(ctx context.Context) error {
 	}
 	var firstErr error
 	for _, remote := range configuredRemotes {
+		if !remote.Enabled {
+			continue
+		}
 		if err := w.syncRemote(ctx, remote); err != nil && firstErr == nil {
 			firstErr = err
 		}

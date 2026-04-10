@@ -104,6 +104,12 @@ var (
 				`ALTER TABLE replication_remotes ADD COLUMN peer_object_count INTEGER NOT NULL DEFAULT 0`,
 			},
 		},
+		{
+			Name: "replication_remotes_enabled_v5",
+			Statements: []string{
+				`ALTER TABLE replication_remotes ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`,
+			},
+		},
 	}
 )
 
@@ -128,6 +134,7 @@ type Remote struct {
 	DisplayName       string     `json:"display_name"`
 	Endpoint          string     `json:"endpoint"`
 	Token             string     `json:"-"`
+	Enabled           bool       `json:"enabled"`
 	FollowChanges     bool       `json:"follow_changes"`
 	Status            string     `json:"status"`
 	ConnectionStatus  string     `json:"connection_status"`
@@ -160,6 +167,7 @@ type CreateRemoteInput struct {
 	DisplayName   string
 	Endpoint      string
 	Token         string
+	Enabled       *bool
 	FollowChanges bool
 	BootstrapMode string
 	Cursor        int64
@@ -167,6 +175,11 @@ type CreateRemoteInput struct {
 
 type UpdateRemoteStateInput struct {
 	ID                string
+	DisplayName       *string
+	Endpoint          *string
+	Token             *string
+	BootstrapMode     *string
+	Enabled           *bool
 	FollowChanges     *bool
 	ConnectionStatus  *string
 	Status            *string
@@ -204,6 +217,7 @@ type remoteRecord struct {
 	DisplayName       string         `bun:"display_name"`
 	Endpoint          string         `bun:"endpoint"`
 	Token             string         `bun:"token"`
+	Enabled           int64          `bun:"enabled"`
 	FollowChanges     int64          `bun:"follow_changes"`
 	Status            string         `bun:"status"`
 	ConnectionStatus  string         `bun:"connection_status"`
@@ -423,6 +437,10 @@ func (s *Store) CreateRemote(ctx context.Context, input CreateRemoteInput) (Remo
 	if displayName == "" {
 		displayName = endpoint
 	}
+	enabled := true
+	if input.Enabled != nil {
+		enabled = *input.Enabled
+	}
 	db, err := s.openDB()
 	if err != nil {
 		return Remote{}, err
@@ -434,7 +452,7 @@ func (s *Store) CreateRemote(ctx context.Context, input CreateRemoteInput) (Remo
 			return Remote{}, err
 		}
 		now := s.now().UTC()
-		remote := Remote{ID: id, DisplayName: displayName, Endpoint: endpoint, Token: token, FollowChanges: input.FollowChanges, Status: RemoteStatusPending, ConnectionStatus: ConnectionStatusDisconnected, BootstrapMode: bootstrapMode, Cursor: cursor, CreatedAt: now, UpdatedAt: now}
+		remote := Remote{ID: id, DisplayName: displayName, Endpoint: endpoint, Token: token, Enabled: enabled, FollowChanges: input.FollowChanges, Status: RemoteStatusPending, ConnectionStatus: ConnectionStatusDisconnected, BootstrapMode: bootstrapMode, Cursor: cursor, CreatedAt: now, UpdatedAt: now}
 		if _, err := db.NewInsert().Model(newRemoteRecord(remote)).Exec(ctx); err == nil {
 			return remote, nil
 		} else if !isUniqueConstraint(err) {
@@ -525,6 +543,37 @@ func (s *Store) UpdateRemoteState(ctx context.Context, input UpdateRemoteStateIn
 	}
 	defer func() { _ = db.Close() }()
 	query := db.NewUpdate().Model((*remoteRecord)(nil)).Set("updated_at = ?", formatTime(s.now().UTC())).Where("id = ?", strings.TrimSpace(input.ID))
+	if input.DisplayName != nil {
+		displayName := strings.TrimSpace(*input.DisplayName)
+		if displayName == "" {
+			return fmt.Errorf("replication remote display name is required")
+		}
+		query = query.Set("display_name = ?", displayName)
+	}
+	if input.Endpoint != nil {
+		endpoint := strings.TrimRight(strings.TrimSpace(*input.Endpoint), "/")
+		if endpoint == "" {
+			return fmt.Errorf("replication remote endpoint and token are required")
+		}
+		query = query.Set("endpoint = ?", endpoint)
+	}
+	if input.Token != nil {
+		token := strings.TrimSpace(*input.Token)
+		if token == "" {
+			return fmt.Errorf("replication remote endpoint and token are required")
+		}
+		query = query.Set("token = ?", token)
+	}
+	if input.BootstrapMode != nil {
+		bootstrapMode := NormalizeBootstrapMode(*input.BootstrapMode)
+		if bootstrapMode == "" {
+			return ErrInvalidBootstrapMode
+		}
+		query = query.Set("bootstrap_mode = ?", bootstrapMode)
+	}
+	if input.Enabled != nil {
+		query = query.Set("enabled = ?", boolToInt(*input.Enabled))
+	}
 	if input.FollowChanges != nil {
 		query = query.Set("follow_changes = ?", boolToInt(*input.FollowChanges))
 	}
@@ -698,7 +747,7 @@ func (r accessTokenRecord) AccessToken() (AccessToken, error) {
 }
 
 func newRemoteRecord(item Remote) *remoteRecord {
-	record := &remoteRecord{ID: item.ID, DisplayName: item.DisplayName, Endpoint: item.Endpoint, Token: item.Token, FollowChanges: boolToInt(item.FollowChanges), Status: NormalizeRemoteStatus(item.Status), ConnectionStatus: NormalizeConnectionStatus(item.ConnectionStatus), BootstrapMode: item.BootstrapMode, Cursor: strconv.FormatInt(item.Cursor, 10), LastError: item.LastError, PeerCursor: item.PeerCursor, PeerUsedBytes: item.PeerUsedBytes, PeerBucketCount: item.PeerBucketCount, PeerObjectCount: item.PeerObjectCount, ObjectsTotal: item.ObjectsTotal, ObjectsCompleted: item.ObjectsCompleted, BytesTotal: item.BytesTotal, BytesCompleted: item.BytesCompleted, DownloadRateBps: item.DownloadRateBps, UploadRateBps: item.UploadRateBps, CreatedAt: formatTime(item.CreatedAt), UpdatedAt: formatTime(item.UpdatedAt)}
+	record := &remoteRecord{ID: item.ID, DisplayName: item.DisplayName, Endpoint: item.Endpoint, Token: item.Token, Enabled: boolToInt(item.Enabled), FollowChanges: boolToInt(item.FollowChanges), Status: NormalizeRemoteStatus(item.Status), ConnectionStatus: NormalizeConnectionStatus(item.ConnectionStatus), BootstrapMode: item.BootstrapMode, Cursor: strconv.FormatInt(item.Cursor, 10), LastError: item.LastError, PeerCursor: item.PeerCursor, PeerUsedBytes: item.PeerUsedBytes, PeerBucketCount: item.PeerBucketCount, PeerObjectCount: item.PeerObjectCount, ObjectsTotal: item.ObjectsTotal, ObjectsCompleted: item.ObjectsCompleted, BytesTotal: item.BytesTotal, BytesCompleted: item.BytesCompleted, DownloadRateBps: item.DownloadRateBps, UploadRateBps: item.UploadRateBps, CreatedAt: formatTime(item.CreatedAt), UpdatedAt: formatTime(item.UpdatedAt)}
 	if item.LastSyncStartedAt != nil {
 		record.LastSyncStartedAt = sql.NullString{String: formatTime(*item.LastSyncStartedAt), Valid: true}
 	}
@@ -748,7 +797,7 @@ func (r remoteRecord) Remote() (Remote, error) {
 		}
 		lastSyncAt = &parsed
 	}
-	return Remote{ID: r.ID, DisplayName: r.DisplayName, Endpoint: r.Endpoint, Token: r.Token, FollowChanges: intToBool(r.FollowChanges), Status: NormalizeRemoteStatus(r.Status), ConnectionStatus: NormalizeConnectionStatus(r.ConnectionStatus), BootstrapMode: NormalizeBootstrapMode(r.BootstrapMode), Cursor: cursor, LastError: r.LastError, LastSyncStartedAt: lastSyncStartedAt, LastHeartbeatAt: lastHeartbeatAt, LastSyncAt: lastSyncAt, PeerCursor: r.PeerCursor, PeerUsedBytes: r.PeerUsedBytes, PeerBucketCount: r.PeerBucketCount, PeerObjectCount: r.PeerObjectCount, ObjectsTotal: r.ObjectsTotal, ObjectsCompleted: r.ObjectsCompleted, BytesTotal: r.BytesTotal, BytesCompleted: r.BytesCompleted, DownloadRateBps: r.DownloadRateBps, UploadRateBps: r.UploadRateBps, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
+	return Remote{ID: r.ID, DisplayName: r.DisplayName, Endpoint: r.Endpoint, Token: r.Token, Enabled: intToBool(r.Enabled), FollowChanges: intToBool(r.FollowChanges), Status: NormalizeRemoteStatus(r.Status), ConnectionStatus: NormalizeConnectionStatus(r.ConnectionStatus), BootstrapMode: NormalizeBootstrapMode(r.BootstrapMode), Cursor: cursor, LastError: r.LastError, LastSyncStartedAt: lastSyncStartedAt, LastHeartbeatAt: lastHeartbeatAt, LastSyncAt: lastSyncAt, PeerCursor: r.PeerCursor, PeerUsedBytes: r.PeerUsedBytes, PeerBucketCount: r.PeerBucketCount, PeerObjectCount: r.PeerObjectCount, ObjectsTotal: r.ObjectsTotal, ObjectsCompleted: r.ObjectsCompleted, BytesTotal: r.BytesTotal, BytesCompleted: r.BytesCompleted, DownloadRateBps: r.DownloadRateBps, UploadRateBps: r.UploadRateBps, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
 }
 
 func boolToInt(value bool) int64 {

@@ -453,6 +453,7 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 					DisplayName   string `json:"display_name"`
 					Endpoint      string `json:"endpoint"`
 					Token         string `json:"token"`
+					Enabled       *bool  `json:"enabled"`
 					FollowChanges *bool  `json:"follow_changes"`
 					BootstrapMode string `json:"bootstrap_mode"`
 				}{}
@@ -475,7 +476,7 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 				if payload.FollowChanges != nil {
 					followChanges = *payload.FollowChanges
 				}
-				remote, err := remoteStore.CreateRemote(r.Context(), remotes.CreateRemoteInput{DisplayName: payload.DisplayName, Endpoint: payload.Endpoint, Token: payload.Token, FollowChanges: followChanges, BootstrapMode: payload.BootstrapMode, Cursor: cursor})
+				remote, err := remoteStore.CreateRemote(r.Context(), remotes.CreateRemoteInput{DisplayName: payload.DisplayName, Endpoint: payload.Endpoint, Token: payload.Token, Enabled: payload.Enabled, FollowChanges: followChanges, BootstrapMode: payload.BootstrapMode, Cursor: cursor})
 				if err != nil {
 					status := http.StatusInternalServerError
 					if errors.Is(err, remotes.ErrInvalidBootstrapMode) {
@@ -495,7 +496,12 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 
 			protected.Patch("/replication/remotes/{id}", func(w http.ResponseWriter, r *http.Request) {
 				payload := struct {
-					FollowChanges *bool `json:"follow_changes"`
+					DisplayName   *string `json:"display_name"`
+					Endpoint      *string `json:"endpoint"`
+					Token         *string `json:"token"`
+					BootstrapMode *string `json:"bootstrap_mode"`
+					Enabled       *bool   `json:"enabled"`
+					FollowChanges *bool   `json:"follow_changes"`
 				}{}
 				decoder := json.NewDecoder(r.Body)
 				decoder.DisallowUnknownFields()
@@ -503,8 +509,8 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "message": "invalid request body"})
 					return
 				}
-				if payload.FollowChanges == nil {
-					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "message": "follow_changes is required"})
+				if payload.DisplayName == nil && payload.Endpoint == nil && payload.Token == nil && payload.BootstrapMode == nil && payload.Enabled == nil && payload.FollowChanges == nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "message": "at least one remote field is required"})
 					return
 				}
 				remote, err := remoteStore.GetRemote(r.Context(), chi.URLParam(r, "id"))
@@ -516,10 +522,14 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 					httpx.WriteJSON(w, status, map[string]any{"status": "error", "message": err.Error()})
 					return
 				}
-				if err := remoteStore.UpdateRemoteState(r.Context(), remotes.UpdateRemoteStateInput{ID: remote.ID, FollowChanges: payload.FollowChanges}); err != nil {
+				if err := remoteStore.UpdateRemoteState(r.Context(), remotes.UpdateRemoteStateInput{ID: remote.ID, DisplayName: payload.DisplayName, Endpoint: payload.Endpoint, Token: payload.Token, BootstrapMode: payload.BootstrapMode, Enabled: payload.Enabled, FollowChanges: payload.FollowChanges}); err != nil {
 					status := http.StatusInternalServerError
 					if errors.Is(err, remotes.ErrRemoteNotFound) {
 						status = http.StatusNotFound
+					} else if errors.Is(err, remotes.ErrInvalidBootstrapMode) {
+						status = http.StatusBadRequest
+					} else if strings.Contains(strings.ToLower(strings.TrimSpace(err.Error())), "required") {
+						status = http.StatusBadRequest
 					}
 					httpx.WriteJSON(w, status, map[string]any{"status": "error", "message": err.Error()})
 					return
@@ -534,7 +544,26 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": err.Error()})
 					return
 				}
-				recordAudit(logger, auditRecorder, auditlog.Entry{Actor: actorFromRequest(r), Action: "replication.remote.update", Title: fmt.Sprintf("Updated replication remote %s", updatedRemote.DisplayName), Detail: fmt.Sprintf("Follow changes %t", updatedRemote.FollowChanges), Target: updatedRemote.ID, Remote: requestRemote(r), Status: "success"})
+				detailParts := make([]string, 0, 6)
+				if payload.DisplayName != nil {
+					detailParts = append(detailParts, fmt.Sprintf("Name %s", updatedRemote.DisplayName))
+				}
+				if payload.Endpoint != nil {
+					detailParts = append(detailParts, fmt.Sprintf("Endpoint %s", updatedRemote.Endpoint))
+				}
+				if payload.Token != nil {
+					detailParts = append(detailParts, "Token rotated")
+				}
+				if payload.BootstrapMode != nil {
+					detailParts = append(detailParts, fmt.Sprintf("Mode %s", updatedRemote.BootstrapMode))
+				}
+				if payload.Enabled != nil {
+					detailParts = append(detailParts, fmt.Sprintf("Enabled %t", updatedRemote.Enabled))
+				}
+				if payload.FollowChanges != nil {
+					detailParts = append(detailParts, fmt.Sprintf("Follow changes %t", updatedRemote.FollowChanges))
+				}
+				recordAudit(logger, auditRecorder, auditlog.Entry{Actor: actorFromRequest(r), Action: "replication.remote.update", Title: fmt.Sprintf("Updated replication remote %s", updatedRemote.DisplayName), Detail: strings.Join(detailParts, " · "), Target: updatedRemote.ID, Remote: requestRemote(r), Status: "success"})
 				httpx.WriteJSON(w, http.StatusOK, view)
 			})
 
