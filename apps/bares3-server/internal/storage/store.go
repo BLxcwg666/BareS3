@@ -56,7 +56,6 @@ func New(cfg config.Config, logger *zap.Logger) *Store {
 		syncSettings:   newSyncSettingsHub(),
 		logger:         logger,
 	}
-	store.runtimeSettings.Store(DefaultRuntimeSettings(cfg))
 	store.instanceQuota.Store(cfg.Settings.MaxBytes)
 	if err := store.bootstrapRuntimeSettings(cfg); err != nil {
 		panic(fmt.Sprintf("bootstrap runtime settings: %v", err))

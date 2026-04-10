@@ -1482,6 +1482,214 @@ func TestBucketAccessPolicyCRUD(t *testing.T) {
 	}
 }
 
+func TestPublicDomainBindingsCRUD(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
+	hash, err := consoleauth.HashPassword("secret-password")
+	if err != nil {
+		t.Fatalf("HashPassword failed: %v", err)
+	}
+	cfg.Auth.Console.PasswordHash = hash
+	cfg.Auth.Console.SessionSecret = "test-session-secret"
+
+	store := newStorageStoreForTest(t, cfg)
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
+	cookie := loginCookie(t, handler)
+
+	updateBody, _ := json.Marshal(map[string]any{
+		"items": []map[string]any{{
+			"host":           "cdn.example.com",
+			"bucket":         "gallery",
+			"prefix":         "/site/",
+			"index_document": true,
+			"spa_fallback":   true,
+		}},
+	})
+	updateRequest := httptest.NewRequest(http.MethodPut, "/api/v1/settings/domains", bytes.NewReader(updateBody))
+	updateRequest.Header.Set("Content-Type", "application/json")
+	updateRequest.AddCookie(cookie)
+	updateRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(updateRecorder, updateRequest)
+	if updateRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected update domain bindings status: %d body=%s", updateRecorder.Code, updateRecorder.Body.String())
+	}
+
+	listRequest := httptest.NewRequest(http.MethodGet, "/api/v1/settings/domains", nil)
+	listRequest.AddCookie(cookie)
+	listRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(listRecorder, listRequest)
+	if listRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected list domain bindings status: %d body=%s", listRecorder.Code, listRecorder.Body.String())
+	}
+	payload := struct {
+		Items []storage.PublicDomainBinding `json:"items"`
+	}{}
+	if err := json.Unmarshal(listRecorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal domain binding payload failed: %v", err)
+	}
+	if len(payload.Items) != 1 || payload.Items[0].Host != "cdn.example.com" || payload.Items[0].Bucket != "gallery" || payload.Items[0].Prefix != "site" || !payload.Items[0].IndexDocument || !payload.Items[0].SPAFallback {
+		t.Fatalf("unexpected domain bindings payload: %+v", payload.Items)
+	}
+}
+
+func TestPublicDomainBindingsRejectDuplicateHosts(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
+	hash, err := consoleauth.HashPassword("secret-password")
+	if err != nil {
+		t.Fatalf("HashPassword failed: %v", err)
+	}
+	cfg.Auth.Console.PasswordHash = hash
+	cfg.Auth.Console.SessionSecret = "test-session-secret"
+
+	store := newStorageStoreForTest(t, cfg)
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
+	cookie := loginCookie(t, handler)
+	body, _ := json.Marshal(map[string]any{
+		"items": []map[string]any{
+			{"host": "cdn.example.com", "bucket": "gallery"},
+			{"host": "CDN.EXAMPLE.COM", "bucket": "gallery"},
+		},
+	})
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/settings/domains", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("unexpected duplicate host status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "duplicates") {
+		t.Fatalf("expected duplicate host validation error, got: %s", recorder.Body.String())
+	}
+}
+
+func TestPublicDomainBindingsRejectSPAFallbackWithoutIndexDocument(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
+	hash, err := consoleauth.HashPassword("secret-password")
+	if err != nil {
+		t.Fatalf("HashPassword failed: %v", err)
+	}
+	cfg.Auth.Console.PasswordHash = hash
+	cfg.Auth.Console.SessionSecret = "test-session-secret"
+
+	store := newStorageStoreForTest(t, cfg)
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
+	cookie := loginCookie(t, handler)
+	body, _ := json.Marshal(map[string]any{
+		"items": []map[string]any{{
+			"host":           "app.example.com",
+			"bucket":         "gallery",
+			"spa_fallback":   true,
+			"index_document": false,
+		}},
+	})
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/settings/domains", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("unexpected invalid spa fallback status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "requires index_document") {
+		t.Fatalf("expected index document validation error, got: %s", recorder.Body.String())
+	}
+}
+
+func TestPublicDomainBindingsPreserveDisabledIndexDocument(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
+	hash, err := consoleauth.HashPassword("secret-password")
+	if err != nil {
+		t.Fatalf("HashPassword failed: %v", err)
+	}
+	cfg.Auth.Console.PasswordHash = hash
+	cfg.Auth.Console.SessionSecret = "test-session-secret"
+
+	store := newStorageStoreForTest(t, cfg)
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
+	cookie := loginCookie(t, handler)
+	body, _ := json.Marshal(map[string]any{
+		"items": []map[string]any{{
+			"host":           "static.example.com",
+			"bucket":         "gallery",
+			"index_document": false,
+			"spa_fallback":   false,
+		}},
+	})
+	updateRequest := httptest.NewRequest(http.MethodPut, "/api/v1/settings/domains", bytes.NewReader(body))
+	updateRequest.Header.Set("Content-Type", "application/json")
+	updateRequest.AddCookie(cookie)
+	updateRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(updateRecorder, updateRequest)
+	if updateRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected update status: %d body=%s", updateRecorder.Code, updateRecorder.Body.String())
+	}
+
+	listRequest := httptest.NewRequest(http.MethodGet, "/api/v1/settings/domains", nil)
+	listRequest.AddCookie(cookie)
+	listRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(listRecorder, listRequest)
+	if listRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected list status: %d body=%s", listRecorder.Code, listRecorder.Body.String())
+	}
+	payload := struct {
+		Items []storage.PublicDomainBinding `json:"items"`
+	}{}
+	if err := json.Unmarshal(listRecorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal payload failed: %v", err)
+	}
+	if len(payload.Items) != 1 || payload.Items[0].IndexDocument || payload.Items[0].SPAFallback {
+		t.Fatalf("expected disabled flags to persist, got %+v", payload.Items)
+	}
+}
+
 func TestS3CredentialCRUD(t *testing.T) {
 	t.Parallel()
 

@@ -354,6 +354,7 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 						"public_base_url":   runtimeSettings.PublicBaseURL,
 						"s3_base_url":       runtimeSettings.S3BaseURL,
 						"metadata_layout":   runtimeSettings.MetadataLayout,
+						"domain_bindings":   runtimeSettings.DomainBindings,
 						"max_bytes":         runtimeSettings.MaxBytes,
 						"used_bytes":        usedBytes,
 						"bucket_count":      len(buckets),
@@ -903,6 +904,18 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 				})
 			})
 
+			protected.Get("/settings/domains", func(w http.ResponseWriter, r *http.Request) {
+				runtimeSettings, err := store.RuntimeSettings(r.Context())
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
+				httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": runtimeSettings.DomainBindings})
+			})
+
 			protected.Get("/settings/sync", func(w http.ResponseWriter, r *http.Request) {
 				settings, err := store.SyncSettings(r.Context())
 				if errors.Is(err, os.ErrNotExist) {
@@ -1145,6 +1158,50 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 					"metadata_layout": updated.MetadataLayout,
 					"tmp_dir":         nextConfig.Paths.TmpDir,
 				})
+			})
+
+			protected.Put("/settings/domains", func(w http.ResponseWriter, r *http.Request) {
+				payload := struct {
+					Items []storage.PublicDomainBinding `json:"items"`
+				}{}
+
+				decoder := json.NewDecoder(r.Body)
+				decoder.DisallowUnknownFields()
+				if err := decoder.Decode(&payload); err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+						"status":  "error",
+						"message": "invalid request body",
+					})
+					return
+				}
+
+				runtimeSettings, err := store.RuntimeSettings(r.Context())
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
+				runtimeSettings.DomainBindings = payload.Items
+				updated, err := store.SetRuntimeSettings(r.Context(), runtimeSettings)
+				if err != nil {
+					httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+						"status":  "error",
+						"message": err.Error(),
+					})
+					return
+				}
+
+				recordAudit(logger, auditRecorder, auditlog.Entry{
+					Actor:  actorFromRequest(r),
+					Action: "settings.domains.update",
+					Title:  "Updated public domain bindings",
+					Detail: fmt.Sprintf("%d domain binding(s)", len(updated.DomainBindings)),
+					Remote: requestRemote(r),
+					Status: "success",
+				})
+				httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": updated.DomainBindings})
 			})
 
 			protected.Delete("/buckets/{bucket}", func(w http.ResponseWriter, r *http.Request) {

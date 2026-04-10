@@ -1,6 +1,9 @@
 package storage
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 const (
 	SyncStatusPending     = "pending"
@@ -21,12 +24,31 @@ const (
 )
 
 type RuntimeSettings struct {
-	PublicBaseURL  string    `json:"public_base_url"`
-	S3BaseURL      string    `json:"s3_base_url"`
-	Region         string    `json:"region"`
-	MetadataLayout string    `json:"metadata_layout"`
-	MaxBytes       int64     `json:"max_bytes"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	PublicBaseURL  string                `json:"public_base_url"`
+	S3BaseURL      string                `json:"s3_base_url"`
+	Region         string                `json:"region"`
+	MetadataLayout string                `json:"metadata_layout"`
+	DomainBindings []PublicDomainBinding `json:"domain_bindings,omitempty"`
+	MaxBytes       int64                 `json:"max_bytes"`
+	UpdatedAt      time.Time             `json:"updated_at"`
+}
+
+type PublicDomainBinding struct {
+	Host          string `json:"host"`
+	Bucket        string `json:"bucket"`
+	Prefix        string `json:"prefix,omitempty"`
+	IndexDocument bool   `json:"index_document"`
+	SPAFallback   bool   `json:"spa_fallback"`
+}
+
+func (b *PublicDomainBinding) UnmarshalJSON(data []byte) error {
+	type rawBinding PublicDomainBinding
+	payload := rawBinding{IndexDocument: true}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return err
+	}
+	*b = PublicDomainBinding(payload)
+	return nil
 }
 
 type ReplicaObjectMetadata struct {

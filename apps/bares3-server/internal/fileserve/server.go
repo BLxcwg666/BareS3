@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"mime"
+	"net"
 	"net/http"
 	"path"
 	"strings"
@@ -43,6 +44,12 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 			runtimeSettings, err := store.RuntimeSettings(r.Context())
 			if err == nil && strings.TrimSpace(runtimeSettings.Region) != "" {
 				w.Header().Set("X-Amz-Bucket-Region", runtimeSettings.Region)
+			}
+			if err == nil {
+				if binding, ok := matchPublicDomainBinding(runtimeSettings.DomainBindings, r.Host); ok && !isReservedFileServicePath(r.URL.Path) {
+					serveBoundDomainObject(w, r, store, binding)
+					return
+				}
 			}
 			next.ServeHTTP(w, r)
 		})
@@ -117,6 +124,25 @@ func serveRouteObject(w http.ResponseWriter, r *http.Request, store *storage.Sto
 		return
 	}
 	serveObject(w, r, store, bucket, key, "")
+}
+
+func serveBoundDomainObject(w http.ResponseWriter, r *http.Request, store *storage.Store, binding storage.PublicDomainBinding) {
+	key := boundDomainObjectKey(binding, r.URL.Path)
+	if !authorizeObjectRequest(w, r, store, binding.Bucket, key, false) {
+		return
+	}
+	if serveDomainObject(w, r, store, binding, key) {
+		return
+	}
+	if binding.SPAFallback {
+		fallbackKey := boundDomainFallbackKey(binding)
+		if fallbackKey != key && authorizeObjectRequest(w, r, store, binding.Bucket, fallbackKey, false) {
+			if serveDomainObject(w, r, store, binding, fallbackKey) {
+				return
+			}
+		}
+	}
+	writeStorageAsS3Error(w, r, binding.Bucket, storage.ErrObjectNotFound)
 }
 
 func serveShareLinkObject(w http.ResponseWriter, r *http.Request, store *storage.Store, shareLinks *sharelink.Store, forceDownload bool) {
@@ -207,6 +233,91 @@ func serveObject(w http.ResponseWriter, r *http.Request, store *storage.Store, b
 	}
 
 	http.ServeContent(w, r, path.Base(object.Key), object.LastModified, file)
+}
+
+func serveDomainObject(w http.ResponseWriter, r *http.Request, store *storage.Store, binding storage.PublicDomainBinding, key string) bool {
+	if key == "" {
+		writeS3Error(w, r, binding.Bucket, http.StatusBadRequest, "InvalidURI", "bucket and key are required")
+		return true
+	}
+	file, object, err := store.OpenObject(r.Context(), binding.Bucket, key)
+	if errors.Is(err, storage.ErrObjectNotFound) {
+		return false
+	}
+	if err != nil {
+		writeStorageAsS3Error(w, r, binding.Bucket, err)
+		return true
+	}
+	defer func() {
+		_ = file.Close()
+	}()
+
+	if object.ContentType != "" {
+		w.Header().Set("Content-Type", object.ContentType)
+	}
+	if object.CacheControl != "" {
+		w.Header().Set("Cache-Control", object.CacheControl)
+	}
+	if object.ContentDisposition != "" {
+		w.Header().Set("Content-Disposition", object.ContentDisposition)
+	}
+	if object.ETag != "" {
+		w.Header().Set("ETag", `"`+object.ETag+`"`)
+	}
+	http.ServeContent(w, r, path.Base(object.Key), object.LastModified, file)
+	return true
+}
+
+func matchPublicDomainBinding(bindings []storage.PublicDomainBinding, host string) (storage.PublicDomainBinding, bool) {
+	normalizedHost := normalizeRequestHost(host)
+	for _, binding := range bindings {
+		if strings.EqualFold(binding.Host, normalizedHost) {
+			return binding, true
+		}
+	}
+	return storage.PublicDomainBinding{}, false
+}
+
+func normalizeRequestHost(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		host = parsedHost
+	}
+	return strings.TrimSuffix(host, ".")
+}
+
+func isReservedFileServicePath(requestPath string) bool {
+	switch requestPath {
+	case "/healthz", "/readyz":
+		return true
+	default:
+		return strings.HasPrefix(requestPath, "/pub/") || strings.HasPrefix(requestPath, "/dl/") || strings.HasPrefix(requestPath, "/s/")
+	}
+}
+
+func boundDomainObjectKey(binding storage.PublicDomainBinding, requestPath string) string {
+	trimmedPath := strings.TrimSpace(strings.TrimPrefix(requestPath, "/"))
+	if trimmedPath == "" && binding.IndexDocument {
+		trimmedPath = "index.html"
+	}
+	if prefix := strings.Trim(binding.Prefix, "/"); prefix == "" {
+		return trimmedPath
+	} else if trimmedPath == "" {
+		return prefix
+	} else {
+		return prefix + "/" + trimmedPath
+	}
+}
+
+func boundDomainFallbackKey(binding storage.PublicDomainBinding) string {
+	if !binding.IndexDocument {
+		return ""
+	}
+	prefix := strings.Trim(binding.Prefix, "/")
+	if prefix == "" {
+		return "index.html"
+	}
+	return prefix + "/index.html"
 }
 
 func writeStorageAsS3Error(w http.ResponseWriter, r *http.Request, bucket string, err error) {

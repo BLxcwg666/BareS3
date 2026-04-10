@@ -135,6 +135,47 @@ func TestUpdateBucketRenamesAndPersistsMetadata(t *testing.T) {
 	}
 }
 
+func TestRuntimeSettingsPersistAcrossStoreRestart(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
+
+	store := New(cfg, zap.NewNop())
+	settings, err := store.RuntimeSettings(context.Background())
+	if err != nil {
+		t.Fatalf("RuntimeSettings failed: %v", err)
+	}
+	settings.DomainBindings = []PublicDomainBinding{{Host: "cdn.example.com", Bucket: "gallery", Prefix: "site", IndexDocument: false, SPAFallback: false}}
+	if _, err := store.SetRuntimeSettings(context.Background(), settings); err != nil {
+		t.Fatalf("SetRuntimeSettings failed: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	restarted := New(cfg, zap.NewNop())
+	t.Cleanup(func() {
+		_ = restarted.Close()
+	})
+	reloaded, err := restarted.RuntimeSettings(context.Background())
+	if err != nil {
+		t.Fatalf("RuntimeSettings after restart failed: %v", err)
+	}
+	if len(reloaded.DomainBindings) != 1 {
+		t.Fatalf("expected persisted domain bindings, got %+v", reloaded.DomainBindings)
+	}
+	binding := reloaded.DomainBindings[0]
+	if binding.Host != "cdn.example.com" || binding.Bucket != "gallery" || binding.Prefix != "site" || binding.IndexDocument || binding.SPAFallback {
+		t.Fatalf("unexpected persisted binding after restart: %+v", binding)
+	}
+}
+
 func TestBucketAccessConfigEvaluatesCustomRules(t *testing.T) {
 	t.Parallel()
 

@@ -13,6 +13,7 @@ type ErrorOptions struct {
 	Message    string
 	Resource   string
 	RequestID  string
+	HostID     string
 	Region     string
 	BucketName string
 }
@@ -25,6 +26,7 @@ type errorResponse struct {
 	Resource   string   `xml:"Resource,omitempty"`
 	Region     string   `xml:"Region,omitempty"`
 	RequestID  string   `xml:"RequestId"`
+	HostID     string   `xml:"HostId,omitempty"`
 }
 
 func Write(w http.ResponseWriter, status int, payload any) {
@@ -43,6 +45,10 @@ func WriteError(w http.ResponseWriter, r *http.Request, status int, options Erro
 	resource := strings.TrimSpace(options.Resource)
 	if resource == "" && r != nil && r.URL != nil {
 		resource = r.URL.Path
+	}
+	hostID := strings.TrimSpace(options.HostID)
+	if hostID == "" && r != nil {
+		hostID = strings.TrimSpace(r.Host)
 	}
 
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
@@ -64,5 +70,6 @@ func WriteError(w http.ResponseWriter, r *http.Request, status int, options Erro
 		Resource:   resource,
 		Region:     region,
 		RequestID:  requestID,
+		HostID:     hostID,
 	})
 }

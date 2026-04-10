@@ -255,6 +255,142 @@ func TestServeCustomBucketAccessRules(t *testing.T) {
 	assertS3XMLError(t, denyLinkRecorder, http.StatusForbidden, "AccessDenied", cfg.Settings.Region, "gallery")
 }
 
+func TestServeBoundPublicDomainObject(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+
+	store := newStorageStoreForTest(t, cfg)
+	ctx := context.Background()
+	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	if _, err := store.UpdateBucket(ctx, storage.UpdateBucketInput{Name: "gallery", AccessMode: storage.BucketAccessPublic, QuotaBytes: 0}); err != nil {
+		t.Fatalf("UpdateBucket failed: %v", err)
+	}
+	if _, err := store.PutObject(ctx, storage.PutObjectInput{Bucket: "gallery", Key: "site/index.html", Body: bytes.NewBufferString("home page"), ContentType: "text/html"}); err != nil {
+		t.Fatalf("PutObject(index) failed: %v", err)
+	}
+	if _, err := store.PutObject(ctx, storage.PutObjectInput{Bucket: "gallery", Key: "site/assets/app.js", Body: bytes.NewBufferString("console.log('ok')"), ContentType: "application/javascript"}); err != nil {
+		t.Fatalf("PutObject(asset) failed: %v", err)
+	}
+	settings, err := store.RuntimeSettings(ctx)
+	if err != nil {
+		t.Fatalf("RuntimeSettings failed: %v", err)
+	}
+	settings.DomainBindings = []storage.PublicDomainBinding{{Host: "cdn.example.com", Bucket: "gallery", Prefix: "site", IndexDocument: true}}
+	if _, err := store.SetRuntimeSettings(ctx, settings); err != nil {
+		t.Fatalf("SetRuntimeSettings failed: %v", err)
+	}
+
+	handler := newHandler(cfg, store, newShareLinksForTest(t, cfg.Paths.DataDir), zap.NewNop())
+
+	rootRequest := httptest.NewRequest(http.MethodGet, "http://cdn.example.com/", nil)
+	rootRequest.Host = "cdn.example.com"
+	rootRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(rootRecorder, rootRequest)
+	if rootRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected bound root status: %d body=%s", rootRecorder.Code, rootRecorder.Body.String())
+	}
+	if body := strings.TrimSpace(rootRecorder.Body.String()); body != "home page" {
+		t.Fatalf("unexpected bound root body: %q", body)
+	}
+
+	assetRequest := httptest.NewRequest(http.MethodGet, "http://cdn.example.com/assets/app.js", nil)
+	assetRequest.Host = "cdn.example.com:443"
+	assetRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(assetRecorder, assetRequest)
+	if assetRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected bound asset status: %d body=%s", assetRecorder.Code, assetRecorder.Body.String())
+	}
+	if body := assetRecorder.Body.String(); !strings.Contains(body, "console.log('ok')") {
+		t.Fatalf("unexpected bound asset body: %q", body)
+	}
+}
+
+func TestServeBoundPublicDomainSPAFallback(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+
+	store := newStorageStoreForTest(t, cfg)
+	ctx := context.Background()
+	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	if _, err := store.UpdateBucket(ctx, storage.UpdateBucketInput{Name: "gallery", AccessMode: storage.BucketAccessPublic, QuotaBytes: 0}); err != nil {
+		t.Fatalf("UpdateBucket failed: %v", err)
+	}
+	if _, err := store.PutObject(ctx, storage.PutObjectInput{Bucket: "gallery", Key: "site/index.html", Body: bytes.NewBufferString("spa shell"), ContentType: "text/html"}); err != nil {
+		t.Fatalf("PutObject(index) failed: %v", err)
+	}
+	settings, err := store.RuntimeSettings(ctx)
+	if err != nil {
+		t.Fatalf("RuntimeSettings failed: %v", err)
+	}
+	settings.DomainBindings = []storage.PublicDomainBinding{{Host: "app.example.com", Bucket: "gallery", Prefix: "site", IndexDocument: true, SPAFallback: true}}
+	if _, err := store.SetRuntimeSettings(ctx, settings); err != nil {
+		t.Fatalf("SetRuntimeSettings failed: %v", err)
+	}
+
+	handler := newHandler(cfg, store, newShareLinksForTest(t, cfg.Paths.DataDir), zap.NewNop())
+	request := httptest.NewRequest(http.MethodGet, "http://app.example.com/dashboard/settings", nil)
+	request.Host = "app.example.com"
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected spa fallback status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if body := strings.TrimSpace(recorder.Body.String()); body != "spa shell" {
+		t.Fatalf("unexpected spa fallback body: %q", body)
+	}
+}
+
+func TestServeBoundPublicDomainMissingPathReturnsS3StyleXML(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+
+	store := newStorageStoreForTest(t, cfg)
+	ctx := context.Background()
+	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	if _, err := store.UpdateBucket(ctx, storage.UpdateBucketInput{Name: "gallery", AccessMode: storage.BucketAccessPublic, QuotaBytes: 0}); err != nil {
+		t.Fatalf("UpdateBucket failed: %v", err)
+	}
+	settings, err := store.RuntimeSettings(ctx)
+	if err != nil {
+		t.Fatalf("RuntimeSettings failed: %v", err)
+	}
+	settings.DomainBindings = []storage.PublicDomainBinding{{Host: "cdn.example.com", Bucket: "gallery", Prefix: "site", IndexDocument: false, SPAFallback: false}}
+	if _, err := store.SetRuntimeSettings(ctx, settings); err != nil {
+		t.Fatalf("SetRuntimeSettings failed: %v", err)
+	}
+
+	handler := newHandler(cfg, store, newShareLinksForTest(t, cfg.Paths.DataDir), zap.NewNop())
+	request := httptest.NewRequest(http.MethodGet, "http://cdn.example.com/missing/path", nil)
+	request.Host = "cdn.example.com"
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	assertS3XMLError(t, recorder, http.StatusNotFound, "NoSuchKey", cfg.Settings.Region, "gallery")
+}
+
 func assertS3XMLError(t *testing.T, recorder *httptest.ResponseRecorder, wantStatus int, wantCode, wantRegion, wantBucket string) {
 	t.Helper()
 
@@ -272,6 +408,9 @@ func assertS3XMLError(t *testing.T, recorder *httptest.ResponseRecorder, wantSta
 	}
 	if body := recorder.Body.String(); !strings.Contains(body, "<Code>"+wantCode+"</Code>") {
 		t.Fatalf("unexpected body: %s", body)
+	}
+	if body := recorder.Body.String(); !strings.Contains(body, "<HostId>") {
+		t.Fatalf("expected HostId in body: %s", body)
 	}
 	if wantRegion != "" {
 		if body := recorder.Body.String(); !strings.Contains(body, "<Region>"+wantRegion+"</Region>") {
