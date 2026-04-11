@@ -155,6 +155,14 @@ func RegisterObservabilityRoutes(protected chi.Router, cfg *config.Config, store
 			})
 			return
 		}
+		domainBindings, err := store.PublicDomainBindings(r.Context())
+		if err != nil {
+			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+				"status":  "error",
+				"message": err.Error(),
+			})
+			return
+		}
 
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"app": map[string]any{
@@ -182,7 +190,7 @@ func RegisterObservabilityRoutes(protected chi.Router, cfg *config.Config, store
 				"public_base_url":   runtimeSettings.PublicBaseURL,
 				"s3_base_url":       runtimeSettings.S3BaseURL,
 				"metadata_layout":   runtimeSettings.MetadataLayout,
-				"domain_bindings":   runtimeSettings.DomainBindings,
+				"domain_bindings":   domainBindings,
 				"max_bytes":         runtimeSettings.MaxBytes,
 				"used_bytes":        usedBytes,
 				"bucket_count":      len(buckets),

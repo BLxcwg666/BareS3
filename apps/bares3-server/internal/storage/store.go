@@ -25,16 +25,17 @@ import (
 )
 
 type Store struct {
-	dataDir         string
-	tmpDir          string
-	metadataLayout  string
-	commitMu        sync.Mutex
-	instanceQuota   atomic.Int64
-	runtimeSettings atomic.Value
-	metadata        *metadataStore
-	syncEvents      *syncEventHub
-	syncSettings    *syncSettingsHub
-	logger          *zap.Logger
+	dataDir              string
+	tmpDir               string
+	metadataLayout       string
+	commitMu             sync.Mutex
+	instanceQuota        atomic.Int64
+	runtimeSettings      atomic.Value
+	publicDomainBindings atomic.Value
+	metadata             *metadataStore
+	syncEvents           *syncEventHub
+	syncSettings         *syncSettingsHub
+	logger               *zap.Logger
 }
 
 const bucketUsageHistoryLimit = 60
@@ -59,6 +60,9 @@ func New(cfg config.Config, logger *zap.Logger) *Store {
 	store.instanceQuota.Store(cfg.Settings.MaxBytes)
 	if err := store.bootstrapRuntimeSettings(cfg); err != nil {
 		panic(fmt.Sprintf("bootstrap runtime settings: %v", err))
+	}
+	if err := store.bootstrapDomainSettings(); err != nil {
+		panic(fmt.Sprintf("bootstrap domain settings: %v", err))
 	}
 	backfilled, err := store.backfillObjectChecksums()
 	if err != nil {

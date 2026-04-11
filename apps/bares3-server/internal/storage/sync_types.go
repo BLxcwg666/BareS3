@@ -19,18 +19,18 @@ const (
 	SyncEventObjectDelete = "object_delete"
 
 	runtimeSettingsStateName  = "runtime_settings"
+	domainSettingsStateName   = "domain_settings"
 	syncSettingsStateName     = "sync_settings"
 	SyncSourceSeededReconcile = "seeded_reconcile"
 )
 
 type RuntimeSettings struct {
-	PublicBaseURL  string                `json:"public_base_url"`
-	S3BaseURL      string                `json:"s3_base_url"`
-	Region         string                `json:"region"`
-	MetadataLayout string                `json:"metadata_layout"`
-	DomainBindings []PublicDomainBinding `json:"domain_bindings,omitempty"`
-	MaxBytes       int64                 `json:"max_bytes"`
-	UpdatedAt      time.Time             `json:"updated_at"`
+	PublicBaseURL  string    `json:"public_base_url"`
+	S3BaseURL      string    `json:"s3_base_url"`
+	Region         string    `json:"region"`
+	MetadataLayout string    `json:"metadata_layout"`
+	MaxBytes       int64     `json:"max_bytes"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 type PublicDomainBinding struct {

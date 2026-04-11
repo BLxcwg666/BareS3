@@ -279,13 +279,8 @@ func TestServeBoundPublicDomainObject(t *testing.T) {
 	if _, err := store.PutObject(ctx, storage.PutObjectInput{Bucket: "gallery", Key: "site/assets/app.js", Body: bytes.NewBufferString("console.log('ok')"), ContentType: "application/javascript"}); err != nil {
 		t.Fatalf("PutObject(asset) failed: %v", err)
 	}
-	settings, err := store.RuntimeSettings(ctx)
-	if err != nil {
-		t.Fatalf("RuntimeSettings failed: %v", err)
-	}
-	settings.DomainBindings = []storage.PublicDomainBinding{{Host: "cdn.example.com", Bucket: "gallery", Prefix: "site", IndexDocument: true}}
-	if _, err := store.SetRuntimeSettings(ctx, settings); err != nil {
-		t.Fatalf("SetRuntimeSettings failed: %v", err)
+	if _, err := store.SetPublicDomainBindings(ctx, []storage.PublicDomainBinding{{Host: "cdn.example.com", Bucket: "gallery", Prefix: "site", IndexDocument: true}}); err != nil {
+		t.Fatalf("SetPublicDomainBindings failed: %v", err)
 	}
 
 	handler := newHandler(cfg, store, newShareLinksForTest(t, cfg.Paths.DataDir), zap.NewNop())
@@ -334,13 +329,8 @@ func TestServeBoundPublicDomainSPAFallback(t *testing.T) {
 	if _, err := store.PutObject(ctx, storage.PutObjectInput{Bucket: "gallery", Key: "site/index.html", Body: bytes.NewBufferString("spa shell"), ContentType: "text/html"}); err != nil {
 		t.Fatalf("PutObject(index) failed: %v", err)
 	}
-	settings, err := store.RuntimeSettings(ctx)
-	if err != nil {
-		t.Fatalf("RuntimeSettings failed: %v", err)
-	}
-	settings.DomainBindings = []storage.PublicDomainBinding{{Host: "app.example.com", Bucket: "gallery", Prefix: "site", IndexDocument: true, SPAFallback: true}}
-	if _, err := store.SetRuntimeSettings(ctx, settings); err != nil {
-		t.Fatalf("SetRuntimeSettings failed: %v", err)
+	if _, err := store.SetPublicDomainBindings(ctx, []storage.PublicDomainBinding{{Host: "app.example.com", Bucket: "gallery", Prefix: "site", IndexDocument: true, SPAFallback: true}}); err != nil {
+		t.Fatalf("SetPublicDomainBindings failed: %v", err)
 	}
 
 	handler := newHandler(cfg, store, newShareLinksForTest(t, cfg.Paths.DataDir), zap.NewNop())
@@ -374,13 +364,8 @@ func TestServeBoundPublicDomainMissingPathReturnsS3StyleXML(t *testing.T) {
 	if _, err := store.UpdateBucket(ctx, storage.UpdateBucketInput{Name: "gallery", AccessMode: storage.BucketAccessPublic, QuotaBytes: 0}); err != nil {
 		t.Fatalf("UpdateBucket failed: %v", err)
 	}
-	settings, err := store.RuntimeSettings(ctx)
-	if err != nil {
-		t.Fatalf("RuntimeSettings failed: %v", err)
-	}
-	settings.DomainBindings = []storage.PublicDomainBinding{{Host: "cdn.example.com", Bucket: "gallery", Prefix: "site", IndexDocument: false, SPAFallback: false}}
-	if _, err := store.SetRuntimeSettings(ctx, settings); err != nil {
-		t.Fatalf("SetRuntimeSettings failed: %v", err)
+	if _, err := store.SetPublicDomainBindings(ctx, []storage.PublicDomainBinding{{Host: "cdn.example.com", Bucket: "gallery", Prefix: "site", IndexDocument: false, SPAFallback: false}}); err != nil {
+		t.Fatalf("SetPublicDomainBindings failed: %v", err)
 	}
 
 	handler := newHandler(cfg, store, newShareLinksForTest(t, cfg.Paths.DataDir), zap.NewNop())

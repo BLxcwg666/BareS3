@@ -135,7 +135,7 @@ func TestUpdateBucketRenamesAndPersistsMetadata(t *testing.T) {
 	}
 }
 
-func TestRuntimeSettingsPersistAcrossStoreRestart(t *testing.T) {
+func TestPublicDomainBindingsPersistAcrossStoreRestart(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
@@ -147,13 +147,8 @@ func TestRuntimeSettingsPersistAcrossStoreRestart(t *testing.T) {
 	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
 
 	store := New(cfg, zap.NewNop())
-	settings, err := store.RuntimeSettings(context.Background())
-	if err != nil {
-		t.Fatalf("RuntimeSettings failed: %v", err)
-	}
-	settings.DomainBindings = []PublicDomainBinding{{Host: "cdn.example.com", Bucket: "gallery", Prefix: "site", IndexDocument: false, SPAFallback: false}}
-	if _, err := store.SetRuntimeSettings(context.Background(), settings); err != nil {
-		t.Fatalf("SetRuntimeSettings failed: %v", err)
+	if _, err := store.SetPublicDomainBindings(context.Background(), []PublicDomainBinding{{Host: "cdn.example.com", Bucket: "gallery", Prefix: "site", IndexDocument: false, SPAFallback: false}}); err != nil {
+		t.Fatalf("SetPublicDomainBindings failed: %v", err)
 	}
 	if err := store.Close(); err != nil {
 		t.Fatalf("Close failed: %v", err)
@@ -163,14 +158,14 @@ func TestRuntimeSettingsPersistAcrossStoreRestart(t *testing.T) {
 	t.Cleanup(func() {
 		_ = restarted.Close()
 	})
-	reloaded, err := restarted.RuntimeSettings(context.Background())
+	reloaded, err := restarted.PublicDomainBindings(context.Background())
 	if err != nil {
-		t.Fatalf("RuntimeSettings after restart failed: %v", err)
+		t.Fatalf("PublicDomainBindings after restart failed: %v", err)
 	}
-	if len(reloaded.DomainBindings) != 1 {
-		t.Fatalf("expected persisted domain bindings, got %+v", reloaded.DomainBindings)
+	if len(reloaded) != 1 {
+		t.Fatalf("expected persisted domain bindings, got %+v", reloaded)
 	}
-	binding := reloaded.DomainBindings[0]
+	binding := reloaded[0]
 	if binding.Host != "cdn.example.com" || binding.Bucket != "gallery" || binding.Prefix != "site" || binding.IndexDocument || binding.SPAFallback {
 		t.Fatalf("unexpected persisted binding after restart: %+v", binding)
 	}

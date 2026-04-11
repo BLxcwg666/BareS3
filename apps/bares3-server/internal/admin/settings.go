@@ -48,7 +48,7 @@ func RegisterSettingsRoutes(protected chi.Router, cfg *config.Config, store *sto
 	})
 
 	protected.Get("/settings/domains", func(w http.ResponseWriter, r *http.Request) {
-		runtimeSettings, err := store.RuntimeSettings(r.Context())
+		bindings, err := store.PublicDomainBindings(r.Context())
 		if err != nil {
 			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
 				"status":  "error",
@@ -56,7 +56,7 @@ func RegisterSettingsRoutes(protected chi.Router, cfg *config.Config, store *sto
 			})
 			return
 		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": runtimeSettings.DomainBindings})
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": bindings})
 	})
 
 	protected.Put("/settings/storage", func(w http.ResponseWriter, r *http.Request) {
@@ -199,16 +199,7 @@ func RegisterSettingsRoutes(protected chi.Router, cfg *config.Config, store *sto
 			return
 		}
 
-		runtimeSettings, err := store.RuntimeSettings(r.Context())
-		if err != nil {
-			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{
-				"status":  "error",
-				"message": err.Error(),
-			})
-			return
-		}
-		runtimeSettings.DomainBindings = payload.Items
-		updated, err := store.SetRuntimeSettings(r.Context(), runtimeSettings)
+		updated, err := store.SetPublicDomainBindings(r.Context(), payload.Items)
 		if err != nil {
 			httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
 				"status":  "error",
@@ -221,10 +212,10 @@ func RegisterSettingsRoutes(protected chi.Router, cfg *config.Config, store *sto
 			Actor:  actorFromRequest(r),
 			Action: "settings.domains.update",
 			Title:  "Updated public domain bindings",
-			Detail: fmt.Sprintf("%d domain binding(s)", len(updated.DomainBindings)),
+			Detail: fmt.Sprintf("%d domain binding(s)", len(updated)),
 			Remote: requestRemote(r),
 			Status: "success",
 		})
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": updated.DomainBindings})
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": updated})
 	})
 }

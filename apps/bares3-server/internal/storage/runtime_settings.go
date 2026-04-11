@@ -20,7 +20,6 @@ func DefaultRuntimeSettings(cfg config.Config) RuntimeSettings {
 		S3BaseURL:      strings.TrimSpace(cfg.Settings.S3BaseURL),
 		Region:         strings.TrimSpace(cfg.Settings.Region),
 		MetadataLayout: strings.TrimSpace(cfg.Settings.MetadataLayout),
-		DomainBindings: []PublicDomainBinding{},
 		MaxBytes:       cfg.Settings.MaxBytes,
 	}
 	if settings.PublicBaseURL == "" {
@@ -72,7 +71,6 @@ func (s *Store) SetRuntimeSettings(ctx context.Context, settings RuntimeSettings
 		S3BaseURL:      strings.TrimSpace(settings.S3BaseURL),
 		Region:         strings.TrimSpace(settings.Region),
 		MetadataLayout: strings.TrimSpace(settings.MetadataLayout),
-		DomainBindings: NormalizePublicDomainBindings(settings.DomainBindings),
 		MaxBytes:       settings.MaxBytes,
 		UpdatedAt:      time.Now().UTC(),
 	}
@@ -110,27 +108,6 @@ func validateRuntimeSettings(settings RuntimeSettings) error {
 	}
 	if layout := strings.ToLower(strings.TrimSpace(settings.MetadataLayout)); layout != "hidden-dir" {
 		return fmt.Errorf("settings.metadata_layout must be hidden-dir, got %q", settings.MetadataLayout)
-	}
-	for index, binding := range NormalizePublicDomainBindings(settings.DomainBindings) {
-		if binding.Host == "" {
-			return fmt.Errorf("settings.domain_bindings[%d].host must not be empty", index)
-		}
-		if binding.Bucket == "" {
-			return fmt.Errorf("settings.domain_bindings[%d].bucket must not be empty", index)
-		}
-		if err := validateBucketName(binding.Bucket); err != nil {
-			return fmt.Errorf("settings.domain_bindings[%d].bucket %w", index, err)
-		}
-		if binding.SPAFallback && !binding.IndexDocument {
-			return fmt.Errorf("settings.domain_bindings[%d].spa_fallback requires index_document", index)
-		}
-	}
-	seenHosts := make(map[string]int, len(settings.DomainBindings))
-	for index, binding := range NormalizePublicDomainBindings(settings.DomainBindings) {
-		if previous, ok := seenHosts[binding.Host]; ok {
-			return fmt.Errorf("settings.domain_bindings[%d].host duplicates settings.domain_bindings[%d].host", index, previous)
-		}
-		seenHosts[binding.Host] = index
 	}
 	if settings.MaxBytes < 0 {
 		return errors.New("settings.max_bytes must not be negative")

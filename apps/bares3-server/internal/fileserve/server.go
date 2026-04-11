@@ -46,9 +46,12 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 				w.Header().Set("X-Amz-Bucket-Region", runtimeSettings.Region)
 			}
 			if err == nil {
-				if binding, ok := matchPublicDomainBinding(runtimeSettings.DomainBindings, r.Host); ok && !isReservedFileServicePath(r.URL.Path) {
-					serveBoundDomainObject(w, r, store, binding)
-					return
+				domainBindings, domainErr := store.PublicDomainBindings(r.Context())
+				if domainErr == nil {
+					if binding, ok := matchPublicDomainBinding(domainBindings, r.Host); ok && !isReservedFileServicePath(r.URL.Path) {
+						serveBoundDomainObject(w, r, store, binding)
+						return
+					}
 				}
 			}
 			next.ServeHTTP(w, r)
