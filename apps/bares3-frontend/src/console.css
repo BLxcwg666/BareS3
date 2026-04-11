@@ -1605,6 +1605,39 @@ a {
   margin-top: 2px;
 }
 
+.browser-preview-media-shell,
+.browser-preview-editor-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.browser-preview-media-shell {
+  align-items: center;
+  justify-content: center;
+  min-height: 320px;
+}
+
+.browser-preview-image,
+.browser-preview-video {
+  display: block;
+  max-width: 100%;
+  max-height: 72vh;
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.browser-preview-editor {
+  min-height: 60vh !important;
+  font-family: var(--font-mono, 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace);
+}
+
+.browser-preview-meta {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .login-page {
   min-height: 100vh;
 }

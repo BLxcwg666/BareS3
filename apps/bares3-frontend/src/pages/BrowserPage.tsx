@@ -20,9 +20,11 @@ import {
 } from 'antd';
 import type { MenuProps, TableColumnsType } from 'antd';
 import {
+  buildApiUrl,
   createShareLink,
   deleteBrowserPrefix,
   deleteObject,
+  getObject,
   listShareLinks,
   moveBrowserEntry,
   presignObject,
@@ -110,6 +112,22 @@ type MetadataEditState = {
   value: string;
 };
 
+type PreviewKind = 'image' | 'video' | 'text';
+
+type PreviewState = {
+  kind: PreviewKind;
+  object: ObjectInfo;
+  url?: string;
+  text?: string;
+  dirty?: boolean;
+};
+
+const textPreviewExtensions = new Set(['txt', 'log', 'json', 'yml', 'yaml', 'md', 'csv', 'xml', 'ini', 'conf', 'html', 'htm']);
+const imagePreviewExtensions = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'avif']);
+const videoPreviewExtensions = new Set(['webm', 'mp4', 'mov', 'm4v', 'ogv', 'avi']);
+const textPreviewContentTypes = ['application/json', 'application/yaml', 'application/x-yaml', 'application/xml'];
+const maxPreviewTextBytes = 1024 * 1024 * 2;
+
 function normalizePrefix(value: string | null) {
   const normalized = (value ?? '')
     .replace(/\\/g, '/')
@@ -144,6 +162,46 @@ function objectParentPrefix(key: string) {
 
 function formatUploadFailure(failure: UploadFailure) {
   return failure.reason ? `${failure.key} (${failure.reason})` : failure.key;
+}
+
+function fileExtension(key: string) {
+  const name = key.split('/').pop() ?? key;
+  const dotIndex = name.lastIndexOf('.');
+  if (dotIndex < 0) {
+    return '';
+  }
+  return name.slice(dotIndex + 1).toLowerCase();
+}
+
+function detectPreviewKind(object: ObjectInfo): PreviewKind | null {
+  const contentType = object.content_type.toLowerCase();
+  const extension = fileExtension(object.key);
+
+  if (contentType.startsWith('image/') || imagePreviewExtensions.has(extension)) {
+    return 'image';
+  }
+  if (contentType.startsWith('video/') || videoPreviewExtensions.has(extension)) {
+    return 'video';
+  }
+  if (
+    contentType.startsWith('text/')
+    || textPreviewContentTypes.some((type) => contentType.includes(type))
+    || textPreviewExtensions.has(extension)
+  ) {
+    return 'text';
+  }
+  return null;
+}
+
+function previewModalTitle(preview: PreviewState | null) {
+  if (!preview) {
+    return 'Preview';
+  }
+  return preview.kind === 'text' ? `Edit ${preview.object.key}` : `Preview ${preview.object.key}`;
+}
+
+function buildPreviewUrl(object: ObjectInfo) {
+  return buildApiUrl(`/api/v1/buckets/${encodeURIComponent(object.bucket)}/preview/${encodeObjectKeyPath(object.key)}`);
 }
 
 function summarizeUploadFailures(failures: UploadFailure[], limit = 3) {
@@ -287,6 +345,9 @@ export function BrowserPage() {
   const [bulkMoveDestBucket, setBulkMoveDestBucket] = useState<string | null>(null);
   const [bulkMoveDestPath, setBulkMoveDestPath] = useState('');
   const [bulkMoving, setBulkMoving] = useState(false);
+  const [previewState, setPreviewState] = useState<PreviewState | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [savingPreview, setSavingPreview] = useState(false);
 
   useEffect(
     () => () => {
@@ -721,6 +782,90 @@ export function BrowserPage() {
   const handleOpenParent = () => {
     handleOpenFolder(parentPrefix(currentPrefix));
   };
+
+  const closePreview = useCallback(() => {
+    if (savingPreview) {
+      return;
+    }
+    setPreviewState(null);
+    setPreviewLoading(false);
+  }, [savingPreview]);
+
+  const handlePreviewTextChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
+    const nextText = event.target.value;
+    setPreviewState((current) => {
+      if (!current || current.kind !== 'text') {
+        return current;
+      }
+      return {
+        ...current,
+        text: nextText,
+        dirty: true,
+      };
+    });
+  }, []);
+
+  const handleSavePreview = useCallback(async () => {
+    if (!previewState || previewState.kind !== 'text' || !selectedBucket) {
+      return;
+    }
+
+    setSavingPreview(true);
+    try {
+      const file = new File([previewState.text ?? ''], previewState.object.key.split('/').pop() ?? 'preview.txt', {
+        type: previewState.object.content_type || 'text/plain',
+      });
+      await uploadObject(selectedBucket, file, previewState.object.key);
+      await refresh();
+      const nextObject = await getObject(selectedBucket, previewState.object.key);
+      setPreviewState((current) => current && current.kind === 'text'
+        ? {
+            ...current,
+            object: nextObject,
+            dirty: false,
+          }
+        : current);
+      message.success(`Saved ${previewState.object.key}`);
+    } catch (error) {
+      message.error(normalizeApiError(error, 'Failed to save text object'));
+    } finally {
+      setSavingPreview(false);
+    }
+  }, [message, previewState, refresh, selectedBucket]);
+
+  const handleOpenPreview = useCallback(async (object: ObjectInfo) => {
+    const previewKind = detectPreviewKind(object);
+    if (!previewKind) {
+      message.warning('This file type is not supported for preview');
+      return;
+    }
+
+    if (previewKind === 'text' && object.size > maxPreviewTextBytes) {
+      message.warning('Text preview supports files up to 2 MB');
+      return;
+    }
+
+    setPreviewLoading(true);
+    setPreviewState({ kind: previewKind, object });
+    try {
+      const previewUrl = buildPreviewUrl(object);
+      if (previewKind === 'text') {
+        const response = await fetch(previewUrl, { credentials: 'include' });
+        if (!response.ok) {
+          throw new Error(`Preview request failed with status ${response.status}`);
+        }
+        const text = await response.text();
+        setPreviewState({ kind: 'text', object, text, dirty: false });
+        return;
+      }
+      setPreviewState({ kind: previewKind, object, url: previewUrl });
+    } catch (error) {
+      setPreviewState(null);
+      message.error(normalizeApiError(error, 'Failed to load preview'));
+    } finally {
+      setPreviewLoading(false);
+    }
+  }, [message]);
 
   const moveEntryToDestination = useCallback(
     async (entry: Extract<BrowserEntry, { kind: 'object' | 'folder' }>, destinationBucket: string, destinationPrefix: string) => {
@@ -1755,6 +1900,10 @@ export function BrowserPage() {
                         }
                         if (record.kind === 'folder') {
                           handleOpenFolder(record.prefix);
+                          return;
+                        }
+                        if (record.kind === 'object') {
+                          void handleOpenPreview(record.object);
                         }
                       },
                       onDragStart: (event) => handleRowDragStart(record, event),
@@ -2045,6 +2194,49 @@ export function BrowserPage() {
         </div>
       </div>
     </ConsoleShell>
+
+    <Modal
+      destroyOnHidden
+      footer={previewState?.kind === 'text'
+        ? [
+            <Button key="cancel" onClick={closePreview}>Cancel</Button>,
+            <Button key="save" disabled={!previewState.dirty} loading={savingPreview} onClick={() => void handleSavePreview()} type="primary">
+              Save
+            </Button>,
+          ]
+        : null}
+      onCancel={closePreview}
+      open={Boolean(previewState)}
+      title={previewModalTitle(previewState)}
+      width={previewState?.kind === 'text' ? 960 : 900}
+    >
+      <Spin spinning={previewLoading}>
+        {previewState?.kind === 'image' && previewState.url ? (
+          <div className="browser-preview-media-shell">
+            <img alt={previewState.object.key} className="browser-preview-image" src={previewState.url} />
+          </div>
+        ) : null}
+        {previewState?.kind === 'video' && previewState.url ? (
+          <div className="browser-preview-media-shell">
+            <video className="browser-preview-video" controls src={previewState.url} />
+          </div>
+        ) : null}
+        {previewState?.kind === 'text' ? (
+          <div className="browser-preview-editor-shell">
+            <div className="browser-preview-meta row-note">
+              {previewState.object.content_type || 'text/plain'} · {formatBytes(previewState.object.size)}
+            </div>
+            <Input.TextArea
+              autoSize={false}
+              className="browser-preview-editor"
+              onChange={handlePreviewTextChange}
+              spellCheck={false}
+              value={previewState.text ?? ''}
+            />
+          </div>
+        ) : null}
+      </Spin>
+    </Modal>
 
     <Modal
       confirmLoading={bulkMoving}
