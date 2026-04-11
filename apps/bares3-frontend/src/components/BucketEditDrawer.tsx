@@ -116,12 +116,14 @@ export function BucketEditDrawer({
 
     let saved = false;
     const values = await form.validateFields();
+    const quotaChanged = form.isFieldsTouched(['quotaValue', 'quotaUnit'], true);
+    const quotaBytes = quotaChanged ? sizeInputToBytes(values.quotaValue, values.quotaUnit) : bucket.quota_bytes;
     setSubmitting(true);
     try {
       const updated = await updateBucket(bucket.name, {
         name: values.name.trim(),
         access_mode: values.accessMode,
-        quota_bytes: sizeInputToBytes(values.quotaValue, values.quotaUnit),
+        quota_bytes: quotaBytes,
         tags: normalizeTags(values.tags),
         note: values.note.trim(),
       });
@@ -231,7 +233,7 @@ export function BucketEditDrawer({
               <Form.Item extra="Leave empty or 0 for unlimited." label="Bucket limit">
                 <Space.Compact block>
                   <Form.Item name="quotaValue" noStyle>
-                    <InputNumber min={0} placeholder="Unlimited" precision={1} style={{ width: '100%' }} />
+                    <InputNumber min={0} placeholder="Unlimited" precision={3} style={{ width: '100%' }} />
                   </Form.Item>
                   <Form.Item name="quotaUnit" noStyle>
                     <Select options={sizeUnitOptions.map((option) => ({ label: option.label, value: option.value }))} style={{ width: 96 }} />

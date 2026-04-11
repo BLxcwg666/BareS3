@@ -79,7 +79,7 @@ export function BucketCreateModal({
         <Form.Item extra="Leave empty or 0 for unlimited." label="Bucket limit">
           <Space.Compact block>
             <Form.Item name="quotaValue" noStyle>
-              <InputNumber min={0} placeholder="Unlimited" precision={1} style={{ width: '100%' }} />
+              <InputNumber min={0} placeholder="Unlimited" precision={3} style={{ width: '100%' }} />
             </Form.Item>
             <Form.Item name="quotaUnit" noStyle>
               <Select

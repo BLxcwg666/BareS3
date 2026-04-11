@@ -1,5 +1,8 @@
 import { request } from './client';
 
+const multipartUploadThresholdBytes = 16 * 1024 * 1024;
+const multipartUploadChunkBytes = 16 * 1024 * 1024;
+
 function encodeObjectKeyPath(key: string) {
   return key
     .split('/')
@@ -238,6 +241,20 @@ export type ObjectInfo = {
   user_metadata?: Record<string, string>;
   last_modified: string;
   sync_status?: SyncObjectStatus;
+};
+
+type MultipartUploadInfo = {
+  upload_id: string;
+  bucket: string;
+  key: string;
+  content_type?: string;
+};
+
+type MultipartPartInfo = {
+  part_number: number;
+  etag: string;
+  size: number;
+  last_modified: string;
 };
 
 export type ListObjectsOptions = {
@@ -596,7 +613,63 @@ export function presignObject(bucket: string, key: string, expiresSeconds = 900,
   });
 }
 
+async function uploadMultipartObject(bucket: string, file: File, key: string) {
+  const upload = await request<MultipartUploadInfo>(`/api/v1/buckets/${encodeURIComponent(bucket)}/uploads`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      key,
+      content_type: file.type,
+    }),
+  });
+
+  const parts: Array<{ part_number: number; etag: string }> = [];
+
+  try {
+    let partNumber = 1;
+    for (let offset = 0; offset < file.size; offset += multipartUploadChunkBytes) {
+      const chunk = file.slice(offset, Math.min(file.size, offset + multipartUploadChunkBytes));
+      const part = await request<MultipartPartInfo>(
+        `/api/v1/buckets/${encodeURIComponent(bucket)}/uploads/${encodeURIComponent(upload.upload_id)}/parts/${partNumber}?key=${encodeURIComponent(key)}`,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/octet-stream',
+          },
+          body: chunk,
+        },
+      );
+      parts.push({ part_number: part.part_number, etag: part.etag });
+      partNumber += 1;
+    }
+
+    return request<ObjectInfo>(`/api/v1/buckets/${encodeURIComponent(bucket)}/uploads/${encodeURIComponent(upload.upload_id)}/complete`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ key, parts }),
+    });
+  } catch (error) {
+    try {
+      await request<void>(`/api/v1/buckets/${encodeURIComponent(bucket)}/uploads/${encodeURIComponent(upload.upload_id)}?key=${encodeURIComponent(key)}`, {
+        method: 'DELETE',
+      });
+    } catch {
+      // Ignore abort errors and surface the original upload failure.
+    }
+    throw error;
+  }
+}
+
 export function uploadObject(bucket: string, file: File, key?: string) {
+  const resolvedKey = key?.trim() || file.name.trim();
+  if (file.size >= multipartUploadThresholdBytes && resolvedKey) {
+    return uploadMultipartObject(bucket, file, resolvedKey);
+  }
+
   const formData = new FormData();
   formData.append('file', file);
   if (key?.trim()) {
