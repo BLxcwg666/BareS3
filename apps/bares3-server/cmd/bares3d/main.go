@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -23,25 +24,73 @@ var stdinReader = bufio.NewReader(os.Stdin)
 var stdinFD = func() int { return int(os.Stdin.Fd()) }
 var stdinIsTerminal = func(fd int) bool { return term.IsTerminal(fd) }
 var readPassword = func(fd int) ([]byte, error) { return term.ReadPassword(fd) }
+var stdout io.Writer = os.Stdout
+var stderr io.Writer = os.Stderr
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "auth" {
-		os.Exit(runAuthCommand(os.Args[2:]))
+	os.Exit(run(os.Args[1:]))
+}
+
+func run(args []string) int {
+	if len(args) == 0 {
+		printHelp(stderr)
+		return 0
 	}
 
-	configPath := flag.String("config", "", "path to config.yml")
-	showVersion := flag.Bool("version", false, "print version and exit")
-	flag.Parse()
+	switch args[0] {
+	case "help", "-h", "--help":
+		printHelp(stdout)
+		return 0
+	case "version", "-version", "--version":
+		fmt.Fprintln(stdout, buildinfo.Current().String())
+		return 0
+	case "serve":
+		return runServeCommand(args[1:])
+	case "init":
+		return runInitCommand(args[1:])
+	case "resetpassword":
+		return runResetPasswordCommand(args[1:])
+	default:
+		fmt.Fprintf(stderr, "unknown command %q\n\n", args[0])
+		printHelp(stderr)
+		return 1
+	}
+}
 
-	if *showVersion {
-		fmt.Fprintln(os.Stdout, buildinfo.Current().String())
+func printHelp(w io.Writer) {
+	if w == nil {
 		return
+	}
+	fmt.Fprintf(w, "%s\n\n", buildinfo.Current().String())
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  bares3d serve [--config path]")
+	fmt.Fprintln(w, "  bares3d init [--config path] [--force]")
+	fmt.Fprintln(w, "  bares3d resetpassword [--config path]")
+	fmt.Fprintln(w, "  bares3d version")
+	fmt.Fprintln(w, "  bares3d help")
+}
+
+func newFlagSet(name string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	return fs
+}
+
+func runServeCommand(args []string) int {
+	fs := newFlagSet("serve")
+	configPath := fs.String("config", "", "path to config.yml")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(stderr, "unexpected arguments for serve: %s\n", strings.Join(fs.Args(), " "))
+		return 1
 	}
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "failed to load config: %v\n", err)
+		return 1
 	}
 
 	logger, err := logx.New(logx.Options{
@@ -53,8 +102,8 @@ func main() {
 		RotateKeep:   cfg.Logging.RotateKeep,
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to initialize logger: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "failed to initialize logger: %v\n", err)
+		return 1
 	}
 	defer func() {
 		_ = logger.Sync()
@@ -67,96 +116,168 @@ func main() {
 
 	service := app.New(cfg, logger)
 	if err := service.Run(ctx); err != nil {
-		logger.Fatal("service stopped with error", zap.Error(err))
-	}
-}
-
-func runAuthCommand(args []string) int {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: bares3d auth <hash|init>")
+		logger.Error("service stopped with error", zap.Error(err))
 		return 1
 	}
-
-	switch args[0] {
-	case "hash":
-		password, err := promptPasswordTwice("New console password")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to read password: %v\n", err)
-			return 1
-		}
-		hash, err := consoleauth.HashPassword(password)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to hash password: %v\n", err)
-			return 1
-		}
-		fmt.Fprintln(os.Stdout, hash)
-		return 0
-	case "init":
-		return runAuthInit(args[1:])
-	default:
-		fmt.Fprintf(os.Stderr, "unknown auth subcommand %q\n", args[0])
-		return 1
-	}
+	return 0
 }
 
-func runAuthInit(args []string) int {
-	fs := flag.NewFlagSet("auth init", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+func runInitCommand(args []string) int {
+	fs := newFlagSet("init")
 	configPath := fs.String("config", "", "path to config.yml")
 	force := fs.Bool("force", false, "overwrite existing console password hash")
-	username := fs.String("username", "", "override console username")
 	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(stderr, "unexpected arguments for init: %s\n", strings.Join(fs.Args(), " "))
 		return 1
 	}
 
 	cfg, path, _, err := config.LoadEditable(*configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to load editable config: %v\n", err)
+		fmt.Fprintf(stderr, "failed to load editable config: %v\n", err)
+		return 1
+	}
+	if strings.TrimSpace(cfg.Auth.Console.PasswordHash) != "" && !*force {
+		fmt.Fprintf(stderr, "console password hash already exists in %s; use --force to replace it\n", path)
 		return 1
 	}
 
-	if strings.TrimSpace(*username) != "" {
-		cfg.Auth.Console.Username = strings.TrimSpace(*username)
+	if err := runInitWizard(&cfg); err != nil {
+		fmt.Fprintf(stderr, "failed to initialize config: %v\n", err)
+		return 1
+	}
+	if err := config.Save(path, cfg); err != nil {
+		fmt.Fprintf(stderr, "failed to write config: %v\n", err)
+		return 1
+	}
+
+	fmt.Fprintf(stdout, "initialized BareS3 config in %s\n", path)
+	return 0
+}
+
+func runResetPasswordCommand(args []string) int {
+	fs := newFlagSet("resetpassword")
+	configPath := fs.String("config", "", "path to config.yml")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(stderr, "unexpected arguments for resetpassword: %s\n", strings.Join(fs.Args(), " "))
+		return 1
+	}
+
+	cfg, path, _, err := config.LoadEditable(*configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "failed to load editable config: %v\n", err)
+		return 1
 	}
 	if strings.TrimSpace(cfg.Auth.Console.Username) == "" {
 		cfg.Auth.Console.Username = "admin"
 	}
-	if cfg.Auth.Console.SessionTTLMinutes <= 0 {
-		cfg.Auth.Console.SessionTTLMinutes = 7 * 24 * 60
-	}
-	if strings.TrimSpace(cfg.Auth.Console.PasswordHash) != "" && !*force {
-		fmt.Fprintf(os.Stderr, "console password hash already exists in %s; use --force to replace it\n", path)
-		return 1
-	}
 
-	password, err := promptPasswordTwice("Console password")
+	password, err := promptPasswordTwice("New console password")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to read password: %v\n", err)
+		fmt.Fprintf(stderr, "failed to read password: %v\n", err)
 		return 1
 	}
 	hash, err := consoleauth.HashPassword(password)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to hash password: %v\n", err)
+		fmt.Fprintf(stderr, "failed to hash password: %v\n", err)
 		return 1
+	}
+	if strings.TrimSpace(cfg.Auth.Console.SessionSecret) == "" {
+		secret, err := consoleauth.GenerateSessionSecret()
+		if err != nil {
+			fmt.Fprintf(stderr, "failed to generate session secret: %v\n", err)
+			return 1
+		}
+		cfg.Auth.Console.SessionSecret = secret
+	}
+	if cfg.Auth.Console.SessionTTLMinutes <= 0 {
+		cfg.Auth.Console.SessionTTLMinutes = 7 * 24 * 60
+	}
+	cfg.Auth.Console.PasswordHash = hash
+
+	if err := config.Save(path, cfg); err != nil {
+		fmt.Fprintf(stderr, "failed to write config: %v\n", err)
+		return 1
+	}
+
+	fmt.Fprintf(stdout, "updated console password in %s for user %s\n", path, cfg.Auth.Console.Username)
+	return 0
+}
+
+func runInitWizard(cfg *config.Config) error {
+	if cfg == nil {
+		return fmt.Errorf("config is required")
+	}
+
+	if err := applyWizardString("Admin listen address", "127.0.0.1:19080", &cfg.Listen.Admin); err != nil {
+		return err
+	}
+	if err := applyWizardString("S3 listen address", "0.0.0.0:9000", &cfg.Listen.S3); err != nil {
+		return err
+	}
+	if err := applyWizardString("File listen address", "0.0.0.0:9001", &cfg.Listen.File); err != nil {
+		return err
+	}
+	if err := applyWizardString("Console username", "admin", &cfg.Auth.Console.Username); err != nil {
+		return err
+	}
+
+	password, err := promptPasswordTwice("Console password")
+	if err != nil {
+		return err
+	}
+	hash, err := consoleauth.HashPassword(password)
+	if err != nil {
+		return fmt.Errorf("hash console password: %w", err)
 	}
 	secret, err := consoleauth.GenerateSessionSecret()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to generate session secret: %v\n", err)
-		return 1
+		return fmt.Errorf("generate session secret: %w", err)
 	}
 
+	if cfg.Auth.Console.SessionTTLMinutes <= 0 {
+		cfg.Auth.Console.SessionTTLMinutes = 7 * 24 * 60
+	}
 	cfg.Auth.Console.PasswordHash = hash
-	if *force || strings.TrimSpace(cfg.Auth.Console.SessionSecret) == "" {
-		cfg.Auth.Console.SessionSecret = secret
-	}
+	cfg.Auth.Console.SessionSecret = secret
+	return nil
+}
 
-	if err := config.Save(path, cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to write config: %v\n", err)
-		return 1
+func applyWizardString(label, fallback string, target *string) error {
+	current := strings.TrimSpace(fallback)
+	if target != nil && strings.TrimSpace(*target) != "" {
+		current = strings.TrimSpace(*target)
 	}
+	value, err := promptLine(label, current)
+	if err != nil {
+		return err
+	}
+	if target != nil {
+		*target = value
+	}
+	return nil
+}
 
-	fmt.Fprintf(os.Stdout, "initialized console auth in %s for user %s\n", path, cfg.Auth.Console.Username)
-	return 0
+func promptLine(label, fallback string) (string, error) {
+	if strings.TrimSpace(fallback) != "" {
+		fmt.Fprintf(stderr, "%s [%s]: ", label, fallback)
+	} else {
+		fmt.Fprintf(stderr, "%s: ", label)
+	}
+	value, err := stdinReader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return strings.TrimSpace(fallback), nil
+	}
+	return trimmed, nil
 }
 
 func promptPasswordTwice(label string) (string, error) {
@@ -178,11 +299,11 @@ func promptPasswordTwice(label string) (string, error) {
 }
 
 func promptPassword(prompt string) (string, error) {
-	fmt.Fprint(os.Stderr, prompt)
+	fmt.Fprint(stderr, prompt)
 	fd := stdinFD()
 	if stdinIsTerminal(fd) {
 		password, err := readPassword(fd)
-		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(stderr)
 		if err != nil {
 			return "", err
 		}
