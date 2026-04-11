@@ -105,10 +105,11 @@ func (s *Store) Check(ctx context.Context) error {
 
 func (s *Store) CreateBucket(ctx context.Context, name string, quotaBytes int64) (BucketInfo, error) {
 	return s.CreateBucketWithOptions(ctx, CreateBucketInput{
-		Name:         name,
-		QuotaBytes:   quotaBytes,
-		AccessMode:   BucketAccessPrivate,
-		AccessPolicy: PresetBucketAccessPolicy(BucketAccessPrivate),
+		Name:               name,
+		QuotaBytes:         quotaBytes,
+		AccessMode:         BucketAccessPrivate,
+		AccessPolicy:       PresetBucketAccessPolicy(BucketAccessPrivate),
+		ReplicationEnabled: false,
 	})
 }
 
@@ -153,12 +154,13 @@ func (s *Store) CreateBucketWithOptions(ctx context.Context, input CreateBucketI
 	}
 
 	meta := bucketMetadata{
-		Name:           name,
-		CreatedAt:      time.Now().UTC(),
-		MetadataLayout: s.metadataLayout,
-		AccessMode:     accessMode,
-		AccessPolicy:   accessPolicy,
-		QuotaBytes:     input.QuotaBytes,
+		Name:               name,
+		CreatedAt:          time.Now().UTC(),
+		MetadataLayout:     s.metadataLayout,
+		AccessMode:         accessMode,
+		AccessPolicy:       accessPolicy,
+		ReplicationEnabled: input.ReplicationEnabled,
+		QuotaBytes:         input.QuotaBytes,
 	}
 
 	if err := s.writeBucketMetadata(name, meta); err != nil {
@@ -172,15 +174,16 @@ func (s *Store) CreateBucketWithOptions(ctx context.Context, input CreateBucketI
 	}
 
 	info := BucketInfo{
-		Name:           meta.Name,
-		Path:           root,
-		MetadataPath:   "",
-		CreatedAt:      meta.CreatedAt,
-		MetadataLayout: meta.MetadataLayout,
-		AccessMode:     meta.AccessMode,
-		QuotaBytes:     meta.QuotaBytes,
-		Tags:           cloneStringSlice(meta.Tags),
-		Note:           meta.Note,
+		Name:               meta.Name,
+		Path:               root,
+		MetadataPath:       "",
+		CreatedAt:          meta.CreatedAt,
+		MetadataLayout:     meta.MetadataLayout,
+		AccessMode:         meta.AccessMode,
+		ReplicationEnabled: meta.ReplicationEnabled,
+		QuotaBytes:         meta.QuotaBytes,
+		Tags:               cloneStringSlice(meta.Tags),
+		Note:               meta.Note,
 	}
 
 	s.logger.Info("bucket created", zap.String("bucket", name), zap.String("path", root))
@@ -203,15 +206,16 @@ func (s *Store) GetBucket(ctx context.Context, name string) (BucketInfo, error) 
 	}
 
 	return BucketInfo{
-		Name:           name,
-		Path:           s.bucketRoot(name),
-		MetadataPath:   "",
-		CreatedAt:      meta.CreatedAt,
-		MetadataLayout: meta.MetadataLayout,
-		AccessMode:     NormalizeBucketAccessMode(meta.AccessMode),
-		QuotaBytes:     meta.QuotaBytes,
-		Tags:           cloneStringSlice(meta.Tags),
-		Note:           meta.Note,
+		Name:               name,
+		Path:               s.bucketRoot(name),
+		MetadataPath:       "",
+		CreatedAt:          meta.CreatedAt,
+		MetadataLayout:     meta.MetadataLayout,
+		AccessMode:         NormalizeBucketAccessMode(meta.AccessMode),
+		ReplicationEnabled: meta.ReplicationEnabled,
+		QuotaBytes:         meta.QuotaBytes,
+		Tags:               cloneStringSlice(meta.Tags),
+		Note:               meta.Note,
 	}, nil
 }
 
@@ -231,17 +235,18 @@ func (s *Store) ListBuckets(ctx context.Context) ([]BucketInfo, error) {
 			return nil, err
 		}
 		buckets = append(buckets, BucketInfo{
-			Name:           meta.Name,
-			Path:           s.bucketRoot(meta.Name),
-			MetadataPath:   "",
-			CreatedAt:      meta.CreatedAt,
-			MetadataLayout: meta.MetadataLayout,
-			AccessMode:     NormalizeBucketAccessMode(meta.AccessMode),
-			QuotaBytes:     meta.QuotaBytes,
-			Tags:           cloneStringSlice(meta.Tags),
-			Note:           meta.Note,
-			UsedBytes:      usage.UsedBytes,
-			ObjectCount:    usage.ObjectCount,
+			Name:               meta.Name,
+			Path:               s.bucketRoot(meta.Name),
+			MetadataPath:       "",
+			CreatedAt:          meta.CreatedAt,
+			MetadataLayout:     meta.MetadataLayout,
+			AccessMode:         NormalizeBucketAccessMode(meta.AccessMode),
+			ReplicationEnabled: meta.ReplicationEnabled,
+			QuotaBytes:         meta.QuotaBytes,
+			Tags:               cloneStringSlice(meta.Tags),
+			Note:               meta.Note,
+			UsedBytes:          usage.UsedBytes,
+			ObjectCount:        usage.ObjectCount,
 		})
 	}
 
@@ -317,6 +322,8 @@ func (s *Store) UpdateBucket(ctx context.Context, input UpdateBucketInput) (Buck
 	meta.Name = nextName
 	meta.MetadataLayout = currentBucket.MetadataLayout
 	meta.AccessMode = nextAccessMode
+	previousReplicationEnabled := meta.ReplicationEnabled
+	meta.ReplicationEnabled = input.ReplicationEnabled
 	if meta.AccessPolicy.DefaultAction == "" && len(meta.AccessPolicy.Rules) == 0 {
 		meta.AccessPolicy = PresetBucketAccessPolicy(nextAccessMode)
 	}
@@ -353,6 +360,17 @@ func (s *Store) UpdateBucket(ctx context.Context, input UpdateBucketInput) (Buck
 	if err := s.recordBucketUpsertEvent(meta); err != nil {
 		return BucketInfo{}, err
 	}
+	if !previousReplicationEnabled && meta.ReplicationEnabled {
+		objects, err := s.ListObjects(ctx, nextName, ListObjectsOptions{})
+		if err != nil {
+			return BucketInfo{}, err
+		}
+		for _, object := range objects {
+			if err := s.recordObjectUpsertEvent(objectMetadataFromObjectInfo(object)); err != nil {
+				return BucketInfo{}, err
+			}
+		}
+	}
 	if input.QuotaBytes != currentBucket.QuotaBytes {
 		if err := s.recordBucketUsageSample(nextName, currentBucket.UsedBytes, currentBucket.ObjectCount, input.QuotaBytes); err != nil {
 			return BucketInfo{}, err
@@ -375,6 +393,7 @@ func (s *Store) UpdateBucket(ctx context.Context, input UpdateBucketInput) (Buck
 	updated.Path = s.bucketRoot(nextName)
 	updated.MetadataPath = ""
 	updated.AccessMode = nextAccessMode
+	updated.ReplicationEnabled = meta.ReplicationEnabled
 	updated.QuotaBytes = input.QuotaBytes
 	updated.Tags = cloneStringSlice(meta.Tags)
 	updated.Note = meta.Note

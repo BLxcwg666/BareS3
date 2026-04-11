@@ -1711,11 +1711,12 @@ func TestUpdateBucketRenamesMetadataAndHistory(t *testing.T) {
 	cookie := loginCookie(t, handler)
 
 	updateBody, _ := json.Marshal(map[string]any{
-		"name":        "archive",
-		"access_mode": "public",
-		"quota_bytes": 1024,
-		"tags":        []string{"media", "launch"},
-		"note":        "Launch assets",
+		"name":                "archive",
+		"access_mode":         "public",
+		"replication_enabled": true,
+		"quota_bytes":         1024,
+		"tags":                []string{"media", "launch"},
+		"note":                "Launch assets",
 	})
 	updateRequest := httptest.NewRequest(http.MethodPut, "/api/v1/buckets/gallery", bytes.NewReader(updateBody))
 	updateRequest.Header.Set("Content-Type", "application/json")
@@ -1726,16 +1727,17 @@ func TestUpdateBucketRenamesMetadataAndHistory(t *testing.T) {
 		t.Fatalf("unexpected update bucket status: %d body=%s", updateRecorder.Code, updateRecorder.Body.String())
 	}
 	updated := struct {
-		Name       string   `json:"name"`
-		AccessMode string   `json:"access_mode"`
-		QuotaBytes int64    `json:"quota_bytes"`
-		Tags       []string `json:"tags"`
-		Note       string   `json:"note"`
+		Name               string   `json:"name"`
+		AccessMode         string   `json:"access_mode"`
+		ReplicationEnabled bool     `json:"replication_enabled"`
+		QuotaBytes         int64    `json:"quota_bytes"`
+		Tags               []string `json:"tags"`
+		Note               string   `json:"note"`
 	}{}
 	if err := json.Unmarshal(updateRecorder.Body.Bytes(), &updated); err != nil {
 		t.Fatalf("unmarshal update bucket payload failed: %v", err)
 	}
-	if updated.Name != "archive" || updated.AccessMode != storage.BucketAccessPublic || updated.QuotaBytes != 1024 || updated.Note != "Launch assets" {
+	if updated.Name != "archive" || updated.AccessMode != storage.BucketAccessPublic || !updated.ReplicationEnabled || updated.QuotaBytes != 1024 || updated.Note != "Launch assets" {
 		t.Fatalf("unexpected updated bucket payload: %+v", updated)
 	}
 	if len(updated.Tags) != 2 || updated.Tags[0] != "media" || updated.Tags[1] != "launch" {

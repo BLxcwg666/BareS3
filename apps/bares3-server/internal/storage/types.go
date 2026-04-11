@@ -30,24 +30,26 @@ var (
 )
 
 type BucketInfo struct {
-	Name           string    `json:"name"`
-	Path           string    `json:"path"`
-	MetadataPath   string    `json:"metadata_path"`
-	CreatedAt      time.Time `json:"created_at"`
-	MetadataLayout string    `json:"metadata_layout"`
-	AccessMode     string    `json:"access_mode"`
-	QuotaBytes     int64     `json:"quota_bytes,omitempty"`
-	Tags           []string  `json:"tags,omitempty"`
-	Note           string    `json:"note,omitempty"`
-	UsedBytes      int64     `json:"used_bytes"`
-	ObjectCount    int       `json:"object_count"`
+	Name               string    `json:"name"`
+	Path               string    `json:"path"`
+	MetadataPath       string    `json:"metadata_path"`
+	CreatedAt          time.Time `json:"created_at"`
+	MetadataLayout     string    `json:"metadata_layout"`
+	AccessMode         string    `json:"access_mode"`
+	ReplicationEnabled bool      `json:"replication_enabled"`
+	QuotaBytes         int64     `json:"quota_bytes,omitempty"`
+	Tags               []string  `json:"tags,omitempty"`
+	Note               string    `json:"note,omitempty"`
+	UsedBytes          int64     `json:"used_bytes"`
+	ObjectCount        int       `json:"object_count"`
 }
 
 type CreateBucketInput struct {
-	Name         string
-	AccessMode   string
-	AccessPolicy BucketAccessPolicy
-	QuotaBytes   int64
+	Name               string
+	AccessMode         string
+	AccessPolicy       BucketAccessPolicy
+	ReplicationEnabled bool
+	QuotaBytes         int64
 }
 
 type BucketAccessRule struct {
@@ -80,12 +82,13 @@ type BucketUsageSample struct {
 }
 
 type UpdateBucketInput struct {
-	Name       string
-	NewName    string
-	AccessMode string
-	QuotaBytes int64
-	Tags       []string
-	Note       string
+	Name               string
+	NewName            string
+	AccessMode         string
+	ReplicationEnabled bool
+	QuotaBytes         int64
+	Tags               []string
+	Note               string
 }
 
 type ObjectInfo struct {
@@ -134,14 +137,15 @@ type PutObjectInput struct {
 }
 
 type ReplicaBucketInput struct {
-	Name           string
-	CreatedAt      time.Time
-	MetadataLayout string
-	AccessMode     string
-	AccessPolicy   BucketAccessPolicy
-	QuotaBytes     int64
-	Tags           []string
-	Note           string
+	Name               string
+	CreatedAt          time.Time
+	MetadataLayout     string
+	AccessMode         string
+	AccessPolicy       BucketAccessPolicy
+	ReplicationEnabled bool
+	QuotaBytes         int64
+	Tags               []string
+	Note               string
 }
 
 type ReplicaObjectInput struct {
@@ -254,14 +258,15 @@ type CompletedPart struct {
 }
 
 type bucketMetadata struct {
-	Name           string             `json:"name"`
-	CreatedAt      time.Time          `json:"created_at"`
-	MetadataLayout string             `json:"metadata_layout"`
-	AccessMode     string             `json:"access_mode,omitempty"`
-	AccessPolicy   BucketAccessPolicy `json:"access_policy,omitempty"`
-	QuotaBytes     int64              `json:"quota_bytes,omitempty"`
-	Tags           []string           `json:"tags,omitempty"`
-	Note           string             `json:"note,omitempty"`
+	Name               string             `json:"name"`
+	CreatedAt          time.Time          `json:"created_at"`
+	MetadataLayout     string             `json:"metadata_layout"`
+	AccessMode         string             `json:"access_mode,omitempty"`
+	AccessPolicy       BucketAccessPolicy `json:"access_policy,omitempty"`
+	ReplicationEnabled bool               `json:"replication_enabled,omitempty"`
+	QuotaBytes         int64              `json:"quota_bytes,omitempty"`
+	Tags               []string           `json:"tags,omitempty"`
+	Note               string             `json:"note,omitempty"`
 }
 
 type multipartUploadMetadata struct {

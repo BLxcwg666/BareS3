@@ -301,14 +301,15 @@ func (w *Worker) reconcileBuckets(ctx context.Context, remote []BucketManifest) 
 			continue
 		}
 		if _, err := w.store.ApplyReplicaBucket(ctx, storage.ReplicaBucketInput{
-			Name:           bucket.Name,
-			CreatedAt:      bucket.CreatedAt,
-			MetadataLayout: bucket.MetadataLayout,
-			AccessMode:     bucket.AccessMode,
-			AccessPolicy:   bucket.AccessPolicy,
-			QuotaBytes:     bucket.QuotaBytes,
-			Tags:           bucket.Tags,
-			Note:           bucket.Note,
+			Name:               bucket.Name,
+			CreatedAt:          bucket.CreatedAt,
+			MetadataLayout:     bucket.MetadataLayout,
+			AccessMode:         bucket.AccessMode,
+			AccessPolicy:       bucket.AccessPolicy,
+			ReplicationEnabled: bucket.ReplicationEnabled,
+			QuotaBytes:         bucket.QuotaBytes,
+			Tags:               bucket.Tags,
+			Note:               bucket.Note,
 		}); err != nil {
 			return fmt.Errorf("apply bucket %s: %w", bucket.Name, err)
 		}
@@ -595,7 +596,7 @@ func bucketChanged(local storage.BucketInfo, localAccess storage.BucketAccessCon
 	if !local.CreatedAt.Equal(remote.CreatedAt) {
 		return true
 	}
-	if local.MetadataLayout != remote.MetadataLayout || local.AccessMode != remote.AccessMode || local.QuotaBytes != remote.QuotaBytes || local.Note != remote.Note {
+	if local.MetadataLayout != remote.MetadataLayout || local.AccessMode != remote.AccessMode || local.ReplicationEnabled != remote.ReplicationEnabled || local.QuotaBytes != remote.QuotaBytes || local.Note != remote.Note {
 		return true
 	}
 	if !reflect.DeepEqual(local.Tags, remote.Tags) {

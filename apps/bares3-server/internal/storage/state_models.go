@@ -12,14 +12,15 @@ import (
 type storageBucketRecord struct {
 	bun.BaseModel `bun:"table:storage_buckets"`
 
-	Name             string `bun:"name,pk"`
-	CreatedAt        string `bun:"created_at"`
-	MetadataLayout   string `bun:"metadata_layout"`
-	AccessMode       string `bun:"access_mode"`
-	AccessPolicyJSON string `bun:"access_policy_json"`
-	QuotaBytes       int64  `bun:"quota_bytes"`
-	TagsJSON         string `bun:"tags_json"`
-	Note             string `bun:"note"`
+	Name               string `bun:"name,pk"`
+	CreatedAt          string `bun:"created_at"`
+	MetadataLayout     string `bun:"metadata_layout"`
+	AccessMode         string `bun:"access_mode"`
+	AccessPolicyJSON   string `bun:"access_policy_json"`
+	ReplicationEnabled bool   `bun:"replication_enabled"`
+	QuotaBytes         int64  `bun:"quota_bytes"`
+	TagsJSON           string `bun:"tags_json"`
+	Note               string `bun:"note"`
 }
 
 type storageObjectRecord struct {
@@ -84,14 +85,15 @@ func newStorageBucketRecord(meta bucketMetadata) (storageBucketRecord, error) {
 		return storageBucketRecord{}, fmt.Errorf("encode bucket tags: %w", err)
 	}
 	return storageBucketRecord{
-		Name:             strings.TrimSpace(meta.Name),
-		CreatedAt:        formatMetadataTime(meta.CreatedAt),
-		MetadataLayout:   strings.TrimSpace(meta.MetadataLayout),
-		AccessMode:       NormalizeBucketAccessMode(meta.AccessMode),
-		AccessPolicyJSON: string(accessPolicyJSON),
-		QuotaBytes:       meta.QuotaBytes,
-		TagsJSON:         string(tagsJSON),
-		Note:             strings.TrimSpace(meta.Note),
+		Name:               strings.TrimSpace(meta.Name),
+		CreatedAt:          formatMetadataTime(meta.CreatedAt),
+		MetadataLayout:     strings.TrimSpace(meta.MetadataLayout),
+		AccessMode:         NormalizeBucketAccessMode(meta.AccessMode),
+		AccessPolicyJSON:   string(accessPolicyJSON),
+		ReplicationEnabled: meta.ReplicationEnabled,
+		QuotaBytes:         meta.QuotaBytes,
+		TagsJSON:           string(tagsJSON),
+		Note:               strings.TrimSpace(meta.Note),
 	}, nil
 }
 
@@ -101,12 +103,13 @@ func (r storageBucketRecord) BucketMetadata() (bucketMetadata, error) {
 		return bucketMetadata{}, err
 	}
 	meta := bucketMetadata{
-		Name:           strings.TrimSpace(r.Name),
-		CreatedAt:      createdAt,
-		MetadataLayout: strings.TrimSpace(r.MetadataLayout),
-		AccessMode:     NormalizeBucketAccessMode(r.AccessMode),
-		QuotaBytes:     r.QuotaBytes,
-		Note:           strings.TrimSpace(r.Note),
+		Name:               strings.TrimSpace(r.Name),
+		CreatedAt:          createdAt,
+		MetadataLayout:     strings.TrimSpace(r.MetadataLayout),
+		AccessMode:         NormalizeBucketAccessMode(r.AccessMode),
+		ReplicationEnabled: r.ReplicationEnabled,
+		QuotaBytes:         r.QuotaBytes,
+		Note:               strings.TrimSpace(r.Note),
 	}
 	if err := decodeJSONField(r.AccessPolicyJSON, &meta.AccessPolicy, BucketAccessPolicy{}); err != nil {
 		return bucketMetadata{}, fmt.Errorf("decode bucket access policy: %w", err)

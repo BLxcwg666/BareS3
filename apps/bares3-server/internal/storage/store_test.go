@@ -38,6 +38,9 @@ func TestCreateBucketAndList(t *testing.T) {
 	if created.QuotaBytes != 5*1024 {
 		t.Fatalf("unexpected bucket quota: %d", created.QuotaBytes)
 	}
+	if created.ReplicationEnabled {
+		t.Fatalf("expected replication to default off, got %+v", created)
+	}
 
 	buckets, err := store.ListBuckets(context.Background())
 	if err != nil {
@@ -51,6 +54,9 @@ func TestCreateBucketAndList(t *testing.T) {
 	}
 	if buckets[0].QuotaBytes != 5*1024 {
 		t.Fatalf("unexpected listed quota: %d", buckets[0].QuotaBytes)
+	}
+	if buckets[0].ReplicationEnabled {
+		t.Fatalf("expected listed replication to default off, got %+v", buckets[0])
 	}
 	if buckets[0].UsedBytes != 0 || buckets[0].ObjectCount != 0 {
 		t.Fatalf("unexpected empty bucket usage: %+v", buckets[0])
@@ -74,12 +80,13 @@ func TestUpdateBucketRenamesAndPersistsMetadata(t *testing.T) {
 	}
 
 	updated, err := store.UpdateBucket(ctx, UpdateBucketInput{
-		Name:       "gallery",
-		NewName:    "archive",
-		AccessMode: BucketAccessPublic,
-		QuotaBytes: 20 * 1024,
-		Tags:       []string{"media", "launch", "media"},
-		Note:       "Launch assets",
+		Name:               "gallery",
+		NewName:            "archive",
+		AccessMode:         BucketAccessPublic,
+		ReplicationEnabled: true,
+		QuotaBytes:         20 * 1024,
+		Tags:               []string{"media", "launch", "media"},
+		Note:               "Launch assets",
 	})
 	if err != nil {
 		t.Fatalf("UpdateBucket failed: %v", err)
@@ -92,6 +99,9 @@ func TestUpdateBucketRenamesAndPersistsMetadata(t *testing.T) {
 	}
 	if updated.AccessMode != BucketAccessPublic {
 		t.Fatalf("unexpected updated access mode: %s", updated.AccessMode)
+	}
+	if !updated.ReplicationEnabled {
+		t.Fatalf("expected updated replication enabled, got %+v", updated)
 	}
 	if len(updated.Tags) != 2 || updated.Tags[0] != "media" || updated.Tags[1] != "launch" {
 		t.Fatalf("unexpected updated tags: %+v", updated.Tags)
@@ -112,6 +122,9 @@ func TestUpdateBucketRenamesAndPersistsMetadata(t *testing.T) {
 	}
 	if bucket.AccessMode != BucketAccessPublic {
 		t.Fatalf("unexpected persisted access mode: %s", bucket.AccessMode)
+	}
+	if !bucket.ReplicationEnabled {
+		t.Fatalf("expected persisted replication enabled, got %+v", bucket)
 	}
 
 	object, err := store.StatObject(ctx, "archive", "notes/a.txt")

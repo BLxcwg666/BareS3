@@ -135,14 +135,15 @@ func NormalizeSyncStatus(value string) string {
 
 func replicaBucketInputFromMetadata(meta bucketMetadata) ReplicaBucketInput {
 	return ReplicaBucketInput{
-		Name:           meta.Name,
-		CreatedAt:      meta.CreatedAt,
-		MetadataLayout: meta.MetadataLayout,
-		AccessMode:     meta.AccessMode,
-		AccessPolicy:   meta.AccessPolicy,
-		QuotaBytes:     meta.QuotaBytes,
-		Tags:           cloneStringSlice(meta.Tags),
-		Note:           meta.Note,
+		Name:               meta.Name,
+		CreatedAt:          meta.CreatedAt,
+		MetadataLayout:     meta.MetadataLayout,
+		AccessMode:         meta.AccessMode,
+		AccessPolicy:       meta.AccessPolicy,
+		ReplicationEnabled: meta.ReplicationEnabled,
+		QuotaBytes:         meta.QuotaBytes,
+		Tags:               cloneStringSlice(meta.Tags),
+		Note:               meta.Note,
 	}
 }
 

@@ -30,9 +30,10 @@ func RegisterBucketRoutes(protected chi.Router, store *storage.Store, shareLinks
 
 	protected.Post("/buckets", func(w http.ResponseWriter, r *http.Request) {
 		payload := struct {
-			Name       string `json:"name"`
-			AccessMode string `json:"access_mode"`
-			QuotaBytes int64  `json:"quota_bytes"`
+			Name               string `json:"name"`
+			AccessMode         string `json:"access_mode"`
+			ReplicationEnabled bool   `json:"replication_enabled"`
+			QuotaBytes         int64  `json:"quota_bytes"`
 		}{}
 
 		decoder := json.NewDecoder(r.Body)
@@ -46,9 +47,10 @@ func RegisterBucketRoutes(protected chi.Router, store *storage.Store, shareLinks
 		}
 
 		bucket, err := store.CreateBucketWithOptions(r.Context(), storage.CreateBucketInput{
-			Name:       payload.Name,
-			AccessMode: payload.AccessMode,
-			QuotaBytes: payload.QuotaBytes,
+			Name:               payload.Name,
+			AccessMode:         payload.AccessMode,
+			ReplicationEnabled: payload.ReplicationEnabled,
+			QuotaBytes:         payload.QuotaBytes,
 		})
 		if err != nil {
 			writeStorageError(w, err)
@@ -69,11 +71,12 @@ func RegisterBucketRoutes(protected chi.Router, store *storage.Store, shareLinks
 
 	protected.Put("/buckets/{bucket}", func(w http.ResponseWriter, r *http.Request) {
 		payload := struct {
-			Name       string   `json:"name"`
-			AccessMode string   `json:"access_mode"`
-			QuotaBytes int64    `json:"quota_bytes"`
-			Tags       []string `json:"tags"`
-			Note       string   `json:"note"`
+			Name               string   `json:"name"`
+			AccessMode         string   `json:"access_mode"`
+			ReplicationEnabled bool     `json:"replication_enabled"`
+			QuotaBytes         int64    `json:"quota_bytes"`
+			Tags               []string `json:"tags"`
+			Note               string   `json:"note"`
 		}{}
 
 		decoder := json.NewDecoder(r.Body)
@@ -88,12 +91,13 @@ func RegisterBucketRoutes(protected chi.Router, store *storage.Store, shareLinks
 
 		bucketName := chi.URLParam(r, "bucket")
 		updated, err := store.UpdateBucket(r.Context(), storage.UpdateBucketInput{
-			Name:       bucketName,
-			NewName:    payload.Name,
-			AccessMode: payload.AccessMode,
-			QuotaBytes: payload.QuotaBytes,
-			Tags:       payload.Tags,
-			Note:       payload.Note,
+			Name:               bucketName,
+			NewName:            payload.Name,
+			AccessMode:         payload.AccessMode,
+			ReplicationEnabled: payload.ReplicationEnabled,
+			QuotaBytes:         payload.QuotaBytes,
+			Tags:               payload.Tags,
+			Note:               payload.Note,
 		})
 		if err != nil {
 			writeStorageError(w, err)
@@ -109,7 +113,7 @@ func RegisterBucketRoutes(protected chi.Router, store *storage.Store, shareLinks
 			}
 		}
 
-		detailParts := []string{fmt.Sprintf("Access %s", bucketAccessLabel(updated.AccessMode)), fmt.Sprintf("Quota %s", quotaLabel(updated.QuotaBytes))}
+		detailParts := []string{fmt.Sprintf("Access %s", bucketAccessLabel(updated.AccessMode)), fmt.Sprintf("Replication %t", updated.ReplicationEnabled), fmt.Sprintf("Quota %s", quotaLabel(updated.QuotaBytes))}
 		if bucketName != updated.Name {
 			detailParts = append([]string{fmt.Sprintf("Renamed from %s", bucketName)}, detailParts...)
 		}

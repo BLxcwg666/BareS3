@@ -39,14 +39,15 @@ func (s *Store) ApplyReplicaBucket(ctx context.Context, input ReplicaBucketInput
 	}
 
 	meta := bucketMetadata{
-		Name:           name,
-		CreatedAt:      input.CreatedAt.UTC(),
-		MetadataLayout: strings.TrimSpace(input.MetadataLayout),
-		AccessMode:     accessMode,
-		AccessPolicy:   accessPolicy,
-		QuotaBytes:     input.QuotaBytes,
-		Tags:           normalizeBucketTags(input.Tags),
-		Note:           strings.TrimSpace(input.Note),
+		Name:               name,
+		CreatedAt:          input.CreatedAt.UTC(),
+		MetadataLayout:     strings.TrimSpace(input.MetadataLayout),
+		AccessMode:         accessMode,
+		AccessPolicy:       accessPolicy,
+		ReplicationEnabled: input.ReplicationEnabled,
+		QuotaBytes:         input.QuotaBytes,
+		Tags:               normalizeBucketTags(input.Tags),
+		Note:               strings.TrimSpace(input.Note),
 	}
 	if meta.CreatedAt.IsZero() {
 		meta.CreatedAt = time.Now().UTC()

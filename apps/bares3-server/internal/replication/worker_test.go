@@ -54,9 +54,10 @@ func TestWorkerSyncOnceReplicatesMultipartObjects(t *testing.T) {
 	leaderCfg := newSyncConfig(t, filepath.Join(t.TempDir(), "leader"))
 	leaderStore := newStoreForTest(t, leaderCfg)
 	if _, err := leaderStore.CreateBucketWithOptions(ctx, storage.CreateBucketInput{
-		Name:       "gallery",
-		AccessMode: storage.BucketAccessPublic,
-		QuotaBytes: 1024,
+		Name:               "gallery",
+		AccessMode:         storage.BucketAccessPublic,
+		ReplicationEnabled: true,
+		QuotaBytes:         1024,
 	}); err != nil {
 		t.Fatalf("CreateBucketWithOptions failed: %v", err)
 	}
@@ -184,7 +185,7 @@ func TestWorkerSyncOnceDeletesRemovedObjectsAndBuckets(t *testing.T) {
 	leaderCfg := newSyncConfig(t, filepath.Join(t.TempDir(), "leader"))
 	leaderStore := newStoreForTest(t, leaderCfg)
 	if _, err := leaderStore.CreateBucket(ctx, "gallery", 0); err != nil {
-		t.Fatalf("CreateBucket failed: %v", err)
+		t.Fatalf("CreateBucketWithOptions failed: %v", err)
 	}
 	if _, err := leaderStore.PutObject(ctx, storage.PutObjectInput{Bucket: "gallery", Key: "notes/a.txt", Body: bytes.NewBufferString("hello")}); err != nil {
 		t.Fatalf("PutObject failed: %v", err)
@@ -224,7 +225,7 @@ func TestWorkerSyncOnceDeletesRemovedObjectsAndBuckets(t *testing.T) {
 	}
 }
 
-func TestLeaderHandlerReturnsIncrementalManifestFromCursor(t *testing.T) {
+func TestWorkerSyncOnceSkipsBucketsWithoutReplicationEnabled(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -232,6 +233,95 @@ func TestLeaderHandlerReturnsIncrementalManifestFromCursor(t *testing.T) {
 	leaderStore := newStoreForTest(t, leaderCfg)
 	if _, err := leaderStore.CreateBucket(ctx, "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	if _, err := leaderStore.PutObject(ctx, storage.PutObjectInput{Bucket: "gallery", Key: "notes/a.txt", Body: bytes.NewBufferString("hello")}); err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	server := newLeaderServer(t, leaderCfg, leaderStore)
+	defer server.Close()
+
+	followerCfg := newSyncConfig(t, filepath.Join(t.TempDir(), "follower"))
+	followerStore := newStoreForTest(t, followerCfg)
+	if _, err := configureRemoteForTest(ctx, leaderCfg, followerCfg, server.URL, "Leader A", remotes.BootstrapModeFull); err != nil {
+		t.Fatalf("configureRemoteForTest failed: %v", err)
+	}
+	if _, err := followerStore.SetSyncSettings(ctx, storage.SyncSettings{Enabled: true}); err != nil {
+		t.Fatalf("SetSyncSettings failed: %v", err)
+	}
+
+	worker := replication.NewWorker(followerCfg, followerStore, zap.NewNop())
+	if err := worker.SyncOnce(ctx); err != nil {
+		t.Fatalf("SyncOnce failed: %v", err)
+	}
+
+	if _, err := followerStore.GetBucket(ctx, "gallery"); !errors.Is(err, storage.ErrBucketNotFound) {
+		t.Fatalf("expected disabled bucket to stay unsynced, got %v", err)
+	}
+
+	if _, err := leaderStore.UpdateBucket(ctx, storage.UpdateBucketInput{Name: "gallery", ReplicationEnabled: true, QuotaBytes: 0}); err != nil {
+		t.Fatalf("UpdateBucket failed: %v", err)
+	}
+	if err := worker.SyncOnce(ctx); err != nil {
+		t.Fatalf("second SyncOnce failed: %v", err)
+	}
+
+	if _, err := followerStore.StatObject(ctx, "gallery", "notes/a.txt"); err != nil {
+		t.Fatalf("expected object after enabling replication, got %v", err)
+	}
+	if bucket, err := followerStore.GetBucket(ctx, "gallery"); err != nil {
+		t.Fatalf("expected bucket after enabling replication, got %v", err)
+	} else if !bucket.ReplicationEnabled {
+		t.Fatalf("expected replicated bucket flag to stay enabled, got %+v", bucket)
+	}
+}
+
+func TestLeaderHandlerMarksDisabledReplicationBucketAsDeleted(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	leaderCfg := newSyncConfig(t, filepath.Join(t.TempDir(), "leader"))
+	leaderStore := newStoreForTest(t, leaderCfg)
+	if _, err := leaderStore.CreateBucketWithOptions(ctx, storage.CreateBucketInput{Name: "gallery", ReplicationEnabled: true}); err != nil {
+		t.Fatalf("CreateBucketWithOptions failed: %v", err)
+	}
+
+	server := newLeaderServer(t, leaderCfg, leaderStore)
+	defer server.Close()
+	remoteToken, err := issueAccessTokenForTest(ctx, leaderCfg)
+	if err != nil {
+		t.Fatalf("issueAccessTokenForTest failed: %v", err)
+	}
+
+	fullManifest := fetchManifestForTest(t, server.URL+"/internal/sync/manifest", replication.HeaderAccessToken, remoteToken)
+	if len(fullManifest.Buckets) != 1 || fullManifest.Buckets[0].Name != "gallery" {
+		t.Fatalf("expected enabled bucket in full manifest, got %+v", fullManifest.Buckets)
+	}
+
+	if _, err := leaderStore.UpdateBucket(ctx, storage.UpdateBucketInput{Name: "gallery", ReplicationEnabled: false, QuotaBytes: 0}); err != nil {
+		t.Fatalf("UpdateBucket disable failed: %v", err)
+	}
+	if _, err := leaderStore.PutObject(ctx, storage.PutObjectInput{Bucket: "gallery", Key: "notes/ignored.txt", Body: bytes.NewBufferString("ignored")}); err != nil {
+		t.Fatalf("PutObject after disable failed: %v", err)
+	}
+
+	deltaManifest := fetchManifestForTest(t, server.URL+"/internal/sync/manifest?cursor="+fmt.Sprintf("%d", fullManifest.Cursor), replication.HeaderAccessToken, remoteToken)
+	if len(deltaManifest.DeletedBuckets) != 1 || deltaManifest.DeletedBuckets[0] != "gallery" {
+		t.Fatalf("expected disabled bucket to be treated as deleted, got %+v", deltaManifest.DeletedBuckets)
+	}
+	if len(deltaManifest.Objects) != 0 {
+		t.Fatalf("expected disabled bucket object updates to be filtered, got %+v", deltaManifest.Objects)
+	}
+}
+
+func TestLeaderHandlerReturnsIncrementalManifestFromCursor(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	leaderCfg := newSyncConfig(t, filepath.Join(t.TempDir(), "leader"))
+	leaderStore := newStoreForTest(t, leaderCfg)
+	if _, err := leaderStore.CreateBucketWithOptions(ctx, storage.CreateBucketInput{Name: "gallery", ReplicationEnabled: true}); err != nil {
+		t.Fatalf("CreateBucketWithOptions failed: %v", err)
 	}
 	if _, err := leaderStore.PutObject(ctx, storage.PutObjectInput{Bucket: "gallery", Key: "notes/a.txt", Body: bytes.NewBufferString("hello")}); err != nil {
 		t.Fatalf("PutObject failed: %v", err)
@@ -391,8 +481,8 @@ func TestWorkerSyncOnceReplicatesShareLinks(t *testing.T) {
 	leaderCfg := newSyncConfig(t, filepath.Join(t.TempDir(), "leader"))
 	leaderStore := newStoreForTest(t, leaderCfg)
 	leaderLinks := newReplicatedShareLinksForTest(t, leaderCfg, leaderStore)
-	if _, err := leaderStore.CreateBucket(ctx, "gallery", 0); err != nil {
-		t.Fatalf("CreateBucket failed: %v", err)
+	if _, err := leaderStore.CreateBucketWithOptions(ctx, storage.CreateBucketInput{Name: "gallery", ReplicationEnabled: true}); err != nil {
+		t.Fatalf("CreateBucketWithOptions failed: %v", err)
 	}
 	created, err := leaderLinks.Create(ctx, sharelink.CreateInput{Bucket: "gallery", Key: "notes/readme.txt", Filename: "readme.txt", Expires: time.Hour, CreatedBy: "admin"})
 	if err != nil {
@@ -432,8 +522,8 @@ func TestWorkerSyncOnceKeepsExistingObjectReadableWhileUpdating(t *testing.T) {
 	ctx := context.Background()
 	leaderCfg := newSyncConfig(t, filepath.Join(t.TempDir(), "leader"))
 	leaderStore := newStoreForTest(t, leaderCfg)
-	if _, err := leaderStore.CreateBucket(ctx, "gallery", 0); err != nil {
-		t.Fatalf("CreateBucket failed: %v", err)
+	if _, err := leaderStore.CreateBucketWithOptions(ctx, storage.CreateBucketInput{Name: "gallery", ReplicationEnabled: true}); err != nil {
+		t.Fatalf("CreateBucketWithOptions failed: %v", err)
 	}
 	if _, err := leaderStore.PutObject(ctx, storage.PutObjectInput{Bucket: "gallery", Key: "notes/readme.txt", Body: bytes.NewBufferString("new version")}); err != nil {
 		t.Fatalf("leader PutObject failed: %v", err)
@@ -508,8 +598,8 @@ func TestWorkerSyncOnceCatchesUpAcrossPagedIncrementalManifests(t *testing.T) {
 	ctx := context.Background()
 	leaderCfg := newSyncConfig(t, filepath.Join(t.TempDir(), "leader"))
 	leaderStore := newStoreForTest(t, leaderCfg)
-	if _, err := leaderStore.CreateBucket(ctx, "gallery", 0); err != nil {
-		t.Fatalf("CreateBucket failed: %v", err)
+	if _, err := leaderStore.CreateBucketWithOptions(ctx, storage.CreateBucketInput{Name: "gallery", ReplicationEnabled: true}); err != nil {
+		t.Fatalf("CreateBucketWithOptions failed: %v", err)
 	}
 	for i := range 5005 {
 		key := fmt.Sprintf("notes/%04d.txt", i)

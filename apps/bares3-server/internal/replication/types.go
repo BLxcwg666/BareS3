@@ -44,14 +44,15 @@ type DeletedObjectManifest struct {
 }
 
 type BucketManifest struct {
-	Name           string                     `json:"name"`
-	CreatedAt      time.Time                  `json:"created_at"`
-	MetadataLayout string                     `json:"metadata_layout"`
-	AccessMode     string                     `json:"access_mode"`
-	AccessPolicy   storage.BucketAccessPolicy `json:"access_policy"`
-	QuotaBytes     int64                      `json:"quota_bytes"`
-	Tags           []string                   `json:"tags,omitempty"`
-	Note           string                     `json:"note,omitempty"`
+	Name               string                     `json:"name"`
+	CreatedAt          time.Time                  `json:"created_at"`
+	MetadataLayout     string                     `json:"metadata_layout"`
+	AccessMode         string                     `json:"access_mode"`
+	AccessPolicy       storage.BucketAccessPolicy `json:"access_policy"`
+	ReplicationEnabled bool                       `json:"replication_enabled"`
+	QuotaBytes         int64                      `json:"quota_bytes"`
+	Tags               []string                   `json:"tags,omitempty"`
+	Note               string                     `json:"note,omitempty"`
 }
 
 type ObjectManifest struct {

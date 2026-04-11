@@ -83,6 +83,12 @@ var storageMetadataMigrations = []statedb.Migration{
 			`CREATE INDEX IF NOT EXISTS storage_bucket_usage_history_bucket_recorded_idx ON storage_bucket_usage_history (bucket, recorded_at, id)`,
 		},
 	},
+	{
+		Name: "storage_buckets_replication_enabled_v1",
+		Statements: []string{
+			`ALTER TABLE storage_buckets ADD COLUMN replication_enabled INTEGER NOT NULL DEFAULT 0`,
+		},
+	},
 }
 
 type metadataStore struct {
@@ -280,6 +286,7 @@ func (s *metadataStore) upsertBucket(meta bucketMetadata) error {
 		Set("metadata_layout = EXCLUDED.metadata_layout").
 		Set("access_mode = EXCLUDED.access_mode").
 		Set("access_policy_json = EXCLUDED.access_policy_json").
+		Set("replication_enabled = EXCLUDED.replication_enabled").
 		Set("quota_bytes = EXCLUDED.quota_bytes").
 		Set("tags_json = EXCLUDED.tags_json").
 		Set("note = EXCLUDED.note").
@@ -310,6 +317,7 @@ func (s *metadataStore) renameBucket(sourceName, destinationName string, meta bu
 		Set("metadata_layout = ?", record.MetadataLayout).
 		Set("access_mode = ?", record.AccessMode).
 		Set("access_policy_json = ?", record.AccessPolicyJSON).
+		Set("replication_enabled = ?", record.ReplicationEnabled).
 		Set("quota_bytes = ?", record.QuotaBytes).
 		Set("tags_json = ?", record.TagsJSON).
 		Set("note = ?", record.Note).

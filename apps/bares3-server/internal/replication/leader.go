@@ -107,7 +107,7 @@ func buildManifest(ctx context.Context, dataDir string, store *storage.Store, af
 }
 
 func buildFullManifest(ctx context.Context, dataDir string, store *storage.Store, cursor int64, logger *zap.Logger) (Manifest, error) {
-	buckets, err := store.ListBuckets(ctx)
+	buckets, err := replicatedBuckets(ctx, store)
 	if err != nil {
 		return Manifest{}, err
 	}
@@ -173,24 +173,60 @@ func buildIncrementalManifest(ctx context.Context, store *storage.Store, afterCu
 	bucketDeletes := make(map[string]struct{})
 	objectUpserts := make(map[string]ObjectManifest)
 	objectDeletes := make(map[string]DeletedObjectManifest)
+	replicatedByName := make(map[string]bool)
+	replicationState := func(bucket string) (bool, error) {
+		if enabled, ok := replicatedByName[bucket]; ok {
+			return enabled, nil
+		}
+		info, err := store.GetBucket(ctx, bucket)
+		if err != nil {
+			if errors.Is(err, storage.ErrBucketNotFound) {
+				replicatedByName[bucket] = false
+				return false, nil
+			}
+			return false, err
+		}
+		replicatedByName[bucket] = info.ReplicationEnabled
+		return info.ReplicationEnabled, nil
+	}
 
 	for _, event := range events {
 		manifest.Cursor = event.Cursor
 		switch event.Kind {
 		case storage.SyncEventBucketUpsert:
-			delete(bucketDeletes, event.Bucket)
 			if event.BucketData != nil {
-				bucketUpserts[event.Bucket] = bucketManifestFromReplicaBucket(*event.BucketData)
+				replicatedByName[event.Bucket] = event.BucketData.ReplicationEnabled
+				if event.BucketData.ReplicationEnabled {
+					delete(bucketDeletes, event.Bucket)
+					bucketUpserts[event.Bucket] = bucketManifestFromReplicaBucket(*event.BucketData)
+				} else {
+					delete(bucketUpserts, event.Bucket)
+					bucketDeletes[event.Bucket] = struct{}{}
+				}
 			}
 		case storage.SyncEventBucketDelete:
 			delete(bucketUpserts, event.Bucket)
 			bucketDeletes[event.Bucket] = struct{}{}
 		case storage.SyncEventObjectUpsert:
+			enabled, err := replicationState(event.Bucket)
+			if err != nil {
+				return Manifest{}, err
+			}
+			if !enabled {
+				continue
+			}
 			delete(objectDeletes, objectID(event.Bucket, event.Key))
 			if event.ObjectData != nil {
 				objectUpserts[objectID(event.Bucket, event.Key)] = objectManifestFromReplicaObject(*event.ObjectData)
 			}
 		case storage.SyncEventObjectDelete:
+			enabled, err := replicationState(event.Bucket)
+			if err != nil {
+				return Manifest{}, err
+			}
+			if !enabled {
+				continue
+			}
 			delete(objectUpserts, objectID(event.Bucket, event.Key))
 			objectDeletes[objectID(event.Bucket, event.Key)] = DeletedObjectManifest{Bucket: event.Bucket, Key: event.Key}
 		case storage.SyncEventDomainUpdate:
@@ -227,13 +263,15 @@ func buildIncrementalManifest(ctx context.Context, store *storage.Store, afterCu
 }
 
 func buildSourceStatus(ctx context.Context, store *storage.Store) (SourceStatus, error) {
-	usedBytes, objectCount, err := store.UsageSummary(ctx)
+	buckets, err := replicatedBuckets(ctx, store)
 	if err != nil {
 		return SourceStatus{}, err
 	}
-	buckets, err := store.ListBuckets(ctx)
-	if err != nil {
-		return SourceStatus{}, err
+	var usedBytes int64
+	objectCount := 0
+	for _, bucket := range buckets {
+		usedBytes += bucket.UsedBytes
+		objectCount += bucket.ObjectCount
 	}
 	cursor, err := store.CurrentSyncCursor(ctx)
 	if err != nil {
@@ -285,28 +323,44 @@ func cloneMap(input map[string]string) map[string]string {
 
 func bucketManifestFromBucketInfo(bucket storage.BucketInfo, access storage.BucketAccessConfig) BucketManifest {
 	return BucketManifest{
-		Name:           bucket.Name,
-		CreatedAt:      bucket.CreatedAt,
-		MetadataLayout: bucket.MetadataLayout,
-		AccessMode:     access.Mode,
-		AccessPolicy:   access.Policy,
-		QuotaBytes:     bucket.QuotaBytes,
-		Tags:           append([]string(nil), bucket.Tags...),
-		Note:           bucket.Note,
+		Name:               bucket.Name,
+		CreatedAt:          bucket.CreatedAt,
+		MetadataLayout:     bucket.MetadataLayout,
+		AccessMode:         access.Mode,
+		AccessPolicy:       access.Policy,
+		ReplicationEnabled: bucket.ReplicationEnabled,
+		QuotaBytes:         bucket.QuotaBytes,
+		Tags:               append([]string(nil), bucket.Tags...),
+		Note:               bucket.Note,
 	}
 }
 
 func bucketManifestFromReplicaBucket(bucket storage.ReplicaBucketInput) BucketManifest {
 	return BucketManifest{
-		Name:           bucket.Name,
-		CreatedAt:      bucket.CreatedAt,
-		MetadataLayout: bucket.MetadataLayout,
-		AccessMode:     bucket.AccessMode,
-		AccessPolicy:   bucket.AccessPolicy,
-		QuotaBytes:     bucket.QuotaBytes,
-		Tags:           append([]string(nil), bucket.Tags...),
-		Note:           bucket.Note,
+		Name:               bucket.Name,
+		CreatedAt:          bucket.CreatedAt,
+		MetadataLayout:     bucket.MetadataLayout,
+		AccessMode:         bucket.AccessMode,
+		AccessPolicy:       bucket.AccessPolicy,
+		ReplicationEnabled: bucket.ReplicationEnabled,
+		QuotaBytes:         bucket.QuotaBytes,
+		Tags:               append([]string(nil), bucket.Tags...),
+		Note:               bucket.Note,
 	}
+}
+
+func replicatedBuckets(ctx context.Context, store *storage.Store) ([]storage.BucketInfo, error) {
+	buckets, err := store.ListBuckets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]storage.BucketInfo, 0, len(buckets))
+	for _, bucket := range buckets {
+		if bucket.ReplicationEnabled {
+			filtered = append(filtered, bucket)
+		}
+	}
+	return filtered, nil
 }
 
 func objectManifestFromObjectInfo(object storage.ObjectInfo) ObjectManifest {

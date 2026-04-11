@@ -83,13 +83,15 @@ func serveSyncStream(w http.ResponseWriter, r *http.Request, store *storage.Stor
 }
 
 func currentStreamSourceStatus(ctx context.Context, store *storage.Store) (SourceStatus, error) {
-	usedBytes, objectCount, err := store.UsageSummary(ctx)
+	buckets, err := replicatedBuckets(ctx, store)
 	if err != nil {
 		return SourceStatus{}, err
 	}
-	buckets, err := store.ListBuckets(ctx)
-	if err != nil {
-		return SourceStatus{}, err
+	var usedBytes int64
+	objectCount := 0
+	for _, bucket := range buckets {
+		usedBytes += bucket.UsedBytes
+		objectCount += bucket.ObjectCount
 	}
 	cursor, err := store.CurrentSyncCursor(ctx)
 	if err != nil {
