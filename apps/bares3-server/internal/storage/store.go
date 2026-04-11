@@ -601,9 +601,13 @@ func (s *Store) ListObjectsPage(ctx context.Context, bucket string, options List
 	}
 
 	objects = filterObjectsByQuery(objects, options.Query)
+	if strings.TrimSpace(options.Delimiter) != "" {
+		return buildDelimitedObjectsPage(objects, options.Prefix, options.Delimiter, options.Offset, options.Limit), nil
+	}
+
 	objects = applyObjectsAfterCursor(objects, options.After)
 
-	page := ListObjectsPage{Items: objects}
+	page := ListObjectsPage{Items: objects, TotalCount: len(objects)}
 	if options.Limit > 0 && len(objects) > options.Limit {
 		page.Items = objects[:options.Limit]
 		page.HasMore = true
@@ -611,6 +615,100 @@ func (s *Store) ListObjectsPage(ctx context.Context, bucket string, options List
 	}
 
 	return page, nil
+}
+
+type delimitedListEntry struct {
+	kind   string
+	name   string
+	prefix string
+	object ObjectInfo
+}
+
+func buildDelimitedObjectsPage(objects []ObjectInfo, prefix, delimiter string, offset, limit int) ListObjectsPage {
+	trimmedDelimiter := strings.TrimSpace(delimiter)
+	if trimmedDelimiter == "" {
+		return ListObjectsPage{Items: objects, TotalCount: len(objects)}
+	}
+
+	folders := make(map[string]string)
+	files := make([]ObjectInfo, 0, len(objects))
+	for _, object := range objects {
+		relative := object.Key
+		if prefix != "" {
+			if !strings.HasPrefix(relative, prefix) {
+				continue
+			}
+			relative = strings.TrimPrefix(relative, prefix)
+		}
+		if relative == "" {
+			continue
+		}
+
+		if index := strings.Index(relative, trimmedDelimiter); index >= 0 {
+			name := relative[:index]
+			if name == "" {
+				continue
+			}
+			folders[prefix+name+trimmedDelimiter] = name
+			continue
+		}
+
+		files = append(files, object)
+	}
+
+	folderEntries := make([]delimitedListEntry, 0, len(folders))
+	for folderPrefix, name := range folders {
+		folderEntries = append(folderEntries, delimitedListEntry{
+			kind:   "prefix",
+			name:   name,
+			prefix: folderPrefix,
+		})
+	}
+	sort.Slice(folderEntries, func(i, j int) bool {
+		return folderEntries[i].name < folderEntries[j].name
+	})
+
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].Key < files[j].Key
+	})
+	fileEntries := make([]delimitedListEntry, 0, len(files))
+	for _, object := range files {
+		name := strings.TrimPrefix(object.Key, prefix)
+		fileEntries = append(fileEntries, delimitedListEntry{
+			kind:   "object",
+			name:   name,
+			object: object,
+		})
+	}
+
+	entries := append(folderEntries, fileEntries...)
+	totalCount := len(entries)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= totalCount {
+		return ListObjectsPage{Items: []ObjectInfo{}, Prefixes: []string{}, TotalCount: totalCount}
+	}
+
+	end := totalCount
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+	pageEntries := entries[offset:end]
+
+	page := ListObjectsPage{
+		Items:      make([]ObjectInfo, 0, len(pageEntries)),
+		Prefixes:   make([]string, 0, len(pageEntries)),
+		TotalCount: totalCount,
+	}
+	for _, entry := range pageEntries {
+		if entry.kind == "prefix" {
+			page.Prefixes = append(page.Prefixes, entry.prefix)
+			continue
+		}
+		page.Items = append(page.Items, entry.object)
+	}
+	return page
 }
 
 func (s *Store) collectObjects(ctx context.Context, bucket, prefix string) ([]ObjectInfo, error) {

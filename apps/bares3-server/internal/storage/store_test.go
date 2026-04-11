@@ -525,6 +525,61 @@ func TestListObjectsPageSupportsQueryAndCursor(t *testing.T) {
 	}
 }
 
+func TestListObjectsPageSupportsDelimiterAndOffset(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	fixtures := []string{
+		"Basic/alpha.txt",
+		"Basic/beta.txt",
+		"Backups/2026/alpha.txt",
+		"Backups/2026/beta.txt",
+		"404.html",
+	}
+	for _, key := range fixtures {
+		if _, err := store.PutObject(context.Background(), PutObjectInput{
+			Bucket: "gallery",
+			Key:    key,
+			Body:   bytes.NewBufferString(key),
+		}); err != nil {
+			t.Fatalf("PutObject(%s) failed: %v", key, err)
+		}
+	}
+
+	firstPage, err := store.ListObjectsPage(context.Background(), "gallery", ListObjectsOptions{
+		Delimiter: "/",
+		Limit:     2,
+	})
+	if err != nil {
+		t.Fatalf("ListObjectsPage(first) failed: %v", err)
+	}
+	if firstPage.TotalCount != 3 {
+		t.Fatalf("expected 3 browser entries, got %+v", firstPage)
+	}
+	if len(firstPage.Prefixes) != 2 || firstPage.Prefixes[0] != "Backups/" || firstPage.Prefixes[1] != "Basic/" {
+		t.Fatalf("unexpected first page prefixes: %+v", firstPage.Prefixes)
+	}
+	if len(firstPage.Items) != 0 {
+		t.Fatalf("expected first page to contain only prefixes, got %+v", firstPage.Items)
+	}
+
+	secondPage, err := store.ListObjectsPage(context.Background(), "gallery", ListObjectsOptions{
+		Delimiter: "/",
+		Offset:    2,
+		Limit:     2,
+	})
+	if err != nil {
+		t.Fatalf("ListObjectsPage(second) failed: %v", err)
+	}
+	if len(secondPage.Prefixes) != 0 || len(secondPage.Items) != 1 || secondPage.Items[0].Key != "404.html" {
+		t.Fatalf("unexpected second page: %+v", secondPage)
+	}
+}
+
 func TestDeleteObjectRemovesDataAndMetadata(t *testing.T) {
 	t.Parallel()
 

@@ -163,14 +163,18 @@ type ReplicaObjectInput struct {
 }
 
 type ListObjectsOptions struct {
-	Prefix string
-	Query  string
-	After  string
-	Limit  int
+	Prefix    string
+	Query     string
+	After     string
+	Offset    int
+	Limit     int
+	Delimiter string
 }
 
 type ListObjectsPage struct {
 	Items      []ObjectInfo
+	Prefixes   []string
+	TotalCount int
 	HasMore    bool
 	NextCursor string
 }

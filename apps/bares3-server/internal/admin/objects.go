@@ -18,6 +18,7 @@ import (
 func RegisterObjectRoutes(protected chi.Router, store *storage.Store, shareLinks *sharelink.Store, auditRecorder *auditlog.Recorder, logger *zap.Logger) {
 	protected.Get("/buckets/{bucket}/objects", func(w http.ResponseWriter, r *http.Request) {
 		limit := 0
+		offset := 0
 		if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
 			parsed, err := strconv.Atoi(rawLimit)
 			if err != nil || parsed < 0 {
@@ -29,12 +30,25 @@ func RegisterObjectRoutes(protected chi.Router, store *storage.Store, shareLinks
 			}
 			limit = parsed
 		}
+		if rawOffset := strings.TrimSpace(r.URL.Query().Get("offset")); rawOffset != "" {
+			parsed, err := strconv.Atoi(rawOffset)
+			if err != nil || parsed < 0 {
+				httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+					"status":  "error",
+					"message": "offset must be a non-negative integer",
+				})
+				return
+			}
+			offset = parsed
+		}
 
 		page, err := store.ListObjectsPage(r.Context(), chi.URLParam(r, "bucket"), storage.ListObjectsOptions{
-			Prefix: r.URL.Query().Get("prefix"),
-			Query:  r.URL.Query().Get("query"),
-			After:  r.URL.Query().Get("cursor"),
-			Limit:  limit,
+			Prefix:    r.URL.Query().Get("prefix"),
+			Query:     r.URL.Query().Get("query"),
+			After:     r.URL.Query().Get("cursor"),
+			Offset:    offset,
+			Limit:     limit,
+			Delimiter: r.URL.Query().Get("delimiter"),
 		})
 		if err != nil {
 			writeStorageError(w, err)
@@ -42,6 +56,8 @@ func RegisterObjectRoutes(protected chi.Router, store *storage.Store, shareLinks
 		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"items":       page.Items,
+			"prefixes":    page.Prefixes,
+			"total_count": page.TotalCount,
 			"has_more":    page.HasMore,
 			"next_cursor": page.NextCursor,
 		})

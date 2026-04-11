@@ -367,6 +367,79 @@ func TestObjectListingSupportsPaginationAndSearch(t *testing.T) {
 	}
 }
 
+func TestObjectListingSupportsDelimitedPagination(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
+	hash, err := consoleauth.HashPassword("secret-password")
+	if err != nil {
+		t.Fatalf("HashPassword failed: %v", err)
+	}
+	cfg.Auth.Console.PasswordHash = hash
+	cfg.Auth.Console.SessionSecret = "test-session-secret"
+
+	store := newStorageStoreForTest(t, cfg)
+	ctx := context.Background()
+	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	for _, key := range []string{"Backups/2026/alpha.txt", "Basic/alpha.txt", "404.html"} {
+		if _, err := store.PutObject(ctx, storage.PutObjectInput{Bucket: "gallery", Key: key, Body: bytes.NewBufferString(key)}); err != nil {
+			t.Fatalf("PutObject(%s) failed: %v", key, err)
+		}
+	}
+
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
+	cookie := loginCookie(t, handler)
+
+	listRequest := httptest.NewRequest(http.MethodGet, "/api/v1/buckets/gallery/objects?delimiter=%2F&limit=2", nil)
+	addSession(listRequest, cookie)
+	listRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(listRecorder, listRequest)
+	if listRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected delimited list status: %d body=%s", listRecorder.Code, listRecorder.Body.String())
+	}
+	listPayload := struct {
+		Items []struct {
+			Key string `json:"key"`
+		} `json:"items"`
+		Prefixes   []string `json:"prefixes"`
+		TotalCount int      `json:"total_count"`
+	}{}
+	if err := json.Unmarshal(listRecorder.Body.Bytes(), &listPayload); err != nil {
+		t.Fatalf("unmarshal delimited list payload: %v", err)
+	}
+	if listPayload.TotalCount != 3 || len(listPayload.Prefixes) != 2 || len(listPayload.Items) != 0 {
+		t.Fatalf("unexpected first delimited page: %+v", listPayload)
+	}
+
+	nextRequest := httptest.NewRequest(http.MethodGet, "/api/v1/buckets/gallery/objects?delimiter=%2F&limit=2&offset=2", nil)
+	addSession(nextRequest, cookie)
+	nextRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(nextRecorder, nextRequest)
+	if nextRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected second delimited list status: %d body=%s", nextRecorder.Code, nextRecorder.Body.String())
+	}
+	nextPayload := struct {
+		Items []struct {
+			Key string `json:"key"`
+		} `json:"items"`
+		Prefixes []string `json:"prefixes"`
+	}{}
+	if err := json.Unmarshal(nextRecorder.Body.Bytes(), &nextPayload); err != nil {
+		t.Fatalf("unmarshal second delimited payload: %v", err)
+	}
+	if len(nextPayload.Prefixes) != 0 || len(nextPayload.Items) != 1 || nextPayload.Items[0].Key != "404.html" {
+		t.Fatalf("unexpected second delimited page: %+v", nextPayload)
+	}
+}
+
 func TestGlobalSearchEndpointReturnsBucketAndObjectHits(t *testing.T) {
 	t.Parallel()
 
