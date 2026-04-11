@@ -218,19 +218,26 @@ a {
 }
 
 .shell-sider {
-  position: sticky !important;
-  top: 0;
-  align-self: flex-start;
-  height: 100vh;
-  overflow: hidden;
-  border-right: 1px solid var(--line);
-  background: var(--surface) !important;
+  --shell-sider-width: 228px;
+  position: relative !important;
+  flex: 0 0 var(--shell-sider-width) !important;
+  width: var(--shell-sider-width) !important;
+  min-width: var(--shell-sider-width) !important;
+  max-width: var(--shell-sider-width) !important;
+  overflow: visible;
 }
 
 .sider-inner {
+  position: fixed;
+  top: 0;
+  left: 0;
   display: flex;
   flex-direction: column;
   height: 100vh;
+  width: var(--shell-sider-width);
+  overflow: hidden;
+  border-right: 1px solid var(--line);
+  background: var(--surface);
 }
 
 .brand-row {
