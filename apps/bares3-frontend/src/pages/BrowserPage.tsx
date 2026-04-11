@@ -388,6 +388,7 @@ export function BrowserPage() {
   const currentPrefix = selectedBucket === requestedBucket ? requestedPath : '';
   const selectedBucketInfo = useMemo(() => buckets.find((item) => item.name === selectedBucket) ?? null, [buckets, selectedBucket]);
   const selectedBucketIsPublic = selectedBucketInfo?.access_mode === 'public';
+  const selectedBucketSyncEnabled = syncEnabled && Boolean(selectedBucketInfo?.replication_enabled);
   const pathSignature = `${selectedBucket ?? ''}:${currentPrefix}`;
   const { items: objects, prefixes: objectPrefixes, totalCount: objectTotalCount, loading: objectsLoading, refresh } = useBucketObjects(
     selectedBucket,
@@ -1482,7 +1483,7 @@ export function BrowserPage() {
   );
 
   const renderObjectSyncStatus = (object: ObjectInfo) => {
-    if (!syncEnabled) {
+    if (!selectedBucketSyncEnabled) {
       return null;
     }
 
@@ -1539,6 +1540,10 @@ export function BrowserPage() {
   const renderInspectorSyncTag = (object: ObjectInfo) => {
     if (!syncEnabled) {
       return null;
+    }
+
+    if (!selectedBucketInfo?.replication_enabled) {
+      return <Tag>Off</Tag>;
     }
 
     const state = object.sync_status?.status;
@@ -2024,7 +2029,7 @@ export function BrowserPage() {
                                 },
                               ),
                               renderInspectorRow('ETag', inspectorObject.etag || 'Not set'),
-                              ...(syncEnabled
+                              ...(selectedBucketSyncEnabled
                                 ? [
                                     renderInspectorRow('Sync', syncStatusLabel(inspectorObject.sync_status?.status)),
                                     renderInspectorRow('Checksum', inspectorObject.sync_status?.expected_checksum_sha256 || 'Not tracked'),

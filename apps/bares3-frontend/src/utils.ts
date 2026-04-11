@@ -227,7 +227,7 @@ export function buildBucketDisplayRows(buckets: BucketInfo[]): BucketDisplayRow[
   return buckets.map((bucket) => {
     const note = bucket.note?.trim() ?? '';
 
-    const policyParts = [bucket.metadata_layout ? `Metadata: ${bucket.metadata_layout}` : '', `Created: ${formatDateTime(bucket.created_at)}`].filter(Boolean);
+    const policyParts = [bucket.metadata_layout ? `Metadata: ${bucket.metadata_layout}` : '', `Created: ${formatDateTime(bucket.created_at)}`, `Replication: ${bucket.replication_enabled ? 'On' : 'Off'}`].filter(Boolean);
 
     return {
       name: bucket.name,

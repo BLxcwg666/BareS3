@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { App as AntApp, Button, Drawer, Form, Input, InputNumber, Select, Skeleton, Space } from 'antd';
+import { App as AntApp, Button, Drawer, Form, Input, InputNumber, Select, Skeleton, Space, Switch } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import { listBucketUsageHistory, updateBucket, type BucketInfo, type BucketUsageSample } from '../api';
 import { bucketAccessModeOptions, sizeUnitOptions } from '../constants';
@@ -52,6 +52,7 @@ export function BucketEditDrawer({
     form.setFieldsValue({
       name: bucket.name,
       accessMode: bucket.access_mode,
+      replicationEnabled: bucket.replication_enabled,
       quotaValue: nextQuota.value,
       quotaUnit: nextQuota.unit,
       tags: bucket.tags ?? [],
@@ -123,6 +124,7 @@ export function BucketEditDrawer({
       const updated = await updateBucket(bucket.name, {
         name: values.name.trim(),
         access_mode: values.accessMode,
+        replication_enabled: values.replicationEnabled,
         quota_bytes: quotaBytes,
         tags: normalizeTags(values.tags),
         note: values.note.trim(),
@@ -203,7 +205,7 @@ export function BucketEditDrawer({
             <div className="row-note">{bucket.path}</div>
           </div>
 
-            <Form form={form} initialValues={{ accessMode: 'private', note: '', quotaUnit: 'GB', tags: [] }} layout="vertical">
+            <Form form={form} initialValues={{ accessMode: 'private', replicationEnabled: false, note: '', quotaUnit: 'GB', tags: [] }} layout="vertical">
               <Form.Item label="Bucket name" name="name" rules={[{ required: true, whitespace: true, message: 'Bucket name is required' }]}>
                 <Input placeholder="gallery" />
               </Form.Item>
@@ -215,6 +217,10 @@ export function BucketEditDrawer({
                 rules={[{ required: true, message: 'Access mode is required' }]}
               >
                 <Select options={bucketAccessModeOptions} />
+              </Form.Item>
+
+              <Form.Item extra="This bucket only syncs when both global replication and this switch are on." label="Replication" name="replicationEnabled" valuePropName="checked">
+                <Switch checkedChildren="On" unCheckedChildren="Off" />
               </Form.Item>
 
               {bucket ? (

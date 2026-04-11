@@ -188,6 +188,7 @@ export type BucketInfo = {
   created_at: string;
   metadata_layout: string;
   access_mode: BucketAccessMode;
+  replication_enabled: boolean;
   quota_bytes: number;
   tags?: string[];
   note?: string;
@@ -223,6 +224,7 @@ export type BucketUsageSample = {
 export type UpdateBucketPayload = {
   name: string;
   access_mode: BucketAccessMode;
+  replication_enabled: boolean;
   quota_bytes: number;
   tags: string[];
   note: string;
@@ -343,13 +345,13 @@ export function updateBucketAccessConfig(bucket: string, payload: BucketAccessCo
   });
 }
 
-export function createBucket(name: string, quotaBytes = 0, accessMode: BucketAccessMode = 'private') {
+export function createBucket(name: string, quotaBytes = 0, accessMode: BucketAccessMode = 'private', replicationEnabled = false) {
   return request<BucketInfo>('/api/v1/buckets', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ name, access_mode: accessMode, quota_bytes: quotaBytes }),
+    body: JSON.stringify({ name, access_mode: accessMode, replication_enabled: replicationEnabled, quota_bytes: quotaBytes }),
   });
 }
 

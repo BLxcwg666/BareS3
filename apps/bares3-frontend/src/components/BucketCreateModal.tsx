@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { App as AntApp, Form, Input, InputNumber, Modal, Select, Space } from 'antd';
+import { App as AntApp, Form, Input, InputNumber, Modal, Select, Space, Switch } from 'antd';
 import { createBucket } from '../api';
 import { bucketAccessModeOptions, sizeUnitOptions } from '../constants';
 import type { BucketCreateValues } from '../types';
@@ -26,6 +26,7 @@ export function BucketCreateModal({
     form.setFieldsValue({
       name: '',
       accessMode: 'private',
+      replicationEnabled: false,
       quotaValue: undefined,
       quotaUnit: 'GB',
     });
@@ -35,7 +36,7 @@ export function BucketCreateModal({
     const values = await form.validateFields();
     setSubmitting(true);
     try {
-      const bucket = await createBucket(values.name.trim(), sizeInputToBytes(values.quotaValue, values.quotaUnit), values.accessMode);
+      const bucket = await createBucket(values.name.trim(), sizeInputToBytes(values.quotaValue, values.quotaUnit), values.accessMode, values.replicationEnabled);
       message.success(`Bucket ${bucket.name} created`);
       form.resetFields();
       onCancel();
@@ -62,7 +63,7 @@ export function BucketCreateModal({
       open={open}
       title="New bucket"
     >
-      <Form form={form} initialValues={{ accessMode: 'private', quotaUnit: 'GB' }} layout="vertical">
+      <Form form={form} initialValues={{ accessMode: 'private', replicationEnabled: false, quotaUnit: 'GB' }} layout="vertical">
         <Form.Item label="Bucket name" name="name" rules={[{ required: true, whitespace: true, message: 'Bucket name is required' }]}>
           <Input placeholder="gallery" />
         </Form.Item>
@@ -74,6 +75,10 @@ export function BucketCreateModal({
           rules={[{ required: true, message: 'Access mode is required' }]}
         >
           <Select options={bucketAccessModeOptions} />
+        </Form.Item>
+
+        <Form.Item extra="New buckets stay out of replication until you turn this on." label="Replication" name="replicationEnabled" valuePropName="checked">
+          <Switch checkedChildren="On" unCheckedChildren="Off" />
         </Form.Item>
 
         <Form.Item extra="Leave empty or 0 for unlimited." label="Bucket limit">

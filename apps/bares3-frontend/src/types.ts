@@ -27,6 +27,7 @@ export type SizeUnit = 'MB' | 'GB' | 'TB';
 export type BucketCreateValues = {
   name: string;
   accessMode: BucketAccessMode;
+  replicationEnabled: boolean;
   quotaValue?: number;
   quotaUnit: SizeUnit;
 };
@@ -34,6 +35,7 @@ export type BucketCreateValues = {
 export type BucketEditValues = {
   name: string;
   accessMode: BucketAccessMode;
+  replicationEnabled: boolean;
   quotaValue?: number;
   quotaUnit: SizeUnit;
   tags: string[];
