@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -24,6 +25,14 @@ import (
 )
 
 const defaultObjectSyncParallelism = 4
+
+var (
+	replicationDialTimeout           = 10 * time.Second
+	replicationTLSHandshakeTimeout   = 10 * time.Second
+	replicationResponseHeaderTimeout = 30 * time.Second
+	replicationExpectContinueTimeout = 1 * time.Second
+	replicationIdleConnTimeout       = 90 * time.Second
+)
 
 type Worker struct {
 	store       *storage.Store
@@ -66,15 +75,27 @@ func NewWorker(cfg config.Config, store *storage.Store, logger *zap.Logger) *Wor
 		panic(fmt.Sprintf("initialize replication remote store: %v", err))
 	}
 	return &Worker{
-		store:   store,
-		dataDir: cfg.Paths.DataDir,
-		remotes: remoteStore,
-		client: &http.Client{
-			Timeout: 2 * time.Minute,
-		},
+		store:       store,
+		dataDir:     cfg.Paths.DataDir,
+		remotes:     remoteStore,
+		client:      newWorkerHTTPClient(),
 		logger:      logger,
 		parallelism: defaultObjectSyncParallelism,
 	}
+}
+
+func newWorkerHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = (&net.Dialer{
+		Timeout:   replicationDialTimeout,
+		KeepAlive: 30 * time.Second,
+	}).DialContext
+	transport.TLSHandshakeTimeout = replicationTLSHandshakeTimeout
+	transport.ResponseHeaderTimeout = replicationResponseHeaderTimeout
+	transport.ExpectContinueTimeout = replicationExpectContinueTimeout
+	transport.IdleConnTimeout = replicationIdleConnTimeout
+
+	return &http.Client{Transport: transport}
 }
 
 func (w *Worker) Run(ctx context.Context) error {
