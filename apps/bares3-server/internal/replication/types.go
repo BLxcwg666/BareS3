@@ -16,14 +16,16 @@ const (
 )
 
 type Manifest struct {
-	GeneratedAt    time.Time               `json:"generated_at"`
-	Full           bool                    `json:"full"`
-	HasMore        bool                    `json:"has_more,omitempty"`
-	Cursor         int64                   `json:"cursor"`
-	Buckets        []BucketManifest        `json:"buckets,omitempty"`
-	Objects        []ObjectManifest        `json:"objects,omitempty"`
-	DeletedBuckets []string                `json:"deleted_buckets,omitempty"`
-	DeletedObjects []DeletedObjectManifest `json:"deleted_objects,omitempty"`
+	GeneratedAt    time.Time                     `json:"generated_at"`
+	Full           bool                          `json:"full"`
+	HasMore        bool                          `json:"has_more,omitempty"`
+	Cursor         int64                         `json:"cursor"`
+	DomainsChanged bool                          `json:"domains_changed,omitempty"`
+	Domains        []storage.PublicDomainBinding `json:"domains,omitempty"`
+	Buckets        []BucketManifest              `json:"buckets,omitempty"`
+	Objects        []ObjectManifest              `json:"objects,omitempty"`
+	DeletedBuckets []string                      `json:"deleted_buckets,omitempty"`
+	DeletedObjects []DeletedObjectManifest       `json:"deleted_objects,omitempty"`
 }
 
 type SourceStatus struct {

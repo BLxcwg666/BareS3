@@ -17,6 +17,7 @@ const (
 	SyncEventBucketDelete = "bucket_delete"
 	SyncEventObjectUpsert = "object_upsert"
 	SyncEventObjectDelete = "object_delete"
+	SyncEventDomainUpdate = "domain_update"
 
 	runtimeSettingsStateName  = "runtime_settings"
 	domainSettingsStateName   = "domain_settings"
@@ -113,6 +114,7 @@ type SyncEvent struct {
 	Key        string                 `json:"key,omitempty"`
 	BucketData *ReplicaBucketInput    `json:"bucket_data,omitempty"`
 	ObjectData *ReplicaObjectMetadata `json:"object_data,omitempty"`
+	DomainData []PublicDomainBinding  `json:"domain_data,omitempty"`
 	CreatedAt  time.Time              `json:"created_at"`
 }
 

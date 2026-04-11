@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"time"
 )
 
@@ -52,9 +53,51 @@ func (s *Store) SetPublicDomainBindings(ctx context.Context, bindings []PublicDo
 	if err := validatePublicDomainBindings(normalized); err != nil {
 		return nil, err
 	}
+	current, err := s.PublicDomainBindings(ctx)
+	missing := errors.Is(err, os.ErrNotExist)
+	if missing {
+		current = []PublicDomainBinding{}
+	} else if err != nil {
+		return nil, err
+	}
+	if !missing && reflect.DeepEqual(current, normalized) {
+		return normalized, nil
+	}
 	encoded, err := json.Marshal(domainSettingsState{Items: normalized, UpdatedAt: time.Now().UTC()})
 	if err != nil {
 		return nil, fmt.Errorf("encode domain settings: %w", err)
+	}
+	if err := s.metadata.upsertSyncState(domainSettingsStateName, string(encoded)); err != nil {
+		return nil, err
+	}
+	if err := s.recordDomainUpdateEvent(normalized); err != nil {
+		return nil, err
+	}
+	s.publicDomainBindings.Store(normalized)
+	return normalized, nil
+}
+
+func (s *Store) ApplyReplicaDomainBindings(ctx context.Context, bindings []PublicDomainBinding) ([]PublicDomainBinding, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	normalized := NormalizePublicDomainBindings(bindings)
+	if err := validatePublicDomainBindings(normalized); err != nil {
+		return nil, err
+	}
+	current, err := s.PublicDomainBindings(ctx)
+	missing := errors.Is(err, os.ErrNotExist)
+	if missing {
+		current = []PublicDomainBinding{}
+	} else if err != nil {
+		return nil, err
+	}
+	if !missing && reflect.DeepEqual(current, normalized) {
+		return normalized, nil
+	}
+	encoded, err := json.Marshal(domainSettingsState{Items: normalized, UpdatedAt: time.Now().UTC()})
+	if err != nil {
+		return nil, fmt.Errorf("encode replica domain settings: %w", err)
 	}
 	if err := s.metadata.upsertSyncState(domainSettingsStateName, string(encoded)); err != nil {
 		return nil, err

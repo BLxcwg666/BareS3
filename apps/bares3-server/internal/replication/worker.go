@@ -177,6 +177,11 @@ func (w *Worker) applyManifest(ctx context.Context, target syncTarget, manifest 
 	if err := w.reconcileBuckets(ctx, manifest.Buckets); err != nil {
 		return target.Cursor, err
 	}
+	if manifest.Full || manifest.DomainsChanged {
+		if err := w.reconcileDomainBindings(ctx, manifest.Domains); err != nil {
+			return target.Cursor, err
+		}
+	}
 	if err := w.reconcileObjects(ctx, target, manifest.Objects, tracker); err != nil {
 		return target.Cursor, err
 	}
@@ -301,6 +306,11 @@ func (w *Worker) reconcileBuckets(ctx context.Context, remote []BucketManifest) 
 		}
 	}
 	return nil
+}
+
+func (w *Worker) reconcileDomainBindings(ctx context.Context, remote []storage.PublicDomainBinding) error {
+	_, err := w.store.ApplyReplicaDomainBindings(ctx, remote)
+	return err
 }
 
 func (w *Worker) reconcileObjects(ctx context.Context, target syncTarget, remote []ObjectManifest, tracker *syncRunTracker) error {

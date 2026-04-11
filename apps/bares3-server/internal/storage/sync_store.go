@@ -132,6 +132,21 @@ func (s *Store) recordObjectDeleteEvent(bucket, key string) error {
 	return nil
 }
 
+func (s *Store) recordDomainUpdateEvent(bindings []PublicDomainBinding) error {
+	event := SyncEvent{
+		Kind:       SyncEventDomainUpdate,
+		DomainData: NormalizePublicDomainBindings(bindings),
+		CreatedAt:  time.Now().UTC(),
+	}
+	cursor, err := s.metadata.appendSyncEvent(event)
+	if err != nil {
+		return err
+	}
+	event.Cursor = cursor
+	s.syncEvents.publish(event)
+	return nil
+}
+
 func ptr[T any](value T) *T {
 	return &value
 }

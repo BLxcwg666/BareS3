@@ -91,6 +91,12 @@ func newStorageSyncEventRecord(event SyncEvent) (storageSyncEventRecord, error) 
 			return storageSyncEventRecord{}, fmt.Errorf("encode object sync event payload: %w", err)
 		}
 		payload = encoded
+	case SyncEventDomainUpdate:
+		encoded, err := jsonMarshal(NormalizePublicDomainBindings(event.DomainData))
+		if err != nil {
+			return storageSyncEventRecord{}, fmt.Errorf("encode domain sync event payload: %w", err)
+		}
+		payload = encoded
 	case SyncEventBucketDelete, SyncEventObjectDelete:
 	default:
 		return storageSyncEventRecord{}, fmt.Errorf("unknown sync event kind %q", event.Kind)
@@ -129,6 +135,12 @@ func (r storageSyncEventRecord) SyncEvent() (SyncEvent, error) {
 			return SyncEvent{}, fmt.Errorf("decode object sync event payload: %w", err)
 		}
 		event.ObjectData = &payload
+	case SyncEventDomainUpdate:
+		payload := []PublicDomainBinding{}
+		if err := decodeJSONField(r.PayloadJSON, &payload, []PublicDomainBinding{}); err != nil {
+			return SyncEvent{}, fmt.Errorf("decode domain sync event payload: %w", err)
+		}
+		event.DomainData = NormalizePublicDomainBindings(payload)
 	case SyncEventBucketDelete, SyncEventObjectDelete:
 	default:
 		return SyncEvent{}, fmt.Errorf("unknown sync event kind %q", event.Kind)

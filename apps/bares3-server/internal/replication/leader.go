@@ -112,12 +112,18 @@ func buildFullManifest(ctx context.Context, store *storage.Store, cursor int64) 
 	}
 
 	manifest := Manifest{
-		GeneratedAt: time.Now().UTC(),
-		Full:        true,
-		Cursor:      cursor,
-		Buckets:     make([]BucketManifest, 0, len(buckets)),
-		Objects:     make([]ObjectManifest, 0),
+		GeneratedAt:    time.Now().UTC(),
+		Full:           true,
+		Cursor:         cursor,
+		DomainsChanged: true,
+		Buckets:        make([]BucketManifest, 0, len(buckets)),
+		Objects:        make([]ObjectManifest, 0),
 	}
+	domains, err := store.PublicDomainBindings(ctx)
+	if err != nil {
+		return Manifest{}, err
+	}
+	manifest.Domains = domains
 	for _, bucket := range buckets {
 		access, err := store.GetBucketAccessConfig(ctx, bucket.Name)
 		if err != nil {
@@ -173,6 +179,9 @@ func buildIncrementalManifest(ctx context.Context, store *storage.Store, afterCu
 		case storage.SyncEventObjectDelete:
 			delete(objectUpserts, objectID(event.Bucket, event.Key))
 			objectDeletes[objectID(event.Bucket, event.Key)] = DeletedObjectManifest{Bucket: event.Bucket, Key: event.Key}
+		case storage.SyncEventDomainUpdate:
+			manifest.DomainsChanged = true
+			manifest.Domains = append([]storage.PublicDomainBinding(nil), event.DomainData...)
 		}
 	}
 	for bucket := range bucketDeletes {

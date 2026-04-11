@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -266,6 +267,82 @@ func TestLeaderHandlerReturnsIncrementalManifestFromCursor(t *testing.T) {
 	}
 	if len(deltaManifest.DeletedObjects) != 1 || deltaManifest.DeletedObjects[0].Key != "notes/a.txt" {
 		t.Fatalf("unexpected incremental object deletes: %+v", deltaManifest.DeletedObjects)
+	}
+}
+
+func TestLeaderHandlerReturnsDomainUpdatesInIncrementalManifest(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	leaderCfg := newSyncConfig(t, filepath.Join(t.TempDir(), "leader"))
+	leaderStore := newStoreForTest(t, leaderCfg)
+
+	server := newLeaderServer(t, leaderCfg, leaderStore)
+	defer server.Close()
+	remoteToken, err := issueAccessTokenForTest(ctx, leaderCfg)
+	if err != nil {
+		t.Fatalf("issueAccessTokenForTest failed: %v", err)
+	}
+
+	fullManifest := fetchManifestForTest(t, server.URL+"/internal/sync/manifest", replication.HeaderAccessToken, remoteToken)
+	if !fullManifest.DomainsChanged {
+		t.Fatalf("expected full manifest to include domain bindings")
+	}
+	if len(fullManifest.Domains) != 0 {
+		t.Fatalf("expected empty initial domain bindings, got %+v", fullManifest.Domains)
+	}
+
+	updated, err := leaderStore.SetPublicDomainBindings(ctx, []storage.PublicDomainBinding{{Host: "cdn.example.com", Bucket: "gallery", Prefix: "site", IndexDocument: true}})
+	if err != nil {
+		t.Fatalf("SetPublicDomainBindings failed: %v", err)
+	}
+
+	deltaManifest := fetchManifestForTest(t, server.URL+"/internal/sync/manifest?cursor="+fmt.Sprintf("%d", fullManifest.Cursor), replication.HeaderAccessToken, remoteToken)
+	if deltaManifest.Full {
+		t.Fatalf("expected incremental manifest for cursor request")
+	}
+	if !deltaManifest.DomainsChanged {
+		t.Fatalf("expected incremental manifest to include domain change")
+	}
+	if !reflect.DeepEqual(deltaManifest.Domains, updated) {
+		t.Fatalf("unexpected incremental domain bindings: %+v", deltaManifest.Domains)
+	}
+}
+
+func TestWorkerSyncOnceReplicatesDomainBindings(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	leaderCfg := newSyncConfig(t, filepath.Join(t.TempDir(), "leader"))
+	leaderStore := newStoreForTest(t, leaderCfg)
+	if _, err := leaderStore.SetPublicDomainBindings(ctx, []storage.PublicDomainBinding{{Host: "cdn.example.com", Bucket: "gallery", Prefix: "site", IndexDocument: true}}); err != nil {
+		t.Fatalf("SetPublicDomainBindings failed: %v", err)
+	}
+
+	server := newLeaderServer(t, leaderCfg, leaderStore)
+	defer server.Close()
+
+	followerCfg := newSyncConfig(t, filepath.Join(t.TempDir(), "follower"))
+	followerStore := newStoreForTest(t, followerCfg)
+	if _, err := configureRemoteForTest(ctx, leaderCfg, followerCfg, server.URL, "Leader A", remotes.BootstrapModeFull); err != nil {
+		t.Fatalf("configureRemoteForTest failed: %v", err)
+	}
+	if _, err := followerStore.SetSyncSettings(ctx, storage.SyncSettings{Enabled: true}); err != nil {
+		t.Fatalf("SetSyncSettings failed: %v", err)
+	}
+
+	worker := replication.NewWorker(followerCfg, followerStore, zap.NewNop())
+	if err := worker.SyncOnce(ctx); err != nil {
+		t.Fatalf("SyncOnce failed: %v", err)
+	}
+
+	bindings, err := followerStore.PublicDomainBindings(ctx)
+	if err != nil {
+		t.Fatalf("PublicDomainBindings failed: %v", err)
+	}
+	want := []storage.PublicDomainBinding{{Host: "cdn.example.com", Bucket: "gallery", Prefix: "site", IndexDocument: true}}
+	if !reflect.DeepEqual(bindings, want) {
+		t.Fatalf("unexpected replicated domain bindings: %+v", bindings)
 	}
 }
 
