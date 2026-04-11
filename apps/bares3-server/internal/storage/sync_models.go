@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"bares3-server/internal/sharelink"
 	"github.com/uptrace/bun"
 )
 
@@ -97,6 +98,12 @@ func newStorageSyncEventRecord(event SyncEvent) (storageSyncEventRecord, error) 
 			return storageSyncEventRecord{}, fmt.Errorf("encode domain sync event payload: %w", err)
 		}
 		payload = encoded
+	case SyncEventShareLinksUpdate:
+		encoded, err := jsonMarshal(event.ShareLinks)
+		if err != nil {
+			return storageSyncEventRecord{}, fmt.Errorf("encode share link sync event payload: %w", err)
+		}
+		payload = encoded
 	case SyncEventBucketDelete, SyncEventObjectDelete:
 	default:
 		return storageSyncEventRecord{}, fmt.Errorf("unknown sync event kind %q", event.Kind)
@@ -141,6 +148,12 @@ func (r storageSyncEventRecord) SyncEvent() (SyncEvent, error) {
 			return SyncEvent{}, fmt.Errorf("decode domain sync event payload: %w", err)
 		}
 		event.DomainData = NormalizePublicDomainBindings(payload)
+	case SyncEventShareLinksUpdate:
+		payload := []sharelink.Link{}
+		if err := decodeJSONField(r.PayloadJSON, &payload, []sharelink.Link{}); err != nil {
+			return SyncEvent{}, fmt.Errorf("decode share link sync event payload: %w", err)
+		}
+		event.ShareLinks = payload
 	case SyncEventBucketDelete, SyncEventObjectDelete:
 	default:
 		return SyncEvent{}, fmt.Errorf("unknown sync event kind %q", event.Kind)

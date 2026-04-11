@@ -17,6 +17,7 @@ import (
 
 	"bares3-server/internal/config"
 	"bares3-server/internal/remotes"
+	"bares3-server/internal/sharelink"
 	"bares3-server/internal/storage"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
@@ -26,6 +27,7 @@ const defaultObjectSyncParallelism = 4
 
 type Worker struct {
 	store       *storage.Store
+	dataDir     string
 	remotes     *remotes.Store
 	client      *http.Client
 	logger      *zap.Logger
@@ -65,6 +67,7 @@ func NewWorker(cfg config.Config, store *storage.Store, logger *zap.Logger) *Wor
 	}
 	return &Worker{
 		store:   store,
+		dataDir: cfg.Paths.DataDir,
 		remotes: remoteStore,
 		client: &http.Client{
 			Timeout: 2 * time.Minute,
@@ -179,6 +182,11 @@ func (w *Worker) applyManifest(ctx context.Context, target syncTarget, manifest 
 	}
 	if manifest.Full || manifest.DomainsChanged {
 		if err := w.reconcileDomainBindings(ctx, manifest.Domains); err != nil {
+			return target.Cursor, err
+		}
+	}
+	if manifest.Full || manifest.ShareLinksChanged {
+		if err := w.reconcileShareLinks(ctx, manifest.ShareLinks); err != nil {
 			return target.Cursor, err
 		}
 	}
@@ -311,6 +319,17 @@ func (w *Worker) reconcileBuckets(ctx context.Context, remote []BucketManifest) 
 func (w *Worker) reconcileDomainBindings(ctx context.Context, remote []storage.PublicDomainBinding) error {
 	_, err := w.store.ApplyReplicaDomainBindings(ctx, remote)
 	return err
+}
+
+func (w *Worker) reconcileShareLinks(ctx context.Context, remote []sharelink.Link) error {
+	links, err := sharelink.New(w.dataDir, w.logger.Named("sharelink"))
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = links.Close()
+	}()
+	return links.ApplyReplicaLinks(ctx, remote)
 }
 
 func (w *Worker) reconcileObjects(ctx context.Context, target syncTarget, remote []ObjectManifest, tracker *syncRunTracker) error {

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"time"
+
+	"bares3-server/internal/sharelink"
 )
 
 func (s *Store) GetObjectSyncStatus(ctx context.Context, bucket, key string) (SyncObjectStatus, error) {
@@ -136,6 +138,24 @@ func (s *Store) recordDomainUpdateEvent(bindings []PublicDomainBinding) error {
 	event := SyncEvent{
 		Kind:       SyncEventDomainUpdate,
 		DomainData: NormalizePublicDomainBindings(bindings),
+		CreatedAt:  time.Now().UTC(),
+	}
+	cursor, err := s.metadata.appendSyncEvent(event)
+	if err != nil {
+		return err
+	}
+	event.Cursor = cursor
+	s.syncEvents.publish(event)
+	return nil
+}
+
+func (s *Store) RecordShareLinksSnapshotEvent(ctx context.Context, links []sharelink.Link) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	event := SyncEvent{
+		Kind:       SyncEventShareLinksUpdate,
+		ShareLinks: append([]sharelink.Link(nil), links...),
 		CreatedAt:  time.Now().UTC(),
 	}
 	cursor, err := s.metadata.appendSyncEvent(event)

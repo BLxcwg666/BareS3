@@ -20,6 +20,7 @@ import (
 	"bares3-server/internal/config"
 	"bares3-server/internal/remotes"
 	"bares3-server/internal/replication"
+	"bares3-server/internal/sharelink"
 	"bares3-server/internal/storage"
 	"go.uber.org/zap"
 )
@@ -346,6 +347,85 @@ func TestWorkerSyncOnceReplicatesDomainBindings(t *testing.T) {
 	}
 }
 
+func TestLeaderHandlerReturnsShareLinkUpdatesInIncrementalManifest(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	leaderCfg := newSyncConfig(t, filepath.Join(t.TempDir(), "leader"))
+	leaderStore := newStoreForTest(t, leaderCfg)
+	leaderLinks := newReplicatedShareLinksForTest(t, leaderCfg, leaderStore)
+
+	server := newLeaderServer(t, leaderCfg, leaderStore)
+	defer server.Close()
+	remoteToken, err := issueAccessTokenForTest(ctx, leaderCfg)
+	if err != nil {
+		t.Fatalf("issueAccessTokenForTest failed: %v", err)
+	}
+
+	fullManifest := fetchManifestForTest(t, server.URL+"/internal/sync/manifest", replication.HeaderAccessToken, remoteToken)
+	if !fullManifest.ShareLinksChanged {
+		t.Fatalf("expected full manifest to include share links")
+	}
+	if len(fullManifest.ShareLinks) != 0 {
+		t.Fatalf("expected empty initial share links, got %+v", fullManifest.ShareLinks)
+	}
+
+	created, err := leaderLinks.Create(ctx, sharelink.CreateInput{Bucket: "gallery", Key: "notes/readme.txt", Filename: "readme.txt", Expires: time.Hour})
+	if err != nil {
+		t.Fatalf("Create share link failed: %v", err)
+	}
+
+	deltaManifest := fetchManifestForTest(t, server.URL+"/internal/sync/manifest?cursor="+fmt.Sprintf("%d", fullManifest.Cursor), replication.HeaderAccessToken, remoteToken)
+	if !deltaManifest.ShareLinksChanged {
+		t.Fatalf("expected incremental manifest to include share link change")
+	}
+	if len(deltaManifest.ShareLinks) != 1 || deltaManifest.ShareLinks[0].ID != created.ID {
+		t.Fatalf("unexpected incremental share links: %+v", deltaManifest.ShareLinks)
+	}
+}
+
+func TestWorkerSyncOnceReplicatesShareLinks(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	leaderCfg := newSyncConfig(t, filepath.Join(t.TempDir(), "leader"))
+	leaderStore := newStoreForTest(t, leaderCfg)
+	leaderLinks := newReplicatedShareLinksForTest(t, leaderCfg, leaderStore)
+	if _, err := leaderStore.CreateBucket(ctx, "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	created, err := leaderLinks.Create(ctx, sharelink.CreateInput{Bucket: "gallery", Key: "notes/readme.txt", Filename: "readme.txt", Expires: time.Hour, CreatedBy: "admin"})
+	if err != nil {
+		t.Fatalf("Create share link failed: %v", err)
+	}
+
+	server := newLeaderServer(t, leaderCfg, leaderStore)
+	defer server.Close()
+
+	followerCfg := newSyncConfig(t, filepath.Join(t.TempDir(), "follower"))
+	followerStore := newStoreForTest(t, followerCfg)
+	followerLinks := newShareLinksForTest(t, followerCfg)
+	if _, err := configureRemoteForTest(ctx, leaderCfg, followerCfg, server.URL, "Leader A", remotes.BootstrapModeFull); err != nil {
+		t.Fatalf("configureRemoteForTest failed: %v", err)
+	}
+	if _, err := followerStore.SetSyncSettings(ctx, storage.SyncSettings{Enabled: true}); err != nil {
+		t.Fatalf("SetSyncSettings failed: %v", err)
+	}
+
+	worker := replication.NewWorker(followerCfg, followerStore, zap.NewNop())
+	if err := worker.SyncOnce(ctx); err != nil {
+		t.Fatalf("SyncOnce failed: %v", err)
+	}
+
+	links, err := followerLinks.List(ctx)
+	if err != nil {
+		t.Fatalf("List share links failed: %v", err)
+	}
+	if len(links) != 1 || links[0].ID != created.ID || links[0].Bucket != created.Bucket || links[0].Key != created.Key {
+		t.Fatalf("unexpected replicated share links: %+v", links)
+	}
+}
+
 func TestWorkerSyncOnceKeepsExistingObjectReadableWhileUpdating(t *testing.T) {
 	t.Parallel()
 
@@ -536,6 +616,27 @@ func newLeaderServer(t *testing.T, cfg config.Config, store *storage.Store) *htt
 	mux := http.NewServeMux()
 	mux.Handle("/internal/sync/", http.StripPrefix("/internal/sync", replication.NewLeaderHandler(cfg, store, zap.NewNop())))
 	return httptest.NewServer(mux)
+}
+
+func newShareLinksForTest(t *testing.T, cfg config.Config) *sharelink.Store {
+	t.Helper()
+	store, err := sharelink.New(cfg.Paths.DataDir, zap.NewNop())
+	if err != nil {
+		t.Fatalf("sharelink.New failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+	return store
+}
+
+func newReplicatedShareLinksForTest(t *testing.T, cfg config.Config, storageStore *storage.Store) *sharelink.Store {
+	t.Helper()
+	store := newShareLinksForTest(t, cfg)
+	store.SetChangeHook(func(ctx context.Context, links []sharelink.Link) error {
+		return storageStore.RecordShareLinksSnapshotEvent(ctx, links)
+	})
+	return store
 }
 
 func newRemoteStoreForTest(t *testing.T, cfg config.Config) *remotes.Store {

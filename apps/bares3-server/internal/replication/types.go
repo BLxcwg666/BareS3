@@ -3,6 +3,7 @@ package replication
 import (
 	"time"
 
+	"bares3-server/internal/sharelink"
 	"bares3-server/internal/storage"
 )
 
@@ -16,16 +17,18 @@ const (
 )
 
 type Manifest struct {
-	GeneratedAt    time.Time                     `json:"generated_at"`
-	Full           bool                          `json:"full"`
-	HasMore        bool                          `json:"has_more,omitempty"`
-	Cursor         int64                         `json:"cursor"`
-	DomainsChanged bool                          `json:"domains_changed,omitempty"`
-	Domains        []storage.PublicDomainBinding `json:"domains,omitempty"`
-	Buckets        []BucketManifest              `json:"buckets,omitempty"`
-	Objects        []ObjectManifest              `json:"objects,omitempty"`
-	DeletedBuckets []string                      `json:"deleted_buckets,omitempty"`
-	DeletedObjects []DeletedObjectManifest       `json:"deleted_objects,omitempty"`
+	GeneratedAt       time.Time                     `json:"generated_at"`
+	Full              bool                          `json:"full"`
+	HasMore           bool                          `json:"has_more,omitempty"`
+	Cursor            int64                         `json:"cursor"`
+	DomainsChanged    bool                          `json:"domains_changed,omitempty"`
+	Domains           []storage.PublicDomainBinding `json:"domains,omitempty"`
+	ShareLinksChanged bool                          `json:"share_links_changed,omitempty"`
+	ShareLinks        []sharelink.Link              `json:"share_links,omitempty"`
+	Buckets           []BucketManifest              `json:"buckets,omitempty"`
+	Objects           []ObjectManifest              `json:"objects,omitempty"`
+	DeletedBuckets    []string                      `json:"deleted_buckets,omitempty"`
+	DeletedObjects    []DeletedObjectManifest       `json:"deleted_objects,omitempty"`
 }
 
 type SourceStatus struct {

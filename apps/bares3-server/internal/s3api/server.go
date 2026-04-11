@@ -45,6 +45,9 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 			panic(fmt.Sprintf("initialize share link store: %v", err))
 		}
 	}
+	shareLinks.SetChangeHook(func(ctx context.Context, links []sharelink.Link) error {
+		return store.RecordShareLinksSnapshotEvent(ctx, links)
+	})
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {

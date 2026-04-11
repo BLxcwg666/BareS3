@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"time"
@@ -45,6 +46,9 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 			panic(fmt.Sprintf("initialize share link store: %v", err))
 		}
 	}
+	shareLinks.SetChangeHook(func(ctx context.Context, links []sharelink.Link) error {
+		return store.RecordShareLinksSnapshotEvent(ctx, links)
+	})
 	if credentials == nil {
 		credentials, err = s3creds.New(cfg.Paths.DataDir, logger.Named("s3creds"))
 		if err != nil {

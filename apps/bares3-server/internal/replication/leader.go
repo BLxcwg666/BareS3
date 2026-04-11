@@ -14,6 +14,7 @@ import (
 
 	"bares3-server/internal/config"
 	"bares3-server/internal/remotes"
+	"bares3-server/internal/sharelink"
 	"bares3-server/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
@@ -39,7 +40,7 @@ func NewLeaderHandler(cfg config.Config, store *storage.Store, logger *zap.Logge
 			}
 			cursor = parsed
 		}
-		manifest, err := buildManifest(r.Context(), store, cursor)
+		manifest, err := buildManifest(r.Context(), cfg.Paths.DataDir, store, cursor, logger.Named("sharelink"))
 		if err != nil {
 			logger.Error("build sync manifest failed", zap.Error(err))
 			writeJSONError(w, http.StatusInternalServerError, err)
@@ -94,30 +95,43 @@ func NewLeaderHandler(cfg config.Config, store *storage.Store, logger *zap.Logge
 	return router
 }
 
-func buildManifest(ctx context.Context, store *storage.Store, afterCursor int64) (Manifest, error) {
+func buildManifest(ctx context.Context, dataDir string, store *storage.Store, afterCursor int64, logger *zap.Logger) (Manifest, error) {
 	currentCursor, err := store.CurrentSyncCursor(ctx)
 	if err != nil {
 		return Manifest{}, err
 	}
 	if afterCursor <= 0 || afterCursor > currentCursor {
-		return buildFullManifest(ctx, store, currentCursor)
+		return buildFullManifest(ctx, dataDir, store, currentCursor, logger)
 	}
 	return buildIncrementalManifest(ctx, store, afterCursor)
 }
 
-func buildFullManifest(ctx context.Context, store *storage.Store, cursor int64) (Manifest, error) {
+func buildFullManifest(ctx context.Context, dataDir string, store *storage.Store, cursor int64, logger *zap.Logger) (Manifest, error) {
 	buckets, err := store.ListBuckets(ctx)
+	if err != nil {
+		return Manifest{}, err
+	}
+	shareLinks, err := sharelink.New(dataDir, logger)
+	if err != nil {
+		return Manifest{}, err
+	}
+	defer func() {
+		_ = shareLinks.Close()
+	}()
+	links, err := shareLinks.List(ctx)
 	if err != nil {
 		return Manifest{}, err
 	}
 
 	manifest := Manifest{
-		GeneratedAt:    time.Now().UTC(),
-		Full:           true,
-		Cursor:         cursor,
-		DomainsChanged: true,
-		Buckets:        make([]BucketManifest, 0, len(buckets)),
-		Objects:        make([]ObjectManifest, 0),
+		GeneratedAt:       time.Now().UTC(),
+		Full:              true,
+		Cursor:            cursor,
+		DomainsChanged:    true,
+		ShareLinksChanged: true,
+		ShareLinks:        links,
+		Buckets:           make([]BucketManifest, 0, len(buckets)),
+		Objects:           make([]ObjectManifest, 0),
 	}
 	domains, err := store.PublicDomainBindings(ctx)
 	if err != nil {
@@ -182,6 +196,9 @@ func buildIncrementalManifest(ctx context.Context, store *storage.Store, afterCu
 		case storage.SyncEventDomainUpdate:
 			manifest.DomainsChanged = true
 			manifest.Domains = append([]storage.PublicDomainBinding(nil), event.DomainData...)
+		case storage.SyncEventShareLinksUpdate:
+			manifest.ShareLinksChanged = true
+			manifest.ShareLinks = append([]sharelink.Link(nil), event.ShareLinks...)
 		}
 	}
 	for bucket := range bucketDeletes {

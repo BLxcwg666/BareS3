@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"reflect"
 	"strings"
 	"time"
 
@@ -73,10 +74,11 @@ type CreateInput struct {
 }
 
 type Store struct {
-	dataDir string
-	db      *bun.DB
-	logger  *zap.Logger
-	now     func() time.Time
+	dataDir  string
+	db       *bun.DB
+	logger   *zap.Logger
+	now      func() time.Time
+	onChange func(context.Context, []Link) error
 }
 
 type linkRecord struct {
@@ -123,6 +125,13 @@ func (s *Store) Close() error {
 	err := s.db.Close()
 	s.db = nil
 	return err
+}
+
+func (s *Store) SetChangeHook(hook func(context.Context, []Link) error) {
+	if s == nil {
+		return
+	}
+	s.onChange = hook
 }
 
 func (s *Store) Check(ctx context.Context) error {
@@ -195,6 +204,7 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (Link, error) {
 				zap.String("key", link.Key),
 				zap.Time("expires_at", link.ExpiresAt),
 			)
+			s.publishChange(ctx)
 			return link, nil
 		}
 		if !isUniqueConstraint(err) {
@@ -322,6 +332,7 @@ func (s *Store) ReassignObject(ctx context.Context, sourceBucket, sourceKey, des
 			zap.String("destination_key", destinationKey),
 			zap.Int("count", updated),
 		)
+		s.publishChange(ctx)
 	}
 	return updated, nil
 }
@@ -363,6 +374,7 @@ func (s *Store) ReassignBucket(ctx context.Context, sourceBucket, destinationBuc
 			zap.String("destination_bucket", destinationBucket),
 			zap.Int("count", updated),
 		)
+		s.publishChange(ctx)
 	}
 	return updated, nil
 }
@@ -404,6 +416,7 @@ func (s *Store) RemoveByObject(ctx context.Context, bucket, key string) (int, er
 			zap.String("key", key),
 			zap.Int("count", removed),
 		)
+		s.publishChange(ctx)
 	}
 	return removed, nil
 }
@@ -440,6 +453,7 @@ func (s *Store) RemoveByBucket(ctx context.Context, bucket string) (int, error) 
 			zap.String("bucket", bucket),
 			zap.Int("count", removed),
 		)
+		s.publishChange(ctx)
 	}
 	return removed, nil
 }
@@ -481,6 +495,7 @@ func (s *Store) RemoveByPrefix(ctx context.Context, bucket, prefix string) (int,
 			zap.String("prefix", prefix),
 			zap.Int("count", removed),
 		)
+		s.publishChange(ctx)
 	}
 	return removed, nil
 }
@@ -551,6 +566,7 @@ func (s *Store) ReassignPrefix(ctx context.Context, sourceBucket, sourcePrefix, 
 			zap.String("destination_prefix", destinationPrefix),
 			zap.Int("count", len(updates)),
 		)
+		s.publishChange(ctx)
 	}
 	return len(updates), nil
 }
@@ -622,6 +638,7 @@ func (s *Store) Revoke(ctx context.Context, id string) (Link, error) {
 	if err := tx.Commit(); err != nil {
 		return Link{}, fmt.Errorf("commit share link revoke: %w", err)
 	}
+	s.publishChange(ctx)
 	return link, nil
 }
 
@@ -666,7 +683,62 @@ func (s *Store) Remove(ctx context.Context, id string) (Link, error) {
 		zap.String("bucket", link.Bucket),
 		zap.String("key", link.Key),
 	)
+	s.publishChange(ctx)
 	return link, nil
+}
+
+func (s *Store) ApplyReplicaLinks(ctx context.Context, links []Link) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	current, err := s.List(ctx)
+	if err != nil {
+		return err
+	}
+	if reflect.DeepEqual(current, links) {
+		return nil
+	}
+	db, err := s.openDB()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = db.Close()
+	}()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin share link replica apply: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	if _, err := tx.NewDelete().Model((*linkRecord)(nil)).Where("1 = 1").Exec(ctx); err != nil {
+		return fmt.Errorf("clear share links for replica apply: %w", err)
+	}
+	for _, link := range links {
+		record := newLinkRecord(link)
+		if _, err := tx.NewInsert().Model(&record).Exec(ctx); err != nil {
+			return fmt.Errorf("insert share link for replica apply: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit share link replica apply: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) publishChange(ctx context.Context) {
+	if s == nil || s.onChange == nil {
+		return
+	}
+	links, err := s.List(ctx)
+	if err != nil {
+		s.logger.Warn("list share links for change hook failed", zap.Error(err))
+		return
+	}
+	if err := s.onChange(ctx, links); err != nil {
+		s.logger.Warn("share link change hook failed", zap.Error(err))
+	}
 }
 
 func (l Link) Status(now time.Time) string {
