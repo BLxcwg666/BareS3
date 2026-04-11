@@ -60,9 +60,12 @@ export default defineConfig(({ mode }) => {
       proxy: {
         '/api': {
           target: env.VITE_ADMIN_PROXY || 'http://127.0.0.1:19080',
-          changeOrigin: true,
+          // Preserve the browser Host header so the backend same-origin check
+          // sees the Vite dev server origin instead of the upstream target.
+          changeOrigin: false,
           ws: true,
-          rewriteWsOrigin: true,
+          // Keep the browser Origin header for websocket upgrades too.
+          rewriteWsOrigin: false,
         },
       },
     },
