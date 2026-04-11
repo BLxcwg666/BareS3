@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, DragEvent } from 'react';
-import { CheckCircleOutlined, CheckOutlined, CloseCircleOutlined, CloseOutlined, CloudSyncOutlined, CopyOutlined, EditOutlined, FileOutlined, FolderOpenOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, CheckOutlined, CloseCircleOutlined, CloseOutlined, CloudSyncOutlined, CopyOutlined, DeleteOutlined, EditOutlined, FileOutlined, FolderOpenOutlined, RetweetOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons';
 import {
   App as AntApp,
   Button,
@@ -8,6 +8,7 @@ import {
   Empty,
   Input,
   InputNumber,
+  Modal,
   Popconfirm,
   Progress,
   Select,
@@ -278,6 +279,15 @@ export function BrowserPage() {
   const [removingShareLinkId, setRemovingShareLinkId] = useState<string | null>(null);
   const shareLinksRequestIdRef = useRef(0);
 
+  // Bulk selection state
+  const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [bulkPresigning, setBulkPresigning] = useState(false);
+  const [bulkMoveModalOpen, setBulkMoveModalOpen] = useState(false);
+  const [bulkMoveDestBucket, setBulkMoveDestBucket] = useState<string | null>(null);
+  const [bulkMoveDestPath, setBulkMoveDestPath] = useState('');
+  const [bulkMoving, setBulkMoving] = useState(false);
+
   useEffect(
     () => () => {
       if (uploadProgressHideTimeoutRef.current !== null) {
@@ -334,6 +344,7 @@ export function BrowserPage() {
     setSelectedFolderPrefix(null);
     setRenameState(null);
     setMetadataEditState(null);
+    setSelectedRowKeys([]);
   }, [pathSignature]);
 
   const browserEntries = useMemo(
@@ -955,6 +966,125 @@ export function BrowserPage() {
     }
   };
 
+  // Derived: selected entries from the bulk row selection
+  const selectedBulkEntries = useMemo(
+    () => browserEntries.filter((entry): entry is Extract<BrowserEntry, { kind: 'object' | 'folder' }> =>
+      (entry.kind === 'object' || entry.kind === 'folder') && selectedRowKeys.includes(entry.key),
+    ),
+    [browserEntries, selectedRowKeys],
+  );
+
+  const handleBulkDelete = async () => {
+    if (!selectedBucket || selectedBulkEntries.length === 0) {
+      return;
+    }
+
+    setBulkDeleting(true);
+    let successCount = 0;
+    const errors: string[] = [];
+
+    for (const entry of selectedBulkEntries) {
+      try {
+        if (entry.kind === 'object') {
+          await deleteObject(selectedBucket, entry.object.key);
+        } else {
+          await deleteBrowserPrefix(selectedBucket, entry.prefix);
+        }
+        successCount += 1;
+      } catch (error) {
+        errors.push(normalizeApiError(error, entry.kind === 'object' ? entry.object.key : entry.prefix));
+      }
+    }
+
+    setSelectedRowKeys([]);
+    setSelectedKey(null);
+    setSelectedFolderPrefix(null);
+    await refresh();
+    syncSearchParams(selectedBucket, currentPrefix, null, searchValue);
+
+    if (errors.length === 0) {
+      message.success(`Deleted ${successCount} item${successCount !== 1 ? 's' : ''}`);
+    } else if (successCount > 0) {
+      message.warning(`Deleted ${successCount} item${successCount !== 1 ? 's' : ''}, ${errors.length} failed`);
+    } else {
+      message.error(`Failed to delete ${errors.length} item${errors.length !== 1 ? 's' : ''}`);
+    }
+    setBulkDeleting(false);
+  };
+
+  const handleBulkCopyUrls = async () => {
+    if (!selectedBucket || selectedBulkEntries.length === 0) {
+      return;
+    }
+
+    const objectEntries = selectedBulkEntries.filter((entry): entry is Extract<BrowserEntry, { kind: 'object' }> => entry.kind === 'object');
+    if (objectEntries.length === 0) {
+      message.warning('No files selected — folders cannot be presigned');
+      return;
+    }
+
+    setBulkPresigning(true);
+    const urls: string[] = [];
+    const errors: string[] = [];
+
+    for (const entry of objectEntries) {
+      try {
+        const result = await presignObject(selectedBucket, entry.object.key);
+        urls.push(result.url);
+      } catch (error) {
+        errors.push(normalizeApiError(error, entry.object.key));
+      }
+    }
+
+    if (urls.length > 0) {
+      try {
+        await copyText(urls.join('\n'));
+        if (errors.length === 0) {
+          message.success(`Copied ${urls.length} download URL${urls.length !== 1 ? 's' : ''}`);
+        } else {
+          message.warning(`Copied ${urls.length} URL${urls.length !== 1 ? 's' : ''}, ${errors.length} failed`);
+        }
+      } catch {
+        message.error('Failed to write to clipboard');
+      }
+    } else {
+      message.error('Failed to generate any download URLs');
+    }
+    setBulkPresigning(false);
+  };
+
+  const handleBulkMoveConfirm = async () => {
+    if (!selectedBucket || selectedBulkEntries.length === 0) {
+      return;
+    }
+
+    const destBucket = bulkMoveDestBucket ?? selectedBucket;
+    setBulkMoving(true);
+    let successCount = 0;
+    const errors: string[] = [];
+
+    for (const entry of selectedBulkEntries) {
+      try {
+        await moveEntryToDestination(entry, destBucket, bulkMoveDestPath);
+        successCount += 1;
+      } catch (error) {
+        errors.push(normalizeApiError(error, entry.kind === 'object' ? entry.object.key : entry.prefix));
+      }
+    }
+
+    setSelectedRowKeys([]);
+    setBulkMoveModalOpen(false);
+
+    if (errors.length === 0) {
+      message.success(`Moved ${successCount} item${successCount !== 1 ? 's' : ''}`);
+    } else if (successCount > 0) {
+      message.warning(`Moved ${successCount}, ${errors.length} failed`);
+    } else {
+      message.error(`Failed to move ${errors.length} item${errors.length !== 1 ? 's' : ''}`);
+    }
+    setBulkMoving(false);
+  };
+
   const handleRowDragStart = (entry: BrowserEntry, event: DragEvent<HTMLTableRowElement>) => {
     if (entry.kind !== 'object' && entry.kind !== 'folder') {
       return;
@@ -1375,6 +1505,7 @@ export function BrowserPage() {
   );
 
   return (
+    <>
     <ConsoleShell
       showHeaderSearch={false}
       actions={
@@ -1545,6 +1676,49 @@ export function BrowserPage() {
                   }}
                   onDrop={(event) => void handleRootMoveDrop(event)}
                 >
+                  {selectedRowKeys.length > 0 ? (
+                    <div className="bulk-action-bar">
+                      <span className="bulk-action-count">{selectedRowKeys.length} selected</span>
+                      <Space size={8} wrap>
+                        <Popconfirm
+                          cancelText="Cancel"
+                          okButtonProps={{ danger: true, loading: bulkDeleting }}
+                          okText="Delete"
+                          onConfirm={() => void handleBulkDelete()}
+                          title={`Delete ${selectedRowKeys.length} item${selectedRowKeys.length !== 1 ? 's' : ''}?`}
+                        >
+                          <Button danger icon={<DeleteOutlined />} loading={bulkDeleting} size="small">
+                            Delete
+                          </Button>
+                        </Popconfirm>
+                        <Button
+                          icon={<RetweetOutlined />}
+                          onClick={() => {
+                            setBulkMoveDestBucket(selectedBucket);
+                            setBulkMoveDestPath(currentPrefix);
+                            setBulkMoveModalOpen(true);
+                          }}
+                          size="small"
+                        >
+                          Move
+                        </Button>
+                        <Button
+                          icon={<CopyOutlined />}
+                          loading={bulkPresigning}
+                          onClick={() => void handleBulkCopyUrls()}
+                          size="small"
+                        >
+                          Copy download URLs
+                        </Button>
+                        <Button
+                          onClick={() => setSelectedRowKeys([])}
+                          size="small"
+                        >
+                          Deselect all
+                        </Button>
+                      </Space>
+                    </div>
+                  ) : null}
                   <Table
                     columns={browserColumns}
                     dataSource={browserEntries}
@@ -1616,6 +1790,17 @@ export function BrowserPage() {
                       return classes.join(' ');
                     }}
                     rowKey="key"
+                    rowSelection={{
+                      selectedRowKeys,
+                      onChange: (keys) => setSelectedRowKeys(keys.filter((k) => {
+                        const entry = browserEntries.find((e) => e.key === k);
+                        return entry && entry.kind !== 'parent';
+                      }) as string[]),
+                      getCheckboxProps: (record) => ({
+                        disabled: record.kind === 'parent',
+                        style: record.kind === 'parent' ? { display: 'none' } : undefined,
+                      }),
+                    }}
                     scroll={{ x: 880 }}
                     size="small"
                   />
@@ -1860,5 +2045,40 @@ export function BrowserPage() {
         </div>
       </div>
     </ConsoleShell>
+
+    <Modal
+      confirmLoading={bulkMoving}
+      okText="Move"
+      onCancel={() => setBulkMoveModalOpen(false)}
+      onOk={() => void handleBulkMoveConfirm()}
+      open={bulkMoveModalOpen}
+      title={`Move ${selectedBulkEntries.length} item${selectedBulkEntries.length !== 1 ? 's' : ''}`}
+    >
+      <div className="bulk-move-form">
+        <div className="bulk-move-field">
+          <label className="bulk-move-label" htmlFor="bulk-move-bucket">Destination bucket</label>
+          <Select
+            id="bulk-move-bucket"
+            onChange={(value) => setBulkMoveDestBucket(value)}
+            options={buckets.map((b) => ({ label: b.name, value: b.name }))}
+            style={{ width: '100%' }}
+            value={bulkMoveDestBucket ?? selectedBucket ?? undefined}
+          />
+        </div>
+        <div className="bulk-move-field">
+          <label className="bulk-move-label" htmlFor="bulk-move-path">Destination path (prefix)</label>
+          <Input
+            id="bulk-move-path"
+            onChange={(e) => setBulkMoveDestPath(e.target.value)}
+            placeholder="e.g. archive/2024/"
+            value={bulkMoveDestPath}
+          />
+        </div>
+        <div className="bulk-move-note row-note">
+          Items will be placed at the destination path keeping their original file names.
+        </div>
+      </div>
+    </Modal>
+    </>
   );
 }

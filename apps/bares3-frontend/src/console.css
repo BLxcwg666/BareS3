@@ -1565,6 +1565,46 @@ a {
   background: color-mix(in oklab, var(--accent-soft) 60%, transparent) !important;
 }
 
+.bulk-action-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 7px 12px;
+  background: color-mix(in oklab, var(--accent-soft) 30%, var(--surface));
+  border-bottom: 1px solid color-mix(in oklab, var(--accent) 25%, transparent);
+}
+
+.bulk-action-count {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  margin-right: auto;
+}
+
+.bulk-move-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: 4px;
+}
+
+.bulk-move-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.bulk-move-label {
+  font-size: 13px;
+  color: var(--text-muted, var(--text));
+}
+
+.bulk-move-note {
+  margin-top: 2px;
+}
+
 .login-page {
   min-height: 100vh;
 }
