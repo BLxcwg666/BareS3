@@ -425,6 +425,7 @@ a {
 
 .workspace-grid-main {
   grid-template-columns: minmax(0, 1.55fr) minmax(290px, 0.9fr);
+  align-items: start;
 }
 
 .sync-cluster-grid {
@@ -1509,6 +1510,42 @@ a {
   position: relative;
 }
 
+.browser-table-footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 8px 16px;
+  background: color-mix(in oklab, var(--surface) 60%, transparent);
+  border-top: 1px solid color-mix(in oklab, var(--line) 50%, transparent);
+}
+
+.browser-table-footer .ant-pagination-item,
+.browser-table-footer .ant-pagination-prev,
+.browser-table-footer .ant-pagination-next {
+  min-width: 26px;
+  height: 26px;
+  line-height: 24px;
+  font-size: 13px;
+}
+
+.browser-table-footer .ant-pagination-item a {
+  line-height: 24px;
+}
+
+.browser-table-footer .ant-pagination-options .ant-select-selector {
+  height: 26px !important;
+  line-height: 24px !important;
+  font-size: 13px;
+}
+
+.browser-table-footer .ant-pagination-options .ant-select-selection-item {
+  line-height: 24px !important;
+}
+
+.browser-table-footer .ant-pagination-options {
+  margin-inline-start: 6px;
+}
+
 .browser-entry {
   display: flex;
   align-items: center;
@@ -1761,6 +1798,11 @@ a {
 
   .shell-header {
     padding-inline: 8px !important;
+  }
+
+  .browser-table-footer {
+    justify-content: center;
+    padding-inline: 8px;
   }
 
   .header-row,

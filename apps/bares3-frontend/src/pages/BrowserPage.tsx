@@ -35,7 +35,8 @@ import {
 import { collectDropUploadCandidates, collectInputUploadCandidates, type UploadCandidate } from '../browser-upload';
 import { ConsoleShell } from '../components/ConsoleShell';
 import { Section } from '../components/Section';
-import { useBucketObjects } from '../hooks/useBucketObjects';
+import { TableFooterPagination } from '../components/TableFooterPagination';
+import { bucketObjectsPageSize, useBucketObjects } from '../hooks/useBucketObjects';
 import { useBucketsData } from '../hooks/useBucketsData';
 import { useObjectDetail } from '../hooks/useObjectDetail';
 import { useRuntimeData } from '../hooks/useRuntimeData';
@@ -157,9 +158,24 @@ function summarizeUploadFailures(failures: UploadFailure[], limit = 3) {
   return `${visible.join(', ')}, +${failures.length - limit} more`;
 }
 
-function buildBrowserEntries(objects: ObjectInfo[], bucket: string | null, prefix: string): BrowserEntry[] {
+function buildBrowserEntries(objects: ObjectInfo[], folderPrefixes: string[], bucket: string | null, prefix: string): BrowserEntry[] {
   const folders = new Map<string, { key: string; name: string; prefix: string; lastModified: string | null }>();
   const files: Array<Extract<BrowserEntry, { kind: 'object' }>> = [];
+
+  for (const folderPrefix of folderPrefixes) {
+    const relative = prefix ? folderPrefix.slice(prefix.length) : folderPrefix;
+    const name = relative.replace(/\/+$/, '');
+    if (!name) {
+      continue;
+    }
+
+    folders.set(folderPrefix, {
+      key: folderPrefix,
+      name,
+      prefix: folderPrefix,
+      lastModified: null,
+    });
+  }
 
   for (const object of objects) {
     const relative = prefix ? object.key.slice(prefix.length) : object.key;
@@ -239,6 +255,8 @@ export function BrowserPage() {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [selectedFolderPrefix, setSelectedFolderPrefix] = useState<string | null>(null);
   const [searchValue, setSearchValue] = useState('');
+  const [objectPage, setObjectPage] = useState(1);
+  const [objectPageSize, setObjectPageSize] = useState(bucketObjectsPageSize);
   const [uploading, setUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [moveDragging, setMoveDragging] = useState(false);
@@ -300,11 +318,17 @@ export function BrowserPage() {
   const selectedBucketInfo = useMemo(() => buckets.find((item) => item.name === selectedBucket) ?? null, [buckets, selectedBucket]);
   const selectedBucketIsPublic = selectedBucketInfo?.access_mode === 'public';
   const pathSignature = `${selectedBucket ?? ''}:${currentPrefix}`;
-  const { items: objects, loading: objectsLoading, loadingMore, hasMore, refresh, loadMore } = useBucketObjects(
+  const { items: objects, prefixes: objectPrefixes, totalCount: objectTotalCount, loading: objectsLoading, refresh } = useBucketObjects(
     selectedBucket,
     currentPrefix,
     searchValue,
+    objectPage,
+    objectPageSize,
   );
+
+  useEffect(() => {
+    setObjectPage(1);
+  }, [currentPrefix, searchValue, selectedBucket]);
 
   useEffect(() => {
     setSelectedFolderPrefix(null);
@@ -312,7 +336,10 @@ export function BrowserPage() {
     setMetadataEditState(null);
   }, [pathSignature]);
 
-  const browserEntries = useMemo(() => buildBrowserEntries(objects, selectedBucket, currentPrefix), [currentPrefix, objects, selectedBucket]);
+  const browserEntries = useMemo(
+    () => buildBrowserEntries(objects, objectPrefixes, selectedBucket, currentPrefix),
+    [currentPrefix, objectPrefixes, objects, selectedBucket],
+  );
 
   useEffect(() => {
     const visibleKeys = new Set(browserEntries.filter((entry) => entry.kind === 'object').map((entry) => entry.object.key));
@@ -1593,15 +1620,19 @@ export function BrowserPage() {
                     size="small"
                   />
 
-                  {selectedBucket ? (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 12, flexWrap: 'wrap' }}>
-                      {hasMore ? (
-                        <Button loading={loadingMore} onClick={() => void loadMore()} size="small">
-                          Load more
-                        </Button>
-                      ) : null}
-                    </div>
-                  ) : null}
+                  <TableFooterPagination
+                    current={objectPage}
+                    onChange={(page, size) => {
+                      if (size !== objectPageSize) {
+                        setObjectPageSize(size);
+                        setObjectPage(1);
+                      } else {
+                        setObjectPage(page);
+                      }
+                    }}
+                    pageSize={objectPageSize}
+                    total={objectTotalCount}
+                  />
                 </div>
               </Section>
 

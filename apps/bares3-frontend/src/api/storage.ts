@@ -262,10 +262,14 @@ export type ListObjectsOptions = {
   query?: string;
   limit?: number;
   cursor?: string;
+  offset?: number;
+  delimiter?: string;
 };
 
 export type ListObjectsResult = {
   items: ObjectInfo[];
+  prefixes?: string[];
+  total_count?: number;
   has_more: boolean;
   next_cursor?: string;
 };
@@ -554,8 +558,14 @@ export async function listObjects(bucket: string, options: ListObjectsOptions = 
   if (options.cursor?.trim()) {
     query.set('cursor', options.cursor.trim());
   }
+  if (typeof options.offset === 'number' && options.offset > 0) {
+    query.set('offset', String(options.offset));
+  }
   if (typeof options.limit === 'number' && options.limit > 0) {
     query.set('limit', String(options.limit));
+  }
+  if (options.delimiter?.trim()) {
+    query.set('delimiter', options.delimiter.trim());
   }
 
   const suffix = query.toString();
