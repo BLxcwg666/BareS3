@@ -184,11 +184,6 @@ export function LinksPage() {
           flush
           title="Recent links"
           note="Create new links from the Browser inspector, then manage or revoke them here."
-          extra={
-            <Button loading={linksLoading} onClick={() => void refreshLinks()} size="small">
-              Refresh
-            </Button>
-          }
         >
           <Table
             columns={columns}

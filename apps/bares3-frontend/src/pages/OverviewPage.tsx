@@ -135,96 +135,99 @@ export function OverviewPage() {
         />
 
         <div className="workspace-grid workspace-grid-main">
-          <Section
-            flush
-            title="Buckets"
-            extra={
-              <Button onClick={() => navigate('/buckets')} size="small" type="link">
-                Open
-              </Button>
-            }
-          >
-            <Table
-              columns={bucketColumns(true)}
-              dataSource={overviewBuckets}
-              loading={bucketsLoading}
-              locale={{ emptyText: <Empty description="No buckets yet" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
-              pagination={false}
-              rowKey="name"
-              scroll={{ x: 720 }}
-              size="small"
-            />
-          </Section>
-
-          <Section
-            title="Activity"
-            extra={
-              <Button onClick={() => navigate('/audit')} size="small" type="link">
-                Open
-              </Button>
-            }
-          >
-            {activityLoading ? (
-              <Skeleton active paragraph={{ rows: 4 }} title={false} />
-            ) : activityItems.length === 0 ? (
-              <Empty description="No recent activity" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-            ) : (
-              <List
-                dataSource={activityItems}
-                renderItem={(item: ActivityDisplayItem) => (
-                  <List.Item key={item.key}>
-                    <List.Item.Meta description={item.meta || undefined} title={item.title} />
-                    <Text type="secondary">{item.time}</Text>
-                  </List.Item>
-                )}
+          <div className="workspace-stack">
+            <Section
+              flush
+              title="Buckets"
+              extra={
+                <Button onClick={() => navigate('/buckets')} size="small" type="link">
+                  Open
+                </Button>
+              }
+            >
+              <Table
+                columns={bucketColumns(true)}
+                dataSource={overviewBuckets}
+                loading={bucketsLoading}
+                locale={{ emptyText: <Empty description="No buckets yet" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+                pagination={false}
+                rowKey="name"
+                scroll={{ x: 720 }}
+                size="small"
               />
-            )}
-          </Section>
-        </div>
+            </Section>
 
-        <div className="workspace-grid workspace-grid-main">
-          <Section title="Node">
-            {runtimeLoading ? (
-              <Skeleton active paragraph={{ rows: 4 }} title={false} />
-            ) : runtime ? (
-              <Descriptions column={1} items={nodeSummaryToItems(nodeItems)} size="small" />
-            ) : (
-              <Empty description="Runtime details are unavailable" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-            )}
-          </Section>
+            <Section
+              title="Replication"
+              note="Last known state for every configured remote source."
+              extra={
+                <Button onClick={() => navigate('/sync')} size="small" type="link">
+                  Open replication
+                </Button>
+              }
+            >
+              {syncLoading ? (
+                <Skeleton active paragraph={{ rows: 4 }} title={false} />
+              ) : replicationItems.length === 0 ? (
+                <Empty description="No replication remotes yet" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+              ) : (
+                <List
+                  dataSource={replicationItems}
+                  renderItem={({ remote, status, summary, detail, disabled }) => (
+                    <List.Item key={remote.id}>
+                      <List.Item.Meta
+                        description={`${remote.endpoint} · ${summary} · ${detail}`}
+                        title={
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                            <span>{remote.display_name}</span>
+                            {replicationStatusTag(status, disabled)}
+                          </span>
+                        }
+                      />
+                    </List.Item>
+                  )}
+                />
+              )}
+            </Section>
 
-          <Section
-            title="Replication"
-            note="Last known state for every configured remote source."
-            extra={
-              <Button onClick={() => navigate('/sync')} size="small" type="link">
-                Open replication
-              </Button>
-            }
-          >
-            {syncLoading ? (
-              <Skeleton active paragraph={{ rows: 4 }} title={false} />
-            ) : replicationItems.length === 0 ? (
-              <Empty description="No replication remotes yet" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-            ) : (
-              <List
-                dataSource={replicationItems}
-                renderItem={({ remote, status, summary, detail, disabled }) => (
-                  <List.Item key={remote.id}>
-                    <List.Item.Meta
-                      description={`${remote.endpoint} · ${summary} · ${detail}`}
-                      title={
-                        <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                          <span>{remote.display_name}</span>
-                          {replicationStatusTag(status, disabled)}
-                        </span>
-                      }
-                    />
-                  </List.Item>
-                )}
-              />
-            )}
-          </Section>
+            <Section title="Node">
+              {runtimeLoading ? (
+                <Skeleton active paragraph={{ rows: 4 }} title={false} />
+              ) : runtime ? (
+                <Descriptions column={1} items={nodeSummaryToItems(nodeItems)} size="small" />
+              ) : (
+                <Empty description="Runtime details are unavailable" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+              )}
+            </Section>
+          </div>
+
+          <div className="workspace-stack">
+            <Section
+              title="Activity"
+              extra={
+                <Button onClick={() => navigate('/audit')} size="small" type="link">
+                  Open
+                </Button>
+              }
+            >
+              {activityLoading ? (
+                <Skeleton active paragraph={{ rows: 4 }} title={false} />
+              ) : activityItems.length === 0 ? (
+                <Empty description="No recent activity" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+              ) : (
+                <List
+                  dataSource={activityItems}
+                  renderItem={(item: ActivityDisplayItem) => (
+                    <List.Item key={item.key}>
+                      <List.Item.Meta description={item.meta || undefined} title={item.title} />
+                      <Text type="secondary">{item.time}</Text>
+                    </List.Item>
+                  )}
+                />
+              )}
+            </Section>
+
+          </div>
         </div>
       </div>
     </ConsoleShell>

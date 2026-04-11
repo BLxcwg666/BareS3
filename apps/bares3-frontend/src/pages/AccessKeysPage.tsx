@@ -136,9 +136,6 @@ export function AccessKeysPage() {
     <ConsoleShell
       actions={
         <Space size={8} wrap>
-          <Button onClick={() => void refresh()} size="small">
-            Refresh
-          </Button>
           <Button onClick={() => setIsCreateModalOpen(true)} type="primary">
             Create key
           </Button>

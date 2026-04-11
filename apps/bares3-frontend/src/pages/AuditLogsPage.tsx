@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button, Empty, Table } from 'antd';
+import { Empty, Table } from 'antd';
 import { ConsoleShell } from '../components/ConsoleShell';
 import { Section } from '../components/Section';
 import { TableFooterPagination } from '../components/TableFooterPagination';
@@ -9,7 +9,7 @@ import { auditLogColumns } from '../tables';
 const auditPageSizeOptions = [20, 50, 100];
 
 export function AuditLogsPage() {
-  const { items, loading, refresh } = useAuditActivity(100);
+  const { items, loading } = useAuditActivity(100);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
 
@@ -17,14 +17,7 @@ export function AuditLogsPage() {
   const pageItems = items.slice(start, start + pageSize);
 
   return (
-    <ConsoleShell
-      showHeaderSearch={false}
-      actions={
-        <Button onClick={() => void refresh()} type="primary">
-          Refresh
-        </Button>
-      }
-    >
+    <ConsoleShell showHeaderSearch={false}>
       <div className="workspace-stack">
         <Section flush title="Recent events">
           <Table

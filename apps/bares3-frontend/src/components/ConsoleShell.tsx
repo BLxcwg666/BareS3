@@ -4,6 +4,7 @@ import {
   AppstoreOutlined,
   CloudServerOutlined,
   FolderOpenOutlined,
+  GlobalOutlined,
   HistoryOutlined,
   KeyOutlined,
   LinkOutlined,
@@ -42,7 +43,46 @@ export function ConsoleShell({ children, actions, showHeaderSearch = true, meta:
     navigate('/login');
   };
 
-  const menuItems = useMemo<MenuProps['items']>(
+  const desktopMenuItems = useMemo<MenuProps['items']>(
+    () => [
+      {
+        type: 'group',
+        label: 'Overview',
+        children: [
+          { key: '/overview', icon: <AppstoreOutlined />, label: 'Overview' },
+        ],
+      },
+      {
+        type: 'group',
+        label: 'Storage',
+        children: [
+          { key: '/buckets', icon: <CloudServerOutlined />, label: 'Buckets' },
+          { key: '/browser', icon: <FolderOpenOutlined />, label: 'Browser' },
+          { key: '/links', icon: <LinkOutlined />, label: 'Share links' },
+        ],
+      },
+      {
+        type: 'group',
+        label: 'Configuration',
+        children: [
+          { key: '/access-keys', icon: <KeyOutlined />, label: 'Access keys' },
+          { key: '/domains', icon: <GlobalOutlined />, label: 'Domains' },
+          { key: '/sync', icon: <SyncOutlined />, label: 'Replication' },
+        ],
+      },
+      {
+        type: 'group',
+        label: 'Operations',
+        children: [
+          { key: '/audit', icon: <HistoryOutlined />, label: 'Audit logs' },
+          { key: '/settings', icon: <SettingOutlined />, label: 'Settings' },
+        ],
+      },
+    ],
+    [],
+  );
+
+  const mobileMenuItems = useMemo<MenuProps['items']>(
     () => [
       { key: '/overview', icon: <AppstoreOutlined />, label: 'Overview' },
       { key: '/buckets', icon: <CloudServerOutlined />, label: 'Buckets' },
@@ -50,7 +90,7 @@ export function ConsoleShell({ children, actions, showHeaderSearch = true, meta:
       { key: '/access-keys', icon: <KeyOutlined />, label: 'Access keys' },
       { key: '/audit', icon: <HistoryOutlined />, label: 'Audit logs' },
       { key: '/links', icon: <LinkOutlined />, label: 'Share links' },
-      { key: '/domains', icon: <CloudServerOutlined />, label: 'Domains' },
+      { key: '/domains', icon: <GlobalOutlined />, label: 'Domains' },
       { key: '/sync', icon: <SyncOutlined />, label: 'Replication' },
       { key: '/settings', icon: <SettingOutlined />, label: 'Settings' },
     ],
@@ -74,7 +114,7 @@ export function ConsoleShell({ children, actions, showHeaderSearch = true, meta:
 
               <Menu
                 className="shell-menu"
-                items={menuItems}
+                items={desktopMenuItems}
                 mode="inline"
                 onClick={({ key }) => navigate(String(key))}
                 selectedKeys={[location.pathname]}
@@ -114,7 +154,7 @@ export function ConsoleShell({ children, actions, showHeaderSearch = true, meta:
             {!screens.lg ? (
               <Menu
                 className="mobile-menu"
-                items={menuItems}
+                items={mobileMenuItems}
                 mode="horizontal"
                 onClick={({ key }) => navigate(String(key))}
                 selectedKeys={[location.pathname]}
