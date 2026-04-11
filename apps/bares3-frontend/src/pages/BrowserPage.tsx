@@ -77,6 +77,12 @@ type UploadProgressState = {
   failed: number;
   current: string;
   phase: 'uploading' | 'done';
+  failures: UploadFailure[];
+};
+
+type UploadFailure = {
+  key: string;
+  reason: string;
 };
 
 type RenameState =
@@ -132,6 +138,23 @@ function objectParentPrefix(key: string) {
     return '';
   }
   return normalized.slice(0, index + 1);
+}
+
+function formatUploadFailure(failure: UploadFailure) {
+  return failure.reason ? `${failure.key} (${failure.reason})` : failure.key;
+}
+
+function summarizeUploadFailures(failures: UploadFailure[], limit = 3) {
+  if (failures.length === 0) {
+    return '';
+  }
+
+  const visible = failures.slice(0, limit).map(formatUploadFailure);
+  if (failures.length <= limit) {
+    return visible.join(', ');
+  }
+
+  return `${visible.join(', ')}, +${failures.length - limit} more`;
 }
 
 function buildBrowserEntries(objects: ObjectInfo[], bucket: string | null, prefix: string): BrowserEntry[] {
@@ -428,6 +451,23 @@ export function BrowserPage() {
     }, 2380);
   }, []);
 
+  const closeUploadProgress = useCallback(() => {
+    if (uploadProgressHideTimeoutRef.current !== null) {
+      window.clearTimeout(uploadProgressHideTimeoutRef.current);
+      uploadProgressHideTimeoutRef.current = null;
+    }
+    if (uploadProgressRemoveTimeoutRef.current !== null) {
+      window.clearTimeout(uploadProgressRemoveTimeoutRef.current);
+    }
+
+    setUploadProgressClosing(true);
+    uploadProgressRemoveTimeoutRef.current = window.setTimeout(() => {
+      setUploadProgress(null);
+      setUploadProgressClosing(false);
+      uploadProgressRemoveTimeoutRef.current = null;
+    }, 220);
+  }, []);
+
   const uploadCandidates = useCallback(
     async (candidates: UploadCandidate[]) => {
       if (!selectedBucket) {
@@ -459,7 +499,7 @@ export function BrowserPage() {
       }
 
       const uploadedItems: ObjectInfo[] = [];
-      const failedKeys: string[] = [];
+      const failedUploads: UploadFailure[] = [];
 
       setUploading(true);
       setUploadProgressClosing(false);
@@ -470,6 +510,7 @@ export function BrowserPage() {
         failed: 0,
         current: resolvedCandidates[0].key,
         phase: 'uploading',
+        failures: [],
       });
 
       try {
@@ -495,8 +536,11 @@ export function BrowserPage() {
                   }
                 : current,
             );
-          } catch (_error) {
-            failedKeys.push(candidate.key);
+          } catch (error) {
+            failedUploads.push({
+              key: candidate.key,
+              reason: normalizeApiError(error, 'Upload failed'),
+            });
             setUploadProgress((current) =>
               current
                 ? {
@@ -526,26 +570,33 @@ export function BrowserPage() {
                 ...current,
                 phase: 'done',
                 current:
-                  failedKeys.length > 0
-                    ? `Finished with ${failedKeys.length} failed`
+                  failedUploads.length > 0
+                    ? 'Review failed uploads below'
                     : uploadedItems.length === 1
                       ? uploadedItems[0].key
                       : `Finished ${uploadedItems.length} uploads`,
+                failures: failedUploads,
               }
             : current,
         );
-        closeUploadProgressSoon();
+        if (failedUploads.length === 0) {
+          closeUploadProgressSoon();
+        }
 
-        if (uploadedItems.length > 0 && failedKeys.length === 0) {
+        if (uploadedItems.length > 0 && failedUploads.length === 0) {
           message.success(uploadedItems.length === 1 ? `Uploaded ${uploadedItems[0].key}` : `Uploaded ${uploadedItems.length} items`);
           return;
         }
-        if (uploadedItems.length === 0 && failedKeys.length > 0) {
-          message.error(failedKeys.length === 1 ? `Failed to upload ${failedKeys[0]}` : `Failed to upload ${failedKeys.length} items`);
+        if (uploadedItems.length === 0 && failedUploads.length > 0) {
+          message.error(
+            failedUploads.length === 1
+              ? formatUploadFailure(failedUploads[0])
+              : `Failed to upload ${failedUploads.length} items: ${summarizeUploadFailures(failedUploads)}`,
+          );
           return;
         }
-        if (uploadedItems.length > 0 && failedKeys.length > 0) {
-          message.warning(`Uploaded ${uploadedItems.length} items, ${failedKeys.length} failed`);
+        if (uploadedItems.length > 0 && failedUploads.length > 0) {
+          message.warning(`Uploaded ${uploadedItems.length} items. Failed: ${summarizeUploadFailures(failedUploads)}`);
         }
       } finally {
         setUploading(false);
@@ -1398,8 +1449,20 @@ export function BrowserPage() {
                     <div className="row-title">{uploadProgress.phase === 'uploading' ? 'Uploading objects' : 'Upload complete'}</div>
                     <div className="row-note">{uploadProgress.current}</div>
                   </div>
-                  <div className="upload-progress-summary">
-                    {uploadProgress.completed}/{uploadProgress.total}
+                  <div className="upload-progress-actions">
+                    <div className="upload-progress-summary">
+                      {uploadProgress.completed}/{uploadProgress.total}
+                    </div>
+                    {uploadProgress.phase === 'done' ? (
+                      <button
+                        aria-label="Close upload progress"
+                        className="inspector-icon-button"
+                        onClick={() => closeUploadProgress()}
+                        type="button"
+                      >
+                        <CloseOutlined />
+                      </button>
+                    ) : null}
                   </div>
                 </div>
                 <Progress percent={Math.round((uploadProgress.completed / uploadProgress.total) * 100)} showInfo={false} size="small" />
@@ -1407,6 +1470,15 @@ export function BrowserPage() {
                   {uploadProgress.succeeded} uploaded
                   {uploadProgress.failed > 0 ? ` · ${uploadProgress.failed} failed` : ''}
                 </div>
+                {uploadProgress.failures.length > 0 ? (
+                  <div className="upload-progress-failures">
+                    {uploadProgress.failures.map((failure) => (
+                      <div className="upload-progress-failure" key={`${failure.key}:${failure.reason}`}>
+                        {formatUploadFailure(failure)}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ) : null}
 

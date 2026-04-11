@@ -1458,6 +1458,24 @@ a {
   white-space: nowrap;
 }
 
+.upload-progress-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.upload-progress-failures {
+  display: grid;
+  gap: 4px;
+  padding-top: 4px;
+}
+
+.upload-progress-failure {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 @keyframes upload-progress-enter {
   from {
     opacity: 0;
