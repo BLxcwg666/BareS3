@@ -74,8 +74,6 @@ func (a *App) Run(ctx context.Context) error {
 			Addr:              spec.addr,
 			Handler:           spec.handler,
 			ReadHeaderTimeout: 10 * time.Second,
-			ReadTimeout:       15 * time.Second,
-			WriteTimeout:      30 * time.Second,
 			IdleTimeout:       60 * time.Second,
 		}
 		servers = append(servers, srv)
