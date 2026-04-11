@@ -310,9 +310,9 @@ export function SyncPage() {
               : remote.connection_status === 'connecting'
                 ? <><SyncOutlined spin /> Connecting stream</>
                 : <><WarningOutlined /> Stream offline</>}
-            <Tag bordered={false} color={remote.enabled ? 'success' : 'default'} style={{ margin: 0 }}>{remote.enabled ? 'Enabled' : 'Disabled'}</Tag>
-            <Tag bordered={false} color="processing" style={{ margin: 0 }}>{remote.follow_changes ? 'Live follow' : 'Snapshot only'}</Tag>
-            <Tag bordered={false} style={{ margin: 0 }}>{remote.bootstrap_mode === 'from_now' ? 'From current cursor' : 'Full import'}</Tag>
+            <Tag bordered={false} color={remote.enabled ? 'green' : 'default'} style={{ margin: 0 }}>{remote.enabled ? 'Enabled' : 'Disabled'}</Tag>
+            <Tag bordered={false} color="blue" style={{ margin: 0 }}>{remote.follow_changes ? 'Live follow' : 'Snapshot only'}</Tag>
+            <Tag bordered={false} color="default" style={{ margin: 0 }}>{remote.bootstrap_mode === 'from_now' ? 'From current cursor' : 'Full import'}</Tag>
           </span>
           {remote.last_error?.trim() ? <span>{remote.last_error}</span> : null}
         </div>
@@ -514,7 +514,7 @@ export function SyncPage() {
                       <Text className="sync-token-meta" type="secondary">{item.label?.trim() || 'Unlabeled token'} · Created {formatDateTime(item.created_at)}</Text>
                     </div>
                     <Space wrap>
-                      <Tag color={item.status === 'active' ? 'success' : 'warning'}>{item.status}</Tag>
+                      <Tag color={item.status === 'active' ? 'green' : 'orange'}>{item.status}</Tag>
                       <Button icon={<CopyOutlined />} onClick={() => void copyText(item.token)} size="small">
                         Copy
                       </Button>
