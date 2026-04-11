@@ -61,6 +61,10 @@ function createThemeConfig(mode: ResolvedTheme): ThemeConfig {
       colorBgBase: isDark ? '#15171a' : '#f3f0e9',
       colorBgLayout: isDark ? '#15171a' : '#f3f0e9',
       colorBgContainer: isDark ? '#1c1f23' : '#faf7f0',
+      colorBgElevated: isDark ? '#22262b' : '#ffffff',
+      colorBgSpotlight: isDark ? '#2a2f36' : '#ffffff',
+      colorFillTertiary: isDark ? '#ffffff0f' : '#0000000a',
+      colorFillQuaternary: isDark ? '#ffffff07' : '#00000005',
       colorBorder: isDark ? '#343a42' : '#d8d3c8',
       colorBorderSecondary: isDark ? '#2a2f36' : '#e5dfd4',
       colorText: isDark ? '#edf1f5' : '#1f231f',
@@ -103,6 +107,20 @@ function createThemeConfig(mode: ResolvedTheme): ThemeConfig {
       Tag: {
         defaultBg: isDark ? '#24292e' : '#f1ece1',
         defaultColor: isDark ? '#edf1f5' : '#34372f',
+      },
+      Modal: {
+        contentBg: isDark ? '#22262b' : '#ffffff',
+        headerBg: isDark ? '#22262b' : '#ffffff',
+        footerBg: isDark ? '#22262b' : '#ffffff',
+      },
+      Drawer: {
+        colorBgElevated: isDark ? '#22262b' : '#ffffff',
+      },
+      Select: {
+        optionSelectedBg: isDark ? '#2a3028' : '#eef1e7',
+      },
+      Popover: {
+        colorBgElevated: isDark ? '#22262b' : '#ffffff',
       },
     },
   };
