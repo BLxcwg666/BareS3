@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 
@@ -453,5 +454,29 @@ func RegisterObjectRoutes(protected chi.Router, store *storage.Store, shareLinks
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, object)
+	})
+
+	protected.Get("/buckets/{bucket}/preview/*", func(w http.ResponseWriter, r *http.Request) {
+		file, object, err := store.OpenObject(r.Context(), chi.URLParam(r, "bucket"), chi.URLParam(r, "*"))
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		defer func() {
+			_ = file.Close()
+		}()
+
+		if object.ContentType != "" {
+			w.Header().Set("Content-Type", object.ContentType)
+		}
+		if object.CacheControl != "" {
+			w.Header().Set("Cache-Control", object.CacheControl)
+		}
+		if object.ETag != "" {
+			w.Header().Set("ETag", `"`+object.ETag+`"`)
+		}
+		w.Header().Set("Content-Disposition", `inline; filename="`+path.Base(object.Key)+`"`)
+
+		http.ServeContent(w, r, path.Base(object.Key), object.LastModified, file)
 	})
 }
