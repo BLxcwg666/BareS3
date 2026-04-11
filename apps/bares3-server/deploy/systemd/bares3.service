@@ -1,0 +1,16 @@
+[Unit]
+Description=BareS3 Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/bares3
+ExecStart=/opt/bares3/bares3d serve --config /opt/bares3/config.yml
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
