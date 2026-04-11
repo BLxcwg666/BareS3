@@ -64,6 +64,9 @@ func TestInitCommandWritesConfiguredValues(t *testing.T) {
 	if cfg.Listen.Admin != "127.0.0.1:29080" || cfg.Listen.S3 != "0.0.0.0:9900" || cfg.Listen.File != "0.0.0.0:9901" {
 		t.Fatalf("unexpected listen config: %+v", cfg.Listen)
 	}
+	if cfg.App.Env != "production" {
+		t.Fatalf("unexpected app env: %q", cfg.App.Env)
+	}
 	if cfg.Auth.Console.Username != "ops-admin" {
 		t.Fatalf("unexpected username: %q", cfg.Auth.Console.Username)
 	}

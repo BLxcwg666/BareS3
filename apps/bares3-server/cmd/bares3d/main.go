@@ -214,6 +214,8 @@ func runInitWizard(cfg *config.Config) error {
 		return fmt.Errorf("config is required")
 	}
 
+	cfg.App.Env = "production"
+
 	if err := applyWizardString("Admin listen address", "127.0.0.1:19080", &cfg.Listen.Admin); err != nil {
 		return err
 	}
