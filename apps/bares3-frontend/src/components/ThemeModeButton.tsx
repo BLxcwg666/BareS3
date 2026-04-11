@@ -21,6 +21,7 @@ export function ThemeModeButton() {
 
   return (
     <Dropdown
+      overlayClassName="theme-mode-dropdown"
       menu={{
         items: menuItems,
         onClick: ({ key }) => setThemeMode(key as ThemeMode),

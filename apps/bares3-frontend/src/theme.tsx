@@ -92,8 +92,10 @@ function createThemeConfig(mode: ResolvedTheme): ThemeConfig {
       Menu: {
         itemBg: 'transparent',
         itemBorderRadius: 6,
-        itemSelectedBg: isDark ? '#263028' : '#eef1e7',
-        itemSelectedColor: isDark ? '#edf1f5' : '#1f231f',
+        popupBg: isDark ? '#22262b' : '#fdfbf7',
+        itemHoverBg: isDark ? '#2a2f36' : '#f3eee4',
+        itemSelectedBg: isDark ? '#263028' : '#dde6d7',
+        itemSelectedColor: isDark ? '#edf1f5' : '#27402d',
         itemHoverColor: isDark ? '#edf1f5' : '#1f231f',
         iconSize: 15,
       },
