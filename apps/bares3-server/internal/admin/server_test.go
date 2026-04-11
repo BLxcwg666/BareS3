@@ -158,9 +158,10 @@ func TestProtectedMutationsRemainAllowedWhenSyncEnabled(t *testing.T) {
 	}
 	cfg.Auth.Console.PasswordHash = hash
 	cfg.Auth.Console.SessionSecret = "test-session-secret"
-	cfg.Sync.Enabled = true
-
 	store := newStorageStoreForTest(t, cfg)
+	if _, err := store.SetSyncSettings(context.Background(), storage.SyncSettings{Enabled: true}); err != nil {
+		t.Fatalf("SetSyncSettings failed: %v", err)
+	}
 	handler := newAdminHandlerForTest(t, cfg, store, nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -1902,9 +1903,6 @@ func TestS3CredentialCRUD(t *testing.T) {
 	}
 	cfg.Auth.Console.PasswordHash = hash
 	cfg.Auth.Console.SessionSecret = "test-session-secret"
-	cfg.Auth.S3.AccessKeyID = ""
-	cfg.Auth.S3.SecretAccessKey = ""
-
 	store := newStorageStoreForTest(t, cfg)
 	handler := newAdminHandlerForTest(t, cfg, store, nil)
 	cookie := loginCookie(t, handler)
@@ -1961,7 +1959,7 @@ func TestS3CredentialCRUD(t *testing.T) {
 	if err := json.Unmarshal(listRecorder.Body.Bytes(), &listPayload); err != nil {
 		t.Fatalf("unmarshal listed credentials failed: %v", err)
 	}
-	if len(listPayload.Items) != 2 {
+	if len(listPayload.Items) != 1 {
 		t.Fatalf("unexpected listed credential count: %+v", listPayload.Items)
 	}
 	if listPayload.Items[0].AccessKeyID != created.AccessKeyID || listPayload.Items[0].Permission != s3creds.PermissionReadWrite || listPayload.Items[0].Status != "active" {
@@ -2047,18 +2045,7 @@ func newShareLinksForTest(t *testing.T, dataDir string) *sharelink.Store {
 
 func newCredentialsForTest(t *testing.T, cfg config.Config) *s3creds.Store {
 	t.Helper()
-	bootstrap := s3creds.BootstrapCredential{
-		AccessKeyID:     cfg.Auth.S3.AccessKeyID,
-		SecretAccessKey: cfg.Auth.S3.SecretAccessKey,
-	}
-	if bootstrap.AccessKeyID == "" || bootstrap.SecretAccessKey == "" {
-		bootstrap.AccessKeyID = "test-access-key"
-		bootstrap.SecretAccessKey = "test-secret-key"
-	}
-	creds, err := s3creds.New(cfg.Paths.DataDir, s3creds.BootstrapCredential{
-		AccessKeyID:     bootstrap.AccessKeyID,
-		SecretAccessKey: bootstrap.SecretAccessKey,
-	}, zap.NewNop())
+	creds, err := s3creds.New(cfg.Paths.DataDir, zap.NewNop())
 	if err != nil {
 		t.Fatalf("s3creds.New failed: %v", err)
 	}

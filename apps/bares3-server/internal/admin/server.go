@@ -46,10 +46,7 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 		}
 	}
 	if credentials == nil {
-		credentials, err = s3creds.New(cfg.Paths.DataDir, s3creds.BootstrapCredential{
-			AccessKeyID:     cfg.Auth.S3.AccessKeyID,
-			SecretAccessKey: cfg.Auth.S3.SecretAccessKey,
-		}, logger.Named("s3creds"))
+		credentials, err = s3creds.New(cfg.Paths.DataDir, logger.Named("s3creds"))
 		if err != nil {
 			panic(fmt.Sprintf("initialize s3 credential store: %v", err))
 		}

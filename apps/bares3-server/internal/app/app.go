@@ -37,10 +37,7 @@ type serverSpec struct {
 }
 
 func New(cfg config.Config, logger *zap.Logger) *App {
-	creds, err := s3creds.New(cfg.Paths.DataDir, s3creds.BootstrapCredential{
-		AccessKeyID:     cfg.Auth.S3.AccessKeyID,
-		SecretAccessKey: cfg.Auth.S3.SecretAccessKey,
-	}, logx.MustChild(logger, "s3creds"))
+	creds, err := s3creds.New(cfg.Paths.DataDir, logx.MustChild(logger, "s3creds"))
 	if err != nil {
 		panic(fmt.Sprintf("initialize s3 credential store: %v", err))
 	}

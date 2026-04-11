@@ -94,18 +94,16 @@ func NewVerifier(accessKeyID, secretAccessKey, region, service string) *Verifier
 	}
 }
 
-func NewVerifierWithLookup(lookupSecret func(string) (string, bool), defaultAccessKeyID, defaultSecretAccessKey, region, service string) *Verifier {
+func NewVerifierWithLookup(lookupSecret func(string) (string, bool), region, service string) *Verifier {
 	if lookupSecret == nil {
 		lookupSecret = func(string) (string, bool) { return "", false }
 	}
 	return &Verifier{
-		accessKeyID:     defaultAccessKeyID,
-		secretAccessKey: defaultSecretAccessKey,
-		lookupSecret:    lookupSecret,
-		region:          region,
-		service:         service,
-		now:             time.Now,
-		maxSkew:         defaultMaxSkew,
+		lookupSecret: lookupSecret,
+		region:       region,
+		service:      service,
+		now:          time.Now,
+		maxSkew:      defaultMaxSkew,
 	}
 }
 

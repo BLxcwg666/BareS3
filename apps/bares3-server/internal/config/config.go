@@ -14,8 +14,6 @@ import (
 const (
 	ProductName           = "BareS3"
 	defaultConfigFilename = "config.yml"
-	defaultDevAccessKeyID = "bares3-dev"
-	defaultDevSecretKey   = "bares3-dev-secret"
 )
 
 type Config struct {
@@ -25,7 +23,6 @@ type Config struct {
 	Auth     AuthConfig     `yaml:"auth"`
 	Settings SettingsConfig `yaml:"-"`
 	Logging  LoggingConfig  `yaml:"logging"`
-	Sync     SyncConfig     `yaml:"sync"`
 	Runtime  RuntimeConfig  `yaml:"-"`
 }
 
@@ -47,7 +44,6 @@ type ListenConfig struct {
 
 type AuthConfig struct {
 	Console ConsoleAuthConfig `yaml:"console"`
-	S3      S3AuthConfig      `yaml:"s3"`
 }
 
 type ConsoleAuthConfig struct {
@@ -55,11 +51,6 @@ type ConsoleAuthConfig struct {
 	PasswordHash      string `yaml:"password_hash"`
 	SessionSecret     string `yaml:"session_secret"`
 	SessionTTLMinutes int    `yaml:"session_ttl_minutes"`
-}
-
-type S3AuthConfig struct {
-	AccessKeyID     string `yaml:"access_key_id"`
-	SecretAccessKey string `yaml:"secret_access_key"`
 }
 
 type SettingsConfig struct {
@@ -75,10 +66,6 @@ type LoggingConfig struct {
 	Format       string `yaml:"format"`
 	RotateSizeMB int    `yaml:"rotate_size_mb"`
 	RotateKeep   int    `yaml:"rotate_keep"`
-}
-
-type SyncConfig struct {
-	Enabled bool `yaml:"enabled"`
 }
 
 type RuntimeConfig struct {
@@ -117,9 +104,6 @@ func Default() Config {
 			Format:       "pretty",
 			RotateSizeMB: 16,
 			RotateKeep:   10,
-		},
-		Sync: SyncConfig{
-			Enabled: false,
 		},
 	}
 }
@@ -212,14 +196,6 @@ func (c Config) Validate() error {
 	if c.Auth.Console.SessionTTLMinutes <= 0 {
 		return errors.New("auth.console.session_ttl_minutes must be greater than zero")
 	}
-	accessKeyID := strings.TrimSpace(c.Auth.S3.AccessKeyID)
-	secretAccessKey := strings.TrimSpace(c.Auth.S3.SecretAccessKey)
-	if (accessKeyID == "") != (secretAccessKey == "") {
-		return errors.New("auth.s3.access_key_id and auth.s3.secret_access_key must both be set or both be empty")
-	}
-	if accessKeyID != "" && !isDevelopmentEnv(c.App.Env) && usesDefaultDevelopmentS3Credentials(c.Auth.S3) {
-		return errors.New("auth.s3 credentials must be changed from the bundled development defaults outside development")
-	}
 	if dataVolume, tmpVolume := strings.ToLower(filepath.VolumeName(c.Paths.DataDir)), strings.ToLower(filepath.VolumeName(c.Paths.TmpDir)); dataVolume != "" && tmpVolume != "" && dataVolume != tmpVolume {
 		return fmt.Errorf("paths.tmp_dir must be on the same volume as paths.data_dir for atomic moves (%s != %s)", c.Paths.DataDir, c.Paths.TmpDir)
 	}
@@ -299,12 +275,4 @@ func derivePublicBaseURL(listenAddr string) string {
 		host = "127.0.0.1"
 	}
 	return "http://" + net.JoinHostPort(host, port)
-}
-
-func usesDefaultDevelopmentS3Credentials(auth S3AuthConfig) bool {
-	return strings.TrimSpace(auth.AccessKeyID) == defaultDevAccessKeyID && strings.TrimSpace(auth.SecretAccessKey) == defaultDevSecretKey
-}
-
-func isDevelopmentEnv(value string) bool {
-	return strings.EqualFold(strings.TrimSpace(value), "development")
 }

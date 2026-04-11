@@ -60,9 +60,6 @@ func New(cfg config.Config, logger *zap.Logger) *Store {
 	if err := store.bootstrapRuntimeSettings(cfg); err != nil {
 		panic(fmt.Sprintf("bootstrap runtime settings: %v", err))
 	}
-	if err := store.bootstrapSyncSettings(cfg); err != nil {
-		panic(fmt.Sprintf("bootstrap sync settings: %v", err))
-	}
 	backfilled, err := store.backfillObjectChecksums()
 	if err != nil {
 		panic(fmt.Sprintf("backfill storage object checksums: %v", err))
@@ -1646,19 +1643,6 @@ func newChangeID() string {
 		return fmt.Sprintf("fallback-%d", time.Now().UTC().UnixNano())
 	}
 	return hex.EncodeToString(buf)
-}
-
-func (s *Store) bootstrapSyncSettings(cfg config.Config) error {
-	ctx := context.Background()
-	if _, err := s.SyncSettings(ctx); err == nil {
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	_, err := s.SetSyncSettings(ctx, SyncSettings{
-		Enabled: cfg.Sync.Enabled,
-	})
-	return err
 }
 
 func (s *Store) bootstrapRuntimeSettings(cfg config.Config) error {

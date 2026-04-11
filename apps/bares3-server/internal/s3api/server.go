@@ -26,10 +26,7 @@ func NewHandler(cfg config.Config, store *storage.Store, credentials *s3creds.St
 func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.Store, credentials *s3creds.Store, logger *zap.Logger) http.Handler {
 	if credentials == nil {
 		var err error
-		credentials, err = s3creds.New(cfg.Paths.DataDir, s3creds.BootstrapCredential{
-			AccessKeyID:     cfg.Auth.S3.AccessKeyID,
-			SecretAccessKey: cfg.Auth.S3.SecretAccessKey,
-		}, logger.Named("s3creds"))
+		credentials, err = s3creds.New(cfg.Paths.DataDir, logger.Named("s3creds"))
 		if err != nil {
 			panic(fmt.Sprintf("initialize s3 credential store: %v", err))
 		}
@@ -76,7 +73,7 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 			httpx.WriteJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": err.Error()})
 			return
 		}
-		verifier := sigv4.NewVerifierWithLookup(lookupSecret, cfg.Auth.S3.AccessKeyID, cfg.Auth.S3.SecretAccessKey, runtimeSettings.Region, "s3")
+		verifier := sigv4.NewVerifierWithLookup(lookupSecret, runtimeSettings.Region, "s3")
 		handleS3Request(w, r, cfg, store, shareLinks, credentials, verifier)
 	})
 

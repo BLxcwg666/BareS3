@@ -20,7 +20,6 @@ import (
 
 const (
 	credentialSourceStore = "managed"
-	credentialSourceBoot  = "config"
 	accessKeyPrefix       = "BS3"
 	accessKeyLength       = 20
 
@@ -52,11 +51,6 @@ var (
 		`},
 	}}
 )
-
-type BootstrapCredential struct {
-	AccessKeyID     string
-	SecretAccessKey string
-}
 
 type Credential struct {
 	AccessKeyID     string     `json:"access_key_id"`
@@ -116,7 +110,7 @@ type credentialRecord struct {
 	RevokedAt       sql.NullString `bun:"revoked_at"`
 }
 
-func New(dataDir string, bootstrap BootstrapCredential, logger *zap.Logger) (*Store, error) {
+func New(dataDir string, logger *zap.Logger) (*Store, error) {
 	trimmed := strings.TrimSpace(dataDir)
 	if trimmed == "" {
 		return nil, fmt.Errorf("s3 credential data dir is required")
@@ -135,10 +129,6 @@ func New(dataDir string, bootstrap BootstrapCredential, logger *zap.Logger) (*St
 	if err := statedb.EnsureMigrations(sqlDB, storeMigrations); err != nil {
 		_ = bunDB.Close()
 		return nil, fmt.Errorf("initialize s3 credential schema: %w", err)
-	}
-	if err := store.ensureBootstrap(bunDB, bootstrap); err != nil {
-		_ = bunDB.Close()
-		return nil, err
 	}
 	return store, nil
 }
@@ -598,40 +588,6 @@ func (c Credential) Status() string {
 		return "revoked"
 	}
 	return "active"
-}
-
-func (s *Store) ensureBootstrap(db bun.IDB, bootstrap BootstrapCredential) error {
-	hasCredentials, err := hasAnyCredential(db)
-	if err != nil {
-		return err
-	}
-	if hasCredentials {
-		return nil
-	}
-	if strings.TrimSpace(bootstrap.AccessKeyID) == "" || strings.TrimSpace(bootstrap.SecretAccessKey) == "" {
-		return nil
-	}
-
-	credential := Credential{
-		AccessKeyID:     strings.TrimSpace(bootstrap.AccessKeyID),
-		SecretAccessKey: strings.TrimSpace(bootstrap.SecretAccessKey),
-		Label:           "Imported from config",
-		Source:          credentialSourceBoot,
-		Permission:      PermissionReadWrite,
-		Buckets:         []string{},
-		CreatedAt:       s.now().UTC(),
-	}
-	bucketsJSON, err := encodeBuckets(credential.Buckets)
-	if err != nil {
-		return err
-	}
-	record := newCredentialRecord(credential)
-	record.BucketsJSON = bucketsJSON
-	if _, err := db.NewInsert().Model(&record).Exec(context.Background()); err != nil {
-		return fmt.Errorf("bootstrap s3 credential: %w", err)
-	}
-	s.logger.Info("bootstrapped s3 credential from config", zap.String("access_key_id", credential.AccessKeyID))
-	return nil
 }
 
 func (s *Store) openDB() (*statedb.BunSession, error) {

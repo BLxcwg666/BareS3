@@ -29,10 +29,10 @@ import (
 func TestBucketLifecycleAndList(t *testing.T) {
 	t.Parallel()
 
-	_, handler := newTestHandler(t)
+	_, handler, credential := newTestHandler(t)
 
 	request := httptest.NewRequest(http.MethodPut, "/gallery", nil)
-	signHeaderRequest(t, request, defaultSignedConfig(), nil)
+	signHeaderRequest(t, request, defaultSignedConfig(), credential, nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
@@ -40,7 +40,7 @@ func TestBucketLifecycleAndList(t *testing.T) {
 	}
 
 	listRequest := httptest.NewRequest(http.MethodGet, "/", nil)
-	signHeaderRequest(t, listRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, listRequest, defaultSignedConfig(), credential, nil)
 	listRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(listRecorder, listRequest)
 	if listRecorder.Code != http.StatusOK {
@@ -59,7 +59,7 @@ func TestBucketLifecycleAndList(t *testing.T) {
 func TestPutGetHeadAndListObjectsV2(t *testing.T) {
 	t.Parallel()
 
-	store, handler := newTestHandler(t)
+	store, handler, credential := newTestHandler(t)
 	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestPutGetHeadAndListObjectsV2(t *testing.T) {
 	putRequest.Header.Set("Content-Type", "text/plain")
 	putRequest.Header.Set("Cache-Control", "public, max-age=60")
 	putRequest.Header.Set("X-Amz-Meta-Origin", "test")
-	signHeaderRequest(t, putRequest, defaultSignedConfig(), []byte("hello s3"))
+	signHeaderRequest(t, putRequest, defaultSignedConfig(), credential, []byte("hello s3"))
 	putRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(putRecorder, putRequest)
 	if putRecorder.Code != http.StatusOK {
@@ -79,7 +79,7 @@ func TestPutGetHeadAndListObjectsV2(t *testing.T) {
 	}
 
 	headRequest := httptest.NewRequest(http.MethodHead, "/gallery/2026/launch/mock-02.txt", nil)
-	signHeaderRequest(t, headRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, headRequest, defaultSignedConfig(), credential, nil)
 	headRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(headRecorder, headRequest)
 	if headRecorder.Code != http.StatusOK {
@@ -90,7 +90,7 @@ func TestPutGetHeadAndListObjectsV2(t *testing.T) {
 	}
 
 	getRequest := httptest.NewRequest(http.MethodGet, "/gallery/2026/launch/mock-02.txt", nil)
-	signHeaderRequest(t, getRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, getRequest, defaultSignedConfig(), credential, nil)
 	getRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(getRecorder, getRequest)
 	if getRecorder.Code != http.StatusOK {
@@ -101,7 +101,7 @@ func TestPutGetHeadAndListObjectsV2(t *testing.T) {
 	}
 
 	listRequest := httptest.NewRequest(http.MethodGet, "/gallery?list-type=2&prefix=2026/launch/", nil)
-	signHeaderRequest(t, listRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, listRequest, defaultSignedConfig(), credential, nil)
 	listRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(listRecorder, listRequest)
 	if listRecorder.Code != http.StatusOK {
@@ -120,7 +120,7 @@ func TestPutGetHeadAndListObjectsV2(t *testing.T) {
 func TestObjectConditionalRequests(t *testing.T) {
 	t.Parallel()
 
-	store, handler := newTestHandler(t)
+	store, handler, credential := newTestHandler(t)
 	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestObjectConditionalRequests(t *testing.T) {
 
 	notModifiedRequest := httptest.NewRequest(http.MethodGet, "/gallery/notes/conditional.txt", nil)
 	notModifiedRequest.Header.Set("If-None-Match", `"`+object.ETag+`"`)
-	signHeaderRequest(t, notModifiedRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, notModifiedRequest, defaultSignedConfig(), credential, nil)
 	notModifiedRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(notModifiedRecorder, notModifiedRequest)
 	if notModifiedRecorder.Code != http.StatusNotModified {
@@ -145,7 +145,7 @@ func TestObjectConditionalRequests(t *testing.T) {
 
 	ifMatchFailedRequest := httptest.NewRequest(http.MethodGet, "/gallery/notes/conditional.txt", nil)
 	ifMatchFailedRequest.Header.Set("If-Match", `"different"`)
-	signHeaderRequest(t, ifMatchFailedRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, ifMatchFailedRequest, defaultSignedConfig(), credential, nil)
 	ifMatchFailedRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(ifMatchFailedRecorder, ifMatchFailedRequest)
 	if ifMatchFailedRecorder.Code != http.StatusPreconditionFailed {
@@ -154,7 +154,7 @@ func TestObjectConditionalRequests(t *testing.T) {
 
 	modifiedSinceRequest := httptest.NewRequest(http.MethodGet, "/gallery/notes/conditional.txt", nil)
 	modifiedSinceRequest.Header.Set("If-Modified-Since", object.LastModified.Add(time.Hour).UTC().Format(http.TimeFormat))
-	signHeaderRequest(t, modifiedSinceRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, modifiedSinceRequest, defaultSignedConfig(), credential, nil)
 	modifiedSinceRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(modifiedSinceRecorder, modifiedSinceRequest)
 	if modifiedSinceRecorder.Code != http.StatusNotModified {
@@ -163,7 +163,7 @@ func TestObjectConditionalRequests(t *testing.T) {
 
 	unmodifiedSinceRequest := httptest.NewRequest(http.MethodHead, "/gallery/notes/conditional.txt", nil)
 	unmodifiedSinceRequest.Header.Set("If-Unmodified-Since", object.LastModified.Add(-time.Hour).UTC().Format(http.TimeFormat))
-	signHeaderRequest(t, unmodifiedSinceRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, unmodifiedSinceRequest, defaultSignedConfig(), credential, nil)
 	unmodifiedSinceRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(unmodifiedSinceRecorder, unmodifiedSinceRequest)
 	if unmodifiedSinceRecorder.Code != http.StatusPreconditionFailed {
@@ -174,7 +174,7 @@ func TestObjectConditionalRequests(t *testing.T) {
 func TestListObjectsV1WithoutListTypeParameter(t *testing.T) {
 	t.Parallel()
 
-	store, handler := newTestHandler(t)
+	store, handler, credential := newTestHandler(t)
 	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestListObjectsV1WithoutListTypeParameter(t *testing.T) {
 	}
 
 	listRequest := httptest.NewRequest(http.MethodGet, "/gallery?prefix=2026/launch/", nil)
-	signHeaderRequest(t, listRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, listRequest, defaultSignedConfig(), credential, nil)
 	listRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(listRecorder, listRequest)
 	if listRecorder.Code != http.StatusOK {
@@ -205,7 +205,7 @@ func TestListObjectsV1WithoutListTypeParameter(t *testing.T) {
 func TestUnsignedRequestIsRejected(t *testing.T) {
 	t.Parallel()
 
-	_, handler := newTestHandler(t)
+	_, handler, _ := newTestHandler(t)
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
@@ -220,14 +220,11 @@ func TestManagedS3CredentialWorksWithoutConfigKey(t *testing.T) {
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
 	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
-	cfg.Auth.S3.AccessKeyID = ""
-	cfg.Auth.S3.SecretAccessKey = ""
-
 	store := storage.New(cfg, zap.NewNop())
 	t.Cleanup(func() {
 		_ = store.Close()
 	})
-	creds, err := s3creds.New(cfg.Paths.DataDir, s3creds.BootstrapCredential{}, zap.NewNop())
+	creds, err := s3creds.New(cfg.Paths.DataDir, zap.NewNop())
 	if err != nil {
 		t.Fatalf("s3creds.New failed: %v", err)
 	}
@@ -245,10 +242,7 @@ func TestManagedS3CredentialWorksWithoutConfigKey(t *testing.T) {
 	}
 	putBody := []byte("hello managed key")
 	putRequest := httptest.NewRequest(http.MethodPut, "/gallery/managed.txt", bytes.NewReader(putBody))
-	signedCfg := cfg
-	signedCfg.Auth.S3.AccessKeyID = created.AccessKeyID
-	signedCfg.Auth.S3.SecretAccessKey = created.SecretAccessKey
-	signHeaderRequest(t, putRequest, signedCfg, putBody)
+	signHeaderRequest(t, putRequest, cfg, signingCredential{AccessKeyID: created.AccessKeyID, SecretAccessKey: created.SecretAccessKey}, putBody)
 	putRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(putRecorder, putRequest)
 	if putRecorder.Code != http.StatusOK {
@@ -271,9 +265,6 @@ func TestScopedReadOnlyCredentialRestrictsBucketsAndWrites(t *testing.T) {
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
 	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
-	cfg.Auth.S3.AccessKeyID = ""
-	cfg.Auth.S3.SecretAccessKey = ""
-
 	store := storage.New(cfg, zap.NewNop())
 	t.Cleanup(func() {
 		_ = store.Close()
@@ -288,7 +279,7 @@ func TestScopedReadOnlyCredentialRestrictsBucketsAndWrites(t *testing.T) {
 		t.Fatalf("PutObject failed: %v", err)
 	}
 
-	creds, err := s3creds.New(cfg.Paths.DataDir, s3creds.BootstrapCredential{}, zap.NewNop())
+	creds, err := s3creds.New(cfg.Paths.DataDir, zap.NewNop())
 	if err != nil {
 		t.Fatalf("s3creds.New failed: %v", err)
 	}
@@ -300,12 +291,10 @@ func TestScopedReadOnlyCredentialRestrictsBucketsAndWrites(t *testing.T) {
 		t.Fatalf("Create credential failed: %v", err)
 	}
 	handler := newHandler(cfg, store, newShareLinksForTest(t, cfg.Paths.DataDir), creds, zap.NewNop())
-	signedCfg := cfg
-	signedCfg.Auth.S3.AccessKeyID = created.AccessKeyID
-	signedCfg.Auth.S3.SecretAccessKey = created.SecretAccessKey
+	credential := signingCredential{AccessKeyID: created.AccessKeyID, SecretAccessKey: created.SecretAccessKey}
 
 	allowedRequest := httptest.NewRequest(http.MethodGet, "/gallery/notes/readme.txt", nil)
-	signHeaderRequest(t, allowedRequest, signedCfg, nil)
+	signHeaderRequest(t, allowedRequest, cfg, credential, nil)
 	allowedRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(allowedRecorder, allowedRequest)
 	if allowedRecorder.Code != http.StatusOK {
@@ -313,14 +302,14 @@ func TestScopedReadOnlyCredentialRestrictsBucketsAndWrites(t *testing.T) {
 	}
 
 	blockedBucketRequest := httptest.NewRequest(http.MethodGet, "/archive?list-type=2", nil)
-	signHeaderRequest(t, blockedBucketRequest, signedCfg, nil)
+	signHeaderRequest(t, blockedBucketRequest, cfg, credential, nil)
 	blockedBucketRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(blockedBucketRecorder, blockedBucketRequest)
 	assertS3Error(t, blockedBucketRecorder, http.StatusForbidden, "AccessDenied", cfg.Settings.Region, "archive")
 
 	writeBody := []byte("nope")
 	blockedWriteRequest := httptest.NewRequest(http.MethodPut, "/gallery/new.txt", bytes.NewReader(writeBody))
-	signHeaderRequest(t, blockedWriteRequest, signedCfg, writeBody)
+	signHeaderRequest(t, blockedWriteRequest, cfg, credential, writeBody)
 	blockedWriteRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(blockedWriteRecorder, blockedWriteRequest)
 	assertS3Error(t, blockedWriteRecorder, http.StatusForbidden, "AccessDenied", cfg.Settings.Region, "gallery")
@@ -329,7 +318,7 @@ func TestScopedReadOnlyCredentialRestrictsBucketsAndWrites(t *testing.T) {
 func TestPresignedGetObject(t *testing.T) {
 	t.Parallel()
 
-	store, handler := newTestHandler(t)
+	store, handler, credential := newTestHandler(t)
 	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
@@ -344,7 +333,7 @@ func TestPresignedGetObject(t *testing.T) {
 	}
 
 	request := httptest.NewRequest(http.MethodGet, "/gallery/notes/presigned.txt", nil)
-	signPresignedRequest(t, request, defaultSignedConfig(), 5*time.Minute)
+	signPresignedRequest(t, request, defaultSignedConfig(), credential, 5*time.Minute)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
@@ -358,7 +347,7 @@ func TestPresignedGetObject(t *testing.T) {
 func TestCustomBucketAccessCanDenySignedReads(t *testing.T) {
 	t.Parallel()
 
-	store, handler := newTestHandler(t)
+	store, handler, credential := newTestHandler(t)
 	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
@@ -387,7 +376,7 @@ func TestCustomBucketAccessCanDenySignedReads(t *testing.T) {
 	}
 
 	allowedRequest := httptest.NewRequest(http.MethodGet, "/gallery/notes/readme.txt", nil)
-	signHeaderRequest(t, allowedRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, allowedRequest, defaultSignedConfig(), credential, nil)
 	allowedRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(allowedRecorder, allowedRequest)
 	if allowedRecorder.Code != http.StatusOK {
@@ -395,7 +384,7 @@ func TestCustomBucketAccessCanDenySignedReads(t *testing.T) {
 	}
 
 	deniedRequest := httptest.NewRequest(http.MethodGet, "/gallery/secret/plan.txt", nil)
-	signHeaderRequest(t, deniedRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, deniedRequest, defaultSignedConfig(), credential, nil)
 	deniedRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(deniedRecorder, deniedRequest)
 	assertS3Error(t, deniedRecorder, http.StatusForbidden, "AccessDenied", defaultSignedConfig().Settings.Region, "gallery")
@@ -404,7 +393,7 @@ func TestCustomBucketAccessCanDenySignedReads(t *testing.T) {
 func TestDeleteObjectAndBucket(t *testing.T) {
 	t.Parallel()
 
-	store, handler := newTestHandler(t)
+	store, handler, credential := newTestHandler(t)
 	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
@@ -417,7 +406,7 @@ func TestDeleteObjectAndBucket(t *testing.T) {
 	}
 
 	deleteObject := httptest.NewRequest(http.MethodDelete, "/gallery/notes/delete-me.txt", nil)
-	signHeaderRequest(t, deleteObject, defaultSignedConfig(), nil)
+	signHeaderRequest(t, deleteObject, defaultSignedConfig(), credential, nil)
 	deleteObjectRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(deleteObjectRecorder, deleteObject)
 	if deleteObjectRecorder.Code != http.StatusNoContent {
@@ -425,7 +414,7 @@ func TestDeleteObjectAndBucket(t *testing.T) {
 	}
 
 	deleteBucket := httptest.NewRequest(http.MethodDelete, "/gallery", nil)
-	signHeaderRequest(t, deleteBucket, defaultSignedConfig(), nil)
+	signHeaderRequest(t, deleteBucket, defaultSignedConfig(), credential, nil)
 	deleteBucketRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(deleteBucketRecorder, deleteBucket)
 	if deleteBucketRecorder.Code != http.StatusNoContent {
@@ -436,7 +425,7 @@ func TestDeleteObjectAndBucket(t *testing.T) {
 func TestGetBucketLocationAndDeleteObjects(t *testing.T) {
 	t.Parallel()
 
-	store, handler := newTestHandler(t)
+	store, handler, credential := newTestHandler(t)
 	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
@@ -453,7 +442,7 @@ func TestGetBucketLocationAndDeleteObjects(t *testing.T) {
 	}
 
 	locationRequest := httptest.NewRequest(http.MethodGet, "/gallery?location", nil)
-	signHeaderRequest(t, locationRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, locationRequest, defaultSignedConfig(), credential, nil)
 	locationRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(locationRecorder, locationRequest)
 	if locationRecorder.Code != http.StatusOK {
@@ -470,7 +459,7 @@ func TestGetBucketLocationAndDeleteObjects(t *testing.T) {
 	deleteBody := []byte(`<Delete><Object><Key>notes/a.txt</Key></Object><Object><Key>notes/missing.txt</Key></Object></Delete>`)
 	deleteRequest := httptest.NewRequest(http.MethodPost, "/gallery?delete", bytes.NewReader(deleteBody))
 	deleteRequest.Header.Set("Content-Type", "application/xml")
-	signHeaderRequest(t, deleteRequest, defaultSignedConfig(), deleteBody)
+	signHeaderRequest(t, deleteRequest, defaultSignedConfig(), credential, deleteBody)
 	deleteRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(deleteRecorder, deleteRequest)
 	if deleteRecorder.Code != http.StatusOK {
@@ -505,7 +494,7 @@ func TestGetBucketLocationAndDeleteObjects(t *testing.T) {
 func TestCopyObjectPreservesBodyAndSupportsMetadataReplace(t *testing.T) {
 	t.Parallel()
 
-	store, handler := newTestHandler(t)
+	store, handler, credential := newTestHandler(t)
 	for _, bucket := range []string{"gallery", "archive"} {
 		if _, err := store.CreateBucket(context.Background(), bucket, 0); err != nil {
 			t.Fatalf("CreateBucket(%s) failed: %v", bucket, err)
@@ -525,7 +514,7 @@ func TestCopyObjectPreservesBodyAndSupportsMetadataReplace(t *testing.T) {
 
 	copyRequest := httptest.NewRequest(http.MethodPut, "/archive/copied.txt", nil)
 	copyRequest.Header.Set("X-Amz-Copy-Source", "/gallery/notes/source.txt")
-	signHeaderRequest(t, copyRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, copyRequest, defaultSignedConfig(), credential, nil)
 	copyRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(copyRecorder, copyRequest)
 	if copyRecorder.Code != http.StatusOK {
@@ -540,7 +529,7 @@ func TestCopyObjectPreservesBodyAndSupportsMetadataReplace(t *testing.T) {
 	}
 
 	getCopiedRequest := httptest.NewRequest(http.MethodGet, "/archive/copied.txt", nil)
-	signHeaderRequest(t, getCopiedRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, getCopiedRequest, defaultSignedConfig(), credential, nil)
 	getCopiedRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(getCopiedRecorder, getCopiedRequest)
 	if getCopiedRecorder.Code != http.StatusOK {
@@ -570,7 +559,7 @@ func TestCopyObjectPreservesBodyAndSupportsMetadataReplace(t *testing.T) {
 	replaceRequest.Header.Set("Content-Disposition", `attachment; filename="replaced.txt"`)
 	replaceRequest.Header.Set("X-Amz-Meta-origin", "replaced")
 	replaceRequest.Header.Set("X-Amz-Meta-owner", "qa")
-	signHeaderRequest(t, replaceRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, replaceRequest, defaultSignedConfig(), credential, nil)
 	replaceRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(replaceRecorder, replaceRequest)
 	if replaceRecorder.Code != http.StatusOK {
@@ -578,7 +567,7 @@ func TestCopyObjectPreservesBodyAndSupportsMetadataReplace(t *testing.T) {
 	}
 
 	headReplacedRequest := httptest.NewRequest(http.MethodHead, "/archive/replaced.txt", nil)
-	signHeaderRequest(t, headReplacedRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, headReplacedRequest, defaultSignedConfig(), credential, nil)
 	headReplacedRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(headReplacedRecorder, headReplacedRequest)
 	if headReplacedRecorder.Code != http.StatusOK {
@@ -601,7 +590,7 @@ func TestCopyObjectPreservesBodyAndSupportsMetadataReplace(t *testing.T) {
 	}
 
 	getReplacedRequest := httptest.NewRequest(http.MethodGet, "/archive/replaced.txt", nil)
-	signHeaderRequest(t, getReplacedRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, getReplacedRequest, defaultSignedConfig(), credential, nil)
 	getReplacedRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(getReplacedRecorder, getReplacedRequest)
 	if getReplacedRecorder.Code != http.StatusOK {
@@ -620,9 +609,6 @@ func TestCopyObjectRequiresSourceBucketAccess(t *testing.T) {
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
 	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
-	cfg.Auth.S3.AccessKeyID = ""
-	cfg.Auth.S3.SecretAccessKey = ""
-
 	store := storage.New(cfg, zap.NewNop())
 	t.Cleanup(func() {
 		_ = store.Close()
@@ -636,7 +622,7 @@ func TestCopyObjectRequiresSourceBucketAccess(t *testing.T) {
 		t.Fatalf("PutObject failed: %v", err)
 	}
 
-	creds, err := s3creds.New(cfg.Paths.DataDir, s3creds.BootstrapCredential{}, zap.NewNop())
+	creds, err := s3creds.New(cfg.Paths.DataDir, zap.NewNop())
 	if err != nil {
 		t.Fatalf("s3creds.New failed: %v", err)
 	}
@@ -648,13 +634,11 @@ func TestCopyObjectRequiresSourceBucketAccess(t *testing.T) {
 		t.Fatalf("Create credential failed: %v", err)
 	}
 	handler := newHandler(cfg, store, newShareLinksForTest(t, cfg.Paths.DataDir), creds, zap.NewNop())
-	signedCfg := cfg
-	signedCfg.Auth.S3.AccessKeyID = created.AccessKeyID
-	signedCfg.Auth.S3.SecretAccessKey = created.SecretAccessKey
+	credential := signingCredential{AccessKeyID: created.AccessKeyID, SecretAccessKey: created.SecretAccessKey}
 
 	request := httptest.NewRequest(http.MethodPut, "/archive/copied.txt", nil)
 	request.Header.Set("X-Amz-Copy-Source", "/gallery/notes/source.txt")
-	signHeaderRequest(t, request, signedCfg, nil)
+	signHeaderRequest(t, request, cfg, credential, nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	assertS3Error(t, recorder, http.StatusForbidden, "AccessDenied", cfg.Settings.Region, "archive")
@@ -666,7 +650,7 @@ func TestCopyObjectRequiresSourceBucketAccess(t *testing.T) {
 func TestCopyObjectSourceConditionalHeaders(t *testing.T) {
 	t.Parallel()
 
-	store, handler := newTestHandler(t)
+	store, handler, credential := newTestHandler(t)
 	for _, bucket := range []string{"gallery", "archive"} {
 		if _, err := store.CreateBucket(context.Background(), bucket, 0); err != nil {
 			t.Fatalf("CreateBucket(%s) failed: %v", bucket, err)
@@ -686,7 +670,7 @@ func TestCopyObjectSourceConditionalHeaders(t *testing.T) {
 	ifMatchOverridesRequest.Header.Set("X-Amz-Copy-Source", "/gallery/notes/source-conditional.txt")
 	ifMatchOverridesRequest.Header.Set("X-Amz-Copy-Source-If-Match", `"`+sourceObject.ETag+`"`)
 	ifMatchOverridesRequest.Header.Set("X-Amz-Copy-Source-If-Unmodified-Since", sourceObject.LastModified.Add(-time.Hour).UTC().Format(http.TimeFormat))
-	signHeaderRequest(t, ifMatchOverridesRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, ifMatchOverridesRequest, defaultSignedConfig(), credential, nil)
 	ifMatchOverridesRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(ifMatchOverridesRecorder, ifMatchOverridesRequest)
 	if ifMatchOverridesRecorder.Code != http.StatusOK {
@@ -696,7 +680,7 @@ func TestCopyObjectSourceConditionalHeaders(t *testing.T) {
 	ifNoneMatchRequest := httptest.NewRequest(http.MethodPut, "/archive/copied-if-none-match.txt", nil)
 	ifNoneMatchRequest.Header.Set("X-Amz-Copy-Source", "/gallery/notes/source-conditional.txt")
 	ifNoneMatchRequest.Header.Set("X-Amz-Copy-Source-If-None-Match", `"`+sourceObject.ETag+`"`)
-	signHeaderRequest(t, ifNoneMatchRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, ifNoneMatchRequest, defaultSignedConfig(), credential, nil)
 	ifNoneMatchRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(ifNoneMatchRecorder, ifNoneMatchRequest)
 	assertS3Error(t, ifNoneMatchRecorder, http.StatusPreconditionFailed, "PreconditionFailed", defaultSignedConfig().Settings.Region, "archive")
@@ -704,7 +688,7 @@ func TestCopyObjectSourceConditionalHeaders(t *testing.T) {
 	ifModifiedSinceRequest := httptest.NewRequest(http.MethodPut, "/archive/copied-if-modified-since.txt", nil)
 	ifModifiedSinceRequest.Header.Set("X-Amz-Copy-Source", "/gallery/notes/source-conditional.txt")
 	ifModifiedSinceRequest.Header.Set("X-Amz-Copy-Source-If-Modified-Since", sourceObject.LastModified.Add(time.Hour).UTC().Format(http.TimeFormat))
-	signHeaderRequest(t, ifModifiedSinceRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, ifModifiedSinceRequest, defaultSignedConfig(), credential, nil)
 	ifModifiedSinceRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(ifModifiedSinceRecorder, ifModifiedSinceRequest)
 	assertS3Error(t, ifModifiedSinceRecorder, http.StatusPreconditionFailed, "PreconditionFailed", defaultSignedConfig().Settings.Region, "archive")
@@ -712,7 +696,7 @@ func TestCopyObjectSourceConditionalHeaders(t *testing.T) {
 	invalidTimeRequest := httptest.NewRequest(http.MethodPut, "/archive/copied-invalid-time.txt", nil)
 	invalidTimeRequest.Header.Set("X-Amz-Copy-Source", "/gallery/notes/source-conditional.txt")
 	invalidTimeRequest.Header.Set("X-Amz-Copy-Source-If-Modified-Since", "not-a-time")
-	signHeaderRequest(t, invalidTimeRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, invalidTimeRequest, defaultSignedConfig(), credential, nil)
 	invalidTimeRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(invalidTimeRecorder, invalidTimeRequest)
 	assertS3Error(t, invalidTimeRecorder, http.StatusBadRequest, "InvalidArgument", defaultSignedConfig().Settings.Region, "archive")
@@ -721,7 +705,7 @@ func TestCopyObjectSourceConditionalHeaders(t *testing.T) {
 func TestS3ReadinessEndpoint(t *testing.T) {
 	t.Parallel()
 
-	_, handler := newTestHandler(t)
+	_, handler, _ := newTestHandler(t)
 	request := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
@@ -746,7 +730,7 @@ func TestS3ReadinessEndpoint(t *testing.T) {
 func TestListObjectsV2DelimiterAndContinuationToken(t *testing.T) {
 	t.Parallel()
 
-	store, handler := newTestHandler(t)
+	store, handler, credential := newTestHandler(t)
 	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
@@ -763,7 +747,7 @@ func TestListObjectsV2DelimiterAndContinuationToken(t *testing.T) {
 	}
 
 	firstRequest := httptest.NewRequest(http.MethodGet, "/gallery?list-type=2&prefix=photos/&delimiter=/&max-keys=1", nil)
-	signHeaderRequest(t, firstRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, firstRequest, defaultSignedConfig(), credential, nil)
 	firstRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(firstRecorder, firstRequest)
 	if firstRecorder.Code != http.StatusOK {
@@ -782,7 +766,7 @@ func TestListObjectsV2DelimiterAndContinuationToken(t *testing.T) {
 	}
 
 	secondRequest := httptest.NewRequest(http.MethodGet, "/gallery?list-type=2&prefix=photos/&delimiter=/&max-keys=1&continuation-token="+firstResult.NextContinuationToken, nil)
-	signHeaderRequest(t, secondRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, secondRequest, defaultSignedConfig(), credential, nil)
 	secondRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(secondRecorder, secondRequest)
 	if secondRecorder.Code != http.StatusOK {
@@ -801,7 +785,7 @@ func TestListObjectsV2DelimiterAndContinuationToken(t *testing.T) {
 func TestListObjectsV1DelimiterAndMarker(t *testing.T) {
 	t.Parallel()
 
-	store, handler := newTestHandler(t)
+	store, handler, credential := newTestHandler(t)
 	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
@@ -818,7 +802,7 @@ func TestListObjectsV1DelimiterAndMarker(t *testing.T) {
 	}
 
 	firstRequest := httptest.NewRequest(http.MethodGet, "/gallery?prefix=photos/&delimiter=/&max-keys=1", nil)
-	signHeaderRequest(t, firstRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, firstRequest, defaultSignedConfig(), credential, nil)
 	firstRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(firstRecorder, firstRequest)
 	if firstRecorder.Code != http.StatusOK {
@@ -840,7 +824,7 @@ func TestListObjectsV1DelimiterAndMarker(t *testing.T) {
 	}
 
 	secondRequest := httptest.NewRequest(http.MethodGet, "/gallery?prefix=photos/&delimiter=/&max-keys=1&marker="+url.QueryEscape(firstResult.NextMarker), nil)
-	signHeaderRequest(t, secondRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, secondRequest, defaultSignedConfig(), credential, nil)
 	secondRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(secondRecorder, secondRequest)
 	if secondRecorder.Code != http.StatusOK {
@@ -862,14 +846,14 @@ func TestListObjectsV1DelimiterAndMarker(t *testing.T) {
 func TestMultipartUploadLifecycle(t *testing.T) {
 	t.Parallel()
 
-	store, handler := newTestHandler(t)
+	store, handler, credential := newTestHandler(t)
 	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
 
 	initiateRequest := httptest.NewRequest(http.MethodPost, "/gallery/archive/big.txt?uploads", nil)
 	initiateRequest.Header.Set("Content-Type", "text/plain")
-	signHeaderRequest(t, initiateRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, initiateRequest, defaultSignedConfig(), credential, nil)
 	initiateRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(initiateRecorder, initiateRequest)
 	if initiateRecorder.Code != http.StatusOK {
@@ -886,7 +870,7 @@ func TestMultipartUploadLifecycle(t *testing.T) {
 
 	partOneBody := []byte("hello ")
 	partOneRequest := httptest.NewRequest(http.MethodPut, "/gallery/archive/big.txt?partNumber=1&uploadId="+initiateResult.UploadID, bytes.NewReader(partOneBody))
-	signHeaderRequest(t, partOneRequest, defaultSignedConfig(), partOneBody)
+	signHeaderRequest(t, partOneRequest, defaultSignedConfig(), credential, partOneBody)
 	partOneRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(partOneRecorder, partOneRequest)
 	if partOneRecorder.Code != http.StatusOK {
@@ -896,7 +880,7 @@ func TestMultipartUploadLifecycle(t *testing.T) {
 
 	partTwoBody := []byte("world")
 	partTwoRequest := httptest.NewRequest(http.MethodPut, "/gallery/archive/big.txt?partNumber=2&uploadId="+initiateResult.UploadID, bytes.NewReader(partTwoBody))
-	signHeaderRequest(t, partTwoRequest, defaultSignedConfig(), partTwoBody)
+	signHeaderRequest(t, partTwoRequest, defaultSignedConfig(), credential, partTwoBody)
 	partTwoRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(partTwoRecorder, partTwoRequest)
 	if partTwoRecorder.Code != http.StatusOK {
@@ -905,7 +889,7 @@ func TestMultipartUploadLifecycle(t *testing.T) {
 	partTwoETag := partTwoRecorder.Header().Get("ETag")
 
 	listPartsRequest := httptest.NewRequest(http.MethodGet, "/gallery/archive/big.txt?uploadId="+initiateResult.UploadID, nil)
-	signHeaderRequest(t, listPartsRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, listPartsRequest, defaultSignedConfig(), credential, nil)
 	listPartsRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(listPartsRecorder, listPartsRequest)
 	if listPartsRecorder.Code != http.StatusOK {
@@ -922,7 +906,7 @@ func TestMultipartUploadLifecycle(t *testing.T) {
 	completeBody := []byte("<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>" + partOneETag + "</ETag></Part><Part><PartNumber>2</PartNumber><ETag>" + partTwoETag + "</ETag></Part></CompleteMultipartUpload>")
 	completeRequest := httptest.NewRequest(http.MethodPost, "/gallery/archive/big.txt?uploadId="+initiateResult.UploadID, bytes.NewReader(completeBody))
 	completeRequest.Header.Set("Content-Type", "application/xml")
-	signHeaderRequest(t, completeRequest, defaultSignedConfig(), completeBody)
+	signHeaderRequest(t, completeRequest, defaultSignedConfig(), credential, completeBody)
 	completeRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(completeRecorder, completeRequest)
 	if completeRecorder.Code != http.StatusOK {
@@ -930,7 +914,7 @@ func TestMultipartUploadLifecycle(t *testing.T) {
 	}
 
 	getRequest := httptest.NewRequest(http.MethodGet, "/gallery/archive/big.txt", nil)
-	signHeaderRequest(t, getRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, getRequest, defaultSignedConfig(), credential, nil)
 	getRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(getRecorder, getRequest)
 	if getRecorder.Code != http.StatusOK {
@@ -949,17 +933,19 @@ func TestSyncEnabledDoesNotShortCircuitS3Writes(t *testing.T) {
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
 	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
-	cfg.Sync.Enabled = true
-
 	store := storage.New(cfg, zap.NewNop())
 	t.Cleanup(func() {
 		_ = store.Close()
 	})
-	handler := newHandler(cfg, store, newShareLinksForTest(t, cfg.Paths.DataDir), newCredentialsForTest(t, cfg), zap.NewNop())
+	if _, err := store.SetSyncSettings(context.Background(), storage.SyncSettings{Enabled: true}); err != nil {
+		t.Fatalf("SetSyncSettings failed: %v", err)
+	}
+	creds, credential := newCredentialsForTest(t, cfg.Paths.DataDir)
+	handler := newHandler(cfg, store, newShareLinksForTest(t, cfg.Paths.DataDir), creds, zap.NewNop())
 
 	body := []byte("hello")
 	request := httptest.NewRequest(http.MethodPut, "/gallery/notes/readme.txt", bytes.NewReader(body))
-	signHeaderRequest(t, request, cfg, body)
+	signHeaderRequest(t, request, cfg, credential, body)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	assertS3Error(t, recorder, http.StatusNotFound, "NoSuchBucket", cfg.Settings.Region, "gallery")
@@ -968,7 +954,7 @@ func TestSyncEnabledDoesNotShortCircuitS3Writes(t *testing.T) {
 func TestUploadPartCopyLifecycle(t *testing.T) {
 	t.Parallel()
 
-	store, handler := newTestHandler(t)
+	store, handler, credential := newTestHandler(t)
 	for _, bucket := range []string{"gallery", "archive"} {
 		if _, err := store.CreateBucket(context.Background(), bucket, 0); err != nil {
 			t.Fatalf("CreateBucket(%s) failed: %v", bucket, err)
@@ -986,7 +972,7 @@ func TestUploadPartCopyLifecycle(t *testing.T) {
 
 	initiateRequest := httptest.NewRequest(http.MethodPost, "/archive/copied.txt?uploads", nil)
 	initiateRequest.Header.Set("Content-Type", "text/plain")
-	signHeaderRequest(t, initiateRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, initiateRequest, defaultSignedConfig(), credential, nil)
 	initiateRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(initiateRecorder, initiateRequest)
 	if initiateRecorder.Code != http.StatusOK {
@@ -1000,7 +986,7 @@ func TestUploadPartCopyLifecycle(t *testing.T) {
 	partOneRequest := httptest.NewRequest(http.MethodPut, "/archive/copied.txt?partNumber=1&uploadId="+initiateResult.UploadID, nil)
 	partOneRequest.Header.Set("X-Amz-Copy-Source", "/gallery/notes/source.txt")
 	partOneRequest.Header.Set("X-Amz-Copy-Source-Range", "bytes=0-5")
-	signHeaderRequest(t, partOneRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, partOneRequest, defaultSignedConfig(), credential, nil)
 	partOneRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(partOneRecorder, partOneRequest)
 	if partOneRecorder.Code != http.StatusOK {
@@ -1015,7 +1001,7 @@ func TestUploadPartCopyLifecycle(t *testing.T) {
 	partTwoRequest.Header.Set("X-Amz-Copy-Source", "/gallery/notes/source.txt")
 	partTwoRequest.Header.Set("X-Amz-Copy-Source-Range", "bytes=6-10")
 	partTwoRequest.Header.Set("X-Amz-Copy-Source-If-Match", `"`+source.ETag+`"`)
-	signHeaderRequest(t, partTwoRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, partTwoRequest, defaultSignedConfig(), credential, nil)
 	partTwoRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(partTwoRecorder, partTwoRequest)
 	if partTwoRecorder.Code != http.StatusOK {
@@ -1032,7 +1018,7 @@ func TestUploadPartCopyLifecycle(t *testing.T) {
 	completeBody := []byte("<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>" + partOneResult.ETag + "</ETag></Part><Part><PartNumber>2</PartNumber><ETag>" + partTwoResult.ETag + "</ETag></Part></CompleteMultipartUpload>")
 	completeRequest := httptest.NewRequest(http.MethodPost, "/archive/copied.txt?uploadId="+initiateResult.UploadID, bytes.NewReader(completeBody))
 	completeRequest.Header.Set("Content-Type", "application/xml")
-	signHeaderRequest(t, completeRequest, defaultSignedConfig(), completeBody)
+	signHeaderRequest(t, completeRequest, defaultSignedConfig(), credential, completeBody)
 	completeRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(completeRecorder, completeRequest)
 	if completeRecorder.Code != http.StatusOK {
@@ -1040,7 +1026,7 @@ func TestUploadPartCopyLifecycle(t *testing.T) {
 	}
 
 	getRequest := httptest.NewRequest(http.MethodGet, "/archive/copied.txt", nil)
-	signHeaderRequest(t, getRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, getRequest, defaultSignedConfig(), credential, nil)
 	getRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(getRecorder, getRequest)
 	if getRecorder.Code != http.StatusOK {
@@ -1054,7 +1040,7 @@ func TestUploadPartCopyLifecycle(t *testing.T) {
 func TestUploadPartCopyRejectsInvalidRange(t *testing.T) {
 	t.Parallel()
 
-	store, handler := newTestHandler(t)
+	store, handler, credential := newTestHandler(t)
 	for _, bucket := range []string{"gallery", "archive"} {
 		if _, err := store.CreateBucket(context.Background(), bucket, 0); err != nil {
 			t.Fatalf("CreateBucket(%s) failed: %v", bucket, err)
@@ -1065,7 +1051,7 @@ func TestUploadPartCopyRejectsInvalidRange(t *testing.T) {
 	}
 
 	initiateRequest := httptest.NewRequest(http.MethodPost, "/archive/copied.txt?uploads", nil)
-	signHeaderRequest(t, initiateRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, initiateRequest, defaultSignedConfig(), credential, nil)
 	initiateRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(initiateRecorder, initiateRequest)
 	if initiateRecorder.Code != http.StatusOK {
@@ -1079,7 +1065,7 @@ func TestUploadPartCopyRejectsInvalidRange(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPut, "/archive/copied.txt?partNumber=1&uploadId="+initiateResult.UploadID, nil)
 	request.Header.Set("X-Amz-Copy-Source", "/gallery/notes/source.txt")
 	request.Header.Set("X-Amz-Copy-Source-Range", "bytes=0-99")
-	signHeaderRequest(t, request, defaultSignedConfig(), nil)
+	signHeaderRequest(t, request, defaultSignedConfig(), credential, nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	assertS3Error(t, recorder, http.StatusBadRequest, "InvalidArgument", defaultSignedConfig().Settings.Region, "archive")
@@ -1093,9 +1079,6 @@ func TestUploadPartCopyRequiresSourceBucketAccess(t *testing.T) {
 	cfg.Paths.DataDir = filepath.Join(root, "data")
 	cfg.Paths.LogDir = filepath.Join(root, "logs")
 	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
-	cfg.Auth.S3.AccessKeyID = ""
-	cfg.Auth.S3.SecretAccessKey = ""
-
 	store := storage.New(cfg, zap.NewNop())
 	t.Cleanup(func() {
 		_ = store.Close()
@@ -1109,7 +1092,7 @@ func TestUploadPartCopyRequiresSourceBucketAccess(t *testing.T) {
 		t.Fatalf("PutObject failed: %v", err)
 	}
 
-	creds, err := s3creds.New(cfg.Paths.DataDir, s3creds.BootstrapCredential{}, zap.NewNop())
+	creds, err := s3creds.New(cfg.Paths.DataDir, zap.NewNop())
 	if err != nil {
 		t.Fatalf("s3creds.New failed: %v", err)
 	}
@@ -1121,12 +1104,10 @@ func TestUploadPartCopyRequiresSourceBucketAccess(t *testing.T) {
 		t.Fatalf("Create credential failed: %v", err)
 	}
 	handler := newHandler(cfg, store, newShareLinksForTest(t, cfg.Paths.DataDir), creds, zap.NewNop())
-	signedCfg := cfg
-	signedCfg.Auth.S3.AccessKeyID = created.AccessKeyID
-	signedCfg.Auth.S3.SecretAccessKey = created.SecretAccessKey
+	credential := signingCredential{AccessKeyID: created.AccessKeyID, SecretAccessKey: created.SecretAccessKey}
 
 	initiateRequest := httptest.NewRequest(http.MethodPost, "/archive/copied.txt?uploads", nil)
-	signHeaderRequest(t, initiateRequest, signedCfg, nil)
+	signHeaderRequest(t, initiateRequest, cfg, credential, nil)
 	initiateRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(initiateRecorder, initiateRequest)
 	if initiateRecorder.Code != http.StatusOK {
@@ -1139,7 +1120,7 @@ func TestUploadPartCopyRequiresSourceBucketAccess(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodPut, "/archive/copied.txt?partNumber=1&uploadId="+initiateResult.UploadID, nil)
 	request.Header.Set("X-Amz-Copy-Source", "/gallery/notes/source.txt")
-	signHeaderRequest(t, request, signedCfg, nil)
+	signHeaderRequest(t, request, cfg, credential, nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	assertS3Error(t, recorder, http.StatusForbidden, "AccessDenied", cfg.Settings.Region, "archive")
@@ -1148,14 +1129,14 @@ func TestUploadPartCopyRequiresSourceBucketAccess(t *testing.T) {
 func TestListMultipartUploadsSupportsMarkers(t *testing.T) {
 	t.Parallel()
 
-	store, handler := newTestHandler(t)
+	store, handler, credential := newTestHandler(t)
 	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
 
 	initiate := func(key string) initiateMultipartUploadResult {
 		request := httptest.NewRequest(http.MethodPost, "/gallery/"+key+"?uploads", nil)
-		signHeaderRequest(t, request, defaultSignedConfig(), nil)
+		signHeaderRequest(t, request, defaultSignedConfig(), credential, nil)
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, request)
 		if recorder.Code != http.StatusOK {
@@ -1173,7 +1154,7 @@ func TestListMultipartUploadsSupportsMarkers(t *testing.T) {
 	third := initiate("zeta.txt")
 
 	listRequest := httptest.NewRequest(http.MethodGet, "/gallery?uploads&max-uploads=2", nil)
-	signHeaderRequest(t, listRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, listRequest, defaultSignedConfig(), credential, nil)
 	listRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(listRecorder, listRequest)
 	if listRecorder.Code != http.StatusOK {
@@ -1200,7 +1181,7 @@ func TestListMultipartUploadsSupportsMarkers(t *testing.T) {
 	}
 
 	nextRequest := httptest.NewRequest(http.MethodGet, "/gallery?uploads&max-uploads=2&key-marker="+url.QueryEscape(firstPage.NextKeyMarker)+"&upload-id-marker="+url.QueryEscape(firstPage.NextUploadIDMarker), nil)
-	signHeaderRequest(t, nextRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, nextRequest, defaultSignedConfig(), credential, nil)
 	nextRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(nextRecorder, nextRequest)
 	if nextRecorder.Code != http.StatusOK {
@@ -1223,13 +1204,13 @@ func TestListMultipartUploadsSupportsDelimiter(t *testing.T) {
 
 	requestKeys := []string{"sample.txt", "photos/2026/a.jpg", "videos/clip.mp4"}
 
-	store, handler := newTestHandler(t)
+	store, handler, credential := newTestHandler(t)
 	if _, err := store.CreateBucket(context.Background(), "gallery", 0); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
 	for _, key := range requestKeys {
 		request := httptest.NewRequest(http.MethodPost, "/gallery/"+key+"?uploads", nil)
-		signHeaderRequest(t, request, defaultSignedConfig(), nil)
+		signHeaderRequest(t, request, defaultSignedConfig(), credential, nil)
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, request)
 		if recorder.Code != http.StatusOK {
@@ -1238,7 +1219,7 @@ func TestListMultipartUploadsSupportsDelimiter(t *testing.T) {
 	}
 
 	listRequest := httptest.NewRequest(http.MethodGet, "/gallery?uploads&delimiter=/", nil)
-	signHeaderRequest(t, listRequest, defaultSignedConfig(), nil)
+	signHeaderRequest(t, listRequest, defaultSignedConfig(), credential, nil)
 	listRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(listRecorder, listRequest)
 	if listRecorder.Code != http.StatusOK {
@@ -1261,7 +1242,7 @@ func TestListMultipartUploadsSupportsDelimiter(t *testing.T) {
 	}
 }
 
-func newTestHandler(t *testing.T) (*storage.Store, http.Handler) {
+func newTestHandler(t *testing.T) (*storage.Store, http.Handler, signingCredential) {
 	t.Helper()
 
 	root := t.TempDir()
@@ -1274,9 +1255,10 @@ func newTestHandler(t *testing.T) (*storage.Store, http.Handler) {
 	t.Cleanup(func() {
 		_ = store.Close()
 	})
-	handler := newHandler(cfg, store, newShareLinksForTest(t, cfg.Paths.DataDir), newCredentialsForTest(t, cfg), zap.NewNop())
+	creds, credential := newCredentialsForTest(t, cfg.Paths.DataDir)
+	handler := newHandler(cfg, store, newShareLinksForTest(t, cfg.Paths.DataDir), creds, zap.NewNop())
 
-	return store, handler
+	return store, handler, credential
 }
 
 func testS3Config(root string) config.Config {
@@ -1288,10 +1270,12 @@ func testS3Config(root string) config.Config {
 }
 
 func defaultSignedConfig() config.Config {
-	cfg := config.Default()
-	cfg.Auth.S3.AccessKeyID = "test-access-key"
-	cfg.Auth.S3.SecretAccessKey = "test-secret-key"
-	return cfg
+	return config.Default()
+}
+
+type signingCredential struct {
+	AccessKeyID     string
+	SecretAccessKey string
 }
 
 func assertS3Error(t *testing.T, recorder *httptest.ResponseRecorder, wantStatus int, wantCode, wantRegion, wantBucket string) {
@@ -1336,22 +1320,23 @@ func newShareLinksForTest(t *testing.T, dataDir string) *sharelink.Store {
 	return links
 }
 
-func newCredentialsForTest(t *testing.T, cfg config.Config) *s3creds.Store {
+func newCredentialsForTest(t *testing.T, dataDir string) (*s3creds.Store, signingCredential) {
 	t.Helper()
-	creds, err := s3creds.New(cfg.Paths.DataDir, s3creds.BootstrapCredential{
-		AccessKeyID:     cfg.Auth.S3.AccessKeyID,
-		SecretAccessKey: cfg.Auth.S3.SecretAccessKey,
-	}, zap.NewNop())
+	creds, err := s3creds.New(dataDir, zap.NewNop())
 	if err != nil {
 		t.Fatalf("s3creds.New failed: %v", err)
+	}
+	created, err := creds.Create(context.Background(), s3creds.CreateInput{Label: "test credential"})
+	if err != nil {
+		t.Fatalf("Create credential failed: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = creds.Close()
 	})
-	return creds
+	return creds, signingCredential{AccessKeyID: created.AccessKeyID, SecretAccessKey: created.SecretAccessKey}
 }
 
-func signHeaderRequest(t *testing.T, request *http.Request, cfg config.Config, body []byte) {
+func signHeaderRequest(t *testing.T, request *http.Request, cfg config.Config, credential signingCredential, body []byte) {
 	t.Helper()
 	timestamp := time.Now().UTC()
 	request.Header.Set("X-Amz-Date", timestamp.Format("20060102T150405Z"))
@@ -1361,20 +1346,20 @@ func signHeaderRequest(t *testing.T, request *http.Request, cfg config.Config, b
 	signedHeaders := collectSignedHeaders(request)
 	canonicalRequest := buildCanonicalRequest(t, request, signedHeaders, payloadHash, true)
 	stringToSign := buildStringToSign(timestamp, cfg.Settings.Region, canonicalRequest)
-	signature := signSignature(cfg.Auth.S3.SecretAccessKey, timestamp, cfg.Settings.Region, stringToSign)
+	signature := signSignature(credential.SecretAccessKey, timestamp, cfg.Settings.Region, stringToSign)
 	request.Header.Set("Authorization", strings.Join([]string{
-		sigv4.Algorithm + " Credential=" + cfg.Auth.S3.AccessKeyID + "/" + timestamp.Format("20060102") + "/" + cfg.Settings.Region + "/s3/aws4_request",
+		sigv4.Algorithm + " Credential=" + credential.AccessKeyID + "/" + timestamp.Format("20060102") + "/" + cfg.Settings.Region + "/s3/aws4_request",
 		"SignedHeaders=" + strings.Join(signedHeaders, ";"),
 		"Signature=" + signature,
 	}, ", "))
 }
 
-func signPresignedRequest(t *testing.T, request *http.Request, cfg config.Config, expires time.Duration) {
+func signPresignedRequest(t *testing.T, request *http.Request, cfg config.Config, credential signingCredential, expires time.Duration) {
 	t.Helper()
 	timestamp := time.Now().UTC()
 	query := request.URL.Query()
 	query.Set("X-Amz-Algorithm", sigv4.Algorithm)
-	query.Set("X-Amz-Credential", cfg.Auth.S3.AccessKeyID+"/"+timestamp.Format("20060102")+"/"+cfg.Settings.Region+"/s3/aws4_request")
+	query.Set("X-Amz-Credential", credential.AccessKeyID+"/"+timestamp.Format("20060102")+"/"+cfg.Settings.Region+"/s3/aws4_request")
 	query.Set("X-Amz-Date", timestamp.Format("20060102T150405Z"))
 	query.Set("X-Amz-Expires", strconv.Itoa(int(expires.Seconds())))
 	query.Set("X-Amz-SignedHeaders", "host")
@@ -1382,7 +1367,7 @@ func signPresignedRequest(t *testing.T, request *http.Request, cfg config.Config
 
 	canonicalRequest := buildCanonicalRequest(t, request, []string{"host"}, "UNSIGNED-PAYLOAD", false)
 	stringToSign := buildStringToSign(timestamp, cfg.Settings.Region, canonicalRequest)
-	query.Set("X-Amz-Signature", signSignature(cfg.Auth.S3.SecretAccessKey, timestamp, cfg.Settings.Region, stringToSign))
+	query.Set("X-Amz-Signature", signSignature(credential.SecretAccessKey, timestamp, cfg.Settings.Region, stringToSign))
 	request.URL.RawQuery = query.Encode()
 }
 

@@ -11,10 +11,10 @@ import (
 	"go.uber.org/zap"
 )
 
-func TestBootstrapCreateAndRevoke(t *testing.T) {
+func TestCreateAndRevoke(t *testing.T) {
 	t.Parallel()
 
-	store, err := New(t.TempDir(), BootstrapCredential{AccessKeyID: "legacy-key", SecretAccessKey: "legacy-secret"}, zap.NewNop())
+	store, err := New(t.TempDir(), zap.NewNop())
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
 	}
@@ -26,8 +26,8 @@ func TestBootstrapCreateAndRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}
-	if len(items) != 1 || items[0].AccessKeyID != "legacy-key" || items[0].Status != "active" {
-		t.Fatalf("unexpected bootstrapped credentials: %+v", items)
+	if len(items) != 0 {
+		t.Fatalf("expected empty credential list, got %+v", items)
 	}
 
 	created, err := store.Create(context.Background(), CreateInput{Label: "CI key", Permission: PermissionReadOnly, Buckets: []string{"gallery", "archive", "gallery"}})
@@ -100,7 +100,7 @@ func TestNewIgnoresLegacyCredentialsJSON(t *testing.T) {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	store, err := New(dataDir, BootstrapCredential{AccessKeyID: "boot-key", SecretAccessKey: "boot-secret"}, zap.NewNop())
+	store, err := New(dataDir, zap.NewNop())
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
 	}
@@ -112,15 +112,8 @@ func TestNewIgnoresLegacyCredentialsJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}
-	if len(items) != 1 || items[0].AccessKeyID != "boot-key" {
-		t.Fatalf("unexpected credentials after ignoring legacy file: %+v", items)
-	}
-	secret, err := store.LookupSecret(context.Background(), "boot-key")
-	if err != nil {
-		t.Fatalf("LookupSecret failed: %v", err)
-	}
-	if secret != "boot-secret" {
-		t.Fatalf("unexpected boot secret: %q", secret)
+	if len(items) != 0 {
+		t.Fatalf("expected no credentials after ignoring legacy file: %+v", items)
 	}
 	if _, err := store.LookupSecret(context.Background(), "legacy-key"); err == nil {
 		t.Fatalf("expected legacy credential file to be ignored")
