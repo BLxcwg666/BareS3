@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1353,6 +1354,115 @@ func TestUpdateObjectMetadata(t *testing.T) {
 	}
 	if payload.UserMetadata["author"] != "bare" {
 		t.Fatalf("unexpected updated user metadata: %+v", payload.UserMetadata)
+	}
+}
+
+func TestMultipartObjectUpload(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+	cfg.Settings.S3BaseURL = "http://127.0.0.1:9000"
+	hash, err := consoleauth.HashPassword("secret-password")
+	if err != nil {
+		t.Fatalf("HashPassword failed: %v", err)
+	}
+	cfg.Auth.Console.PasswordHash = hash
+	cfg.Auth.Console.SessionSecret = "test-session-secret"
+
+	store := newStorageStoreForTest(t, cfg)
+	ctx := context.Background()
+	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	handler := newAdminHandlerForTest(t, cfg, store, nil)
+	cookie := loginCookie(t, handler)
+
+	initiateBody, _ := json.Marshal(map[string]any{
+		"key":          "archive/big.txt",
+		"content_type": "text/plain",
+	})
+	initiateRequest := httptest.NewRequest(http.MethodPost, "/api/v1/buckets/gallery/uploads", bytes.NewReader(initiateBody))
+	initiateRequest.Header.Set("Content-Type", "application/json")
+	addSession(initiateRequest, cookie)
+	initiateRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(initiateRecorder, initiateRequest)
+	if initiateRecorder.Code != http.StatusCreated {
+		t.Fatalf("unexpected initiate multipart status: %d body=%s", initiateRecorder.Code, initiateRecorder.Body.String())
+	}
+	upload := struct {
+		UploadID string `json:"upload_id"`
+		Key      string `json:"key"`
+	}{}
+	if err := json.Unmarshal(initiateRecorder.Body.Bytes(), &upload); err != nil {
+		t.Fatalf("unmarshal initiate multipart payload: %v", err)
+	}
+	if upload.UploadID == "" || upload.Key != "archive/big.txt" {
+		t.Fatalf("unexpected initiate multipart payload: %+v", upload)
+	}
+
+	partOneRequest := httptest.NewRequest(http.MethodPut, "/api/v1/buckets/gallery/uploads/"+upload.UploadID+"/parts/1?key=archive%2Fbig.txt", bytes.NewReader([]byte("hello ")))
+	addSession(partOneRequest, cookie)
+	partOneRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(partOneRecorder, partOneRequest)
+	if partOneRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected upload part one status: %d body=%s", partOneRecorder.Code, partOneRecorder.Body.String())
+	}
+	partOne := struct {
+		ETag string `json:"etag"`
+	}{}
+	if err := json.Unmarshal(partOneRecorder.Body.Bytes(), &partOne); err != nil {
+		t.Fatalf("unmarshal upload part one payload: %v", err)
+	}
+
+	partTwoRequest := httptest.NewRequest(http.MethodPut, "/api/v1/buckets/gallery/uploads/"+upload.UploadID+"/parts/2?key=archive%2Fbig.txt", bytes.NewReader([]byte("world")))
+	addSession(partTwoRequest, cookie)
+	partTwoRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(partTwoRecorder, partTwoRequest)
+	if partTwoRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected upload part two status: %d body=%s", partTwoRecorder.Code, partTwoRecorder.Body.String())
+	}
+	partTwo := struct {
+		ETag string `json:"etag"`
+	}{}
+	if err := json.Unmarshal(partTwoRecorder.Body.Bytes(), &partTwo); err != nil {
+		t.Fatalf("unmarshal upload part two payload: %v", err)
+	}
+
+	completeBody, _ := json.Marshal(map[string]any{
+		"key": "archive/big.txt",
+		"parts": []map[string]any{
+			{"part_number": 1, "etag": partOne.ETag},
+			{"part_number": 2, "etag": partTwo.ETag},
+		},
+	})
+	completeRequest := httptest.NewRequest(http.MethodPost, "/api/v1/buckets/gallery/uploads/"+upload.UploadID+"/complete", bytes.NewReader(completeBody))
+	completeRequest.Header.Set("Content-Type", "application/json")
+	addSession(completeRequest, cookie)
+	completeRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(completeRecorder, completeRequest)
+	if completeRecorder.Code != http.StatusCreated {
+		t.Fatalf("unexpected complete multipart status: %d body=%s", completeRecorder.Code, completeRecorder.Body.String())
+	}
+
+	object, err := store.StatObject(ctx, "gallery", "archive/big.txt")
+	if err != nil {
+		t.Fatalf("StatObject failed: %v", err)
+	}
+	if object.Size != int64(len("hello world")) {
+		t.Fatalf("unexpected multipart object size: %d", object.Size)
+	}
+	content, err := os.ReadFile(object.Path)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if string(content) != "hello world" {
+		t.Fatalf("unexpected multipart object content: %q", string(content))
 	}
 }
 

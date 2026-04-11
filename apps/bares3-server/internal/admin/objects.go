@@ -51,7 +51,7 @@ func RegisterObjectRoutes(protected chi.Router, store *storage.Store, shareLinks
 		if err := r.ParseMultipartForm(64 << 20); err != nil {
 			httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
 				"status":  "error",
-				"message": "invalid multipart form",
+				"message": normalizeMultipartFormError(err),
 			})
 			return
 		}
@@ -96,6 +96,118 @@ func RegisterObjectRoutes(protected chi.Router, store *storage.Store, shareLinks
 			Status: "success",
 		})
 		httpx.WriteJSON(w, http.StatusCreated, object)
+	})
+
+	protected.Post("/buckets/{bucket}/uploads", func(w http.ResponseWriter, r *http.Request) {
+		payload := struct {
+			Key                string            `json:"key"`
+			ContentType        string            `json:"content_type"`
+			CacheControl       string            `json:"cache_control"`
+			ContentDisposition string            `json:"content_disposition"`
+			UserMetadata       map[string]string `json:"user_metadata"`
+		}{}
+
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&payload); err != nil {
+			httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+				"status":  "error",
+				"message": "invalid request body",
+			})
+			return
+		}
+
+		upload, err := store.InitiateMultipartUpload(r.Context(), storage.InitiateMultipartUploadInput{
+			Bucket:             chi.URLParam(r, "bucket"),
+			Key:                payload.Key,
+			ContentType:        payload.ContentType,
+			CacheControl:       payload.CacheControl,
+			ContentDisposition: payload.ContentDisposition,
+			UserMetadata:       payload.UserMetadata,
+		})
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+
+		httpx.WriteJSON(w, http.StatusCreated, upload)
+	})
+
+	protected.Put("/buckets/{bucket}/uploads/{uploadID}/parts/{partNumber}", func(w http.ResponseWriter, r *http.Request) {
+		partNumber, err := strconv.Atoi(strings.TrimSpace(chi.URLParam(r, "partNumber")))
+		if err != nil || partNumber <= 0 {
+			httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+				"status":  "error",
+				"message": "part number must be a positive integer",
+			})
+			return
+		}
+
+		part, err := store.UploadPart(r.Context(), storage.UploadPartInput{
+			Bucket:     chi.URLParam(r, "bucket"),
+			Key:        r.URL.Query().Get("key"),
+			UploadID:   chi.URLParam(r, "uploadID"),
+			PartNumber: partNumber,
+			Body:       r.Body,
+		})
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+
+		httpx.WriteJSON(w, http.StatusOK, part)
+	})
+
+	protected.Post("/buckets/{bucket}/uploads/{uploadID}/complete", func(w http.ResponseWriter, r *http.Request) {
+		payload := struct {
+			Key   string `json:"key"`
+			Parts []struct {
+				PartNumber int    `json:"part_number"`
+				ETag       string `json:"etag"`
+			} `json:"parts"`
+		}{}
+
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&payload); err != nil {
+			httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
+				"status":  "error",
+				"message": "invalid request body",
+			})
+			return
+		}
+
+		parts := make([]storage.CompletedPart, 0, len(payload.Parts))
+		for _, part := range payload.Parts {
+			parts = append(parts, storage.CompletedPart{PartNumber: part.PartNumber, ETag: part.ETag})
+		}
+
+		object, err := store.CompleteMultipartUpload(r.Context(), chi.URLParam(r, "bucket"), payload.Key, chi.URLParam(r, "uploadID"), parts)
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+
+		recordAudit(logger, auditRecorder, auditlog.Entry{
+			Actor:  actorFromRequest(r),
+			Action: "object.upload",
+			Title:  fmt.Sprintf("Uploaded %s/%s", object.Bucket, object.Key),
+			Detail: fmt.Sprintf("%s · %s", formatBytes(object.Size), contentTypeLabel(object.ContentType)),
+			Target: object.Bucket + "/" + object.Key,
+			Remote: requestRemote(r),
+			Status: "success",
+		})
+
+		httpx.WriteJSON(w, http.StatusCreated, object)
+	})
+
+	protected.Delete("/buckets/{bucket}/uploads/{uploadID}", func(w http.ResponseWriter, r *http.Request) {
+		if err := store.AbortMultipartUpload(r.Context(), chi.URLParam(r, "bucket"), r.URL.Query().Get("key"), chi.URLParam(r, "uploadID")); err != nil {
+			writeStorageError(w, err)
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	protected.Delete("/buckets/{bucket}/objects/*", func(w http.ResponseWriter, r *http.Request) {

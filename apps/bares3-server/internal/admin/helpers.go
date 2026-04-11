@@ -225,6 +225,31 @@ func collectMetadataFields(values map[string][]string) map[string]string {
 	return metadata
 }
 
+func normalizeMultipartFormError(err error) string {
+	if err == nil {
+		return "invalid multipart form"
+	}
+
+	message := strings.TrimSpace(err.Error())
+	if message == "" {
+		return "invalid multipart form"
+	}
+
+	lower := strings.ToLower(message)
+	switch {
+	case strings.Contains(lower, "request body too large"):
+		return "upload request body is too large"
+	case strings.Contains(lower, "multipart: message too large"):
+		return "multipart upload is too large"
+	case strings.Contains(lower, "unexpected eof"), strings.Contains(lower, "unexpected end of json input"):
+		return "upload body ended before the multipart form finished"
+	case strings.Contains(lower, "connection reset"), strings.Contains(lower, "broken pipe"):
+		return "upload connection was interrupted before the multipart form finished"
+	default:
+		return fmt.Sprintf("invalid multipart form: %s", message)
+	}
+}
+
 type shareLinkResponse struct {
 	ID          string     `json:"id"`
 	Bucket      string     `json:"bucket"`
