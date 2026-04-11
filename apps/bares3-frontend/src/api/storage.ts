@@ -1,7 +1,61 @@
-import { request } from './client';
+import { ApiError, buildApiUrl, request } from './client';
 
 const multipartUploadThresholdBytes = 16 * 1024 * 1024;
 const multipartUploadChunkBytes = 16 * 1024 * 1024;
+
+export type UploadObjectOptions = {
+  onProgress?: (uploadedBytes: number) => void;
+};
+
+function requestWithUploadProgress<T>(path: string, init: RequestInit, onProgress?: (loadedBytes: number) => void): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(init.method ?? 'GET', buildApiUrl(path));
+    xhr.withCredentials = true;
+
+    const headers = new Headers({
+      Accept: 'application/json',
+      ...(init.headers ?? {}),
+    });
+    headers.forEach((value, key) => {
+      xhr.setRequestHeader(key, value);
+    });
+
+    if (onProgress) {
+      xhr.upload.onprogress = (event) => {
+        onProgress(event.loaded);
+      };
+    }
+
+    xhr.onload = () => {
+      const responseText = xhr.responseText ?? '';
+      const contentType = xhr.getResponseHeader('content-type') ?? '';
+      const body = contentType.includes('application/json') ? JSON.parse(responseText || 'null') : responseText;
+
+      if (xhr.status === 204) {
+        resolve(undefined as T);
+        return;
+      }
+
+      if (xhr.status < 200 || xhr.status >= 300) {
+        const message =
+          typeof body === 'object' && body !== null && 'message' in body
+            ? String(body.message)
+            : `Request failed with status ${xhr.status}`;
+        reject(new ApiError(message, xhr.status));
+        return;
+      }
+
+      resolve(body as T);
+    };
+
+    xhr.onerror = () => {
+      reject(new ApiError('Network request failed', xhr.status || 0));
+    };
+
+    xhr.send((init.body ?? null) as Document | XMLHttpRequestBodyInit | null);
+  });
+}
 
 function encodeObjectKeyPath(key: string) {
   return key
@@ -625,7 +679,7 @@ export function presignObject(bucket: string, key: string, expiresSeconds = 900,
   });
 }
 
-async function uploadMultipartObject(bucket: string, file: File, key: string) {
+async function uploadMultipartObject(bucket: string, file: File, key: string, options?: UploadObjectOptions) {
   const upload = await request<MultipartUploadInfo>(`/api/v1/buckets/${encodeURIComponent(bucket)}/uploads`, {
     method: 'POST',
     headers: {
@@ -640,10 +694,11 @@ async function uploadMultipartObject(bucket: string, file: File, key: string) {
   const parts: Array<{ part_number: number; etag: string }> = [];
 
   try {
+    let uploadedBytes = 0;
     let partNumber = 1;
     for (let offset = 0; offset < file.size; offset += multipartUploadChunkBytes) {
       const chunk = file.slice(offset, Math.min(file.size, offset + multipartUploadChunkBytes));
-      const part = await request<MultipartPartInfo>(
+      const part = await requestWithUploadProgress<MultipartPartInfo>(
         `/api/v1/buckets/${encodeURIComponent(bucket)}/uploads/${encodeURIComponent(upload.upload_id)}/parts/${partNumber}?key=${encodeURIComponent(key)}`,
         {
           method: 'PUT',
@@ -652,8 +707,13 @@ async function uploadMultipartObject(bucket: string, file: File, key: string) {
           },
           body: chunk,
         },
+        (loadedBytes) => {
+          options?.onProgress?.(Math.min(file.size, uploadedBytes + Math.min(loadedBytes, chunk.size)));
+        },
       );
       parts.push({ part_number: part.part_number, etag: part.etag });
+      uploadedBytes += chunk.size;
+      options?.onProgress?.(uploadedBytes);
       partNumber += 1;
     }
 
@@ -676,10 +736,10 @@ async function uploadMultipartObject(bucket: string, file: File, key: string) {
   }
 }
 
-export function uploadObject(bucket: string, file: File, key?: string) {
+export function uploadObject(bucket: string, file: File, key?: string, options?: UploadObjectOptions) {
   const resolvedKey = key?.trim() || file.name.trim();
   if (file.size >= multipartUploadThresholdBytes && resolvedKey) {
-    return uploadMultipartObject(bucket, file, resolvedKey);
+    return uploadMultipartObject(bucket, file, resolvedKey, options);
   }
 
   const formData = new FormData();
@@ -688,10 +748,16 @@ export function uploadObject(bucket: string, file: File, key?: string) {
     formData.append('key', key.trim());
   }
 
-  return request<ObjectInfo>(`/api/v1/buckets/${encodeURIComponent(bucket)}/objects`, {
-    method: 'POST',
-    body: formData,
-  });
+  return requestWithUploadProgress<ObjectInfo>(
+    `/api/v1/buckets/${encodeURIComponent(bucket)}/objects`,
+    {
+      method: 'POST',
+      body: formData,
+    },
+    (loadedBytes) => {
+      options?.onProgress?.(Math.min(file.size, loadedBytes));
+    },
+  );
 }
 
 export function moveBrowserEntry(payload: MoveEntryRequest) {

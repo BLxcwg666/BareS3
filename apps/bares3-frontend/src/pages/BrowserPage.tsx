@@ -10,7 +10,6 @@ import {
   InputNumber,
   Modal,
   Popconfirm,
-  Progress,
   Select,
   Tooltip,
   Space,
@@ -79,6 +78,10 @@ type UploadProgressState = {
   completed: number;
   succeeded: number;
   failed: number;
+  totalBytes: number;
+  uploadedBytes: number;
+  currentFileBytes: number;
+  currentFileUploadedBytes: number;
   current: string;
   phase: 'uploading' | 'done';
   failures: UploadFailure[];
@@ -600,6 +603,8 @@ export function BrowserPage() {
 
       const uploadedItems: ObjectInfo[] = [];
       const failedUploads: UploadFailure[] = [];
+      const totalBytes = resolvedCandidates.reduce((sum, candidate) => sum + candidate.file.size, 0);
+      let uploadedBytesBeforeCurrent = 0;
 
       setUploading(true);
       setUploadProgressClosing(false);
@@ -608,6 +613,10 @@ export function BrowserPage() {
         completed: 0,
         succeeded: 0,
         failed: 0,
+        totalBytes,
+        uploadedBytes: 0,
+        currentFileBytes: resolvedCandidates[0]?.file.size ?? 0,
+        currentFileUploadedBytes: 0,
         current: resolvedCandidates[0].key,
         phase: 'uploading',
         failures: [],
@@ -617,22 +626,40 @@ export function BrowserPage() {
         for (const candidate of resolvedCandidates) {
           setUploadProgress((current) =>
             current
-              ? {
-                  ...current,
-                  current: candidate.key,
-                }
-              : current,
+                ? {
+                    ...current,
+                    current: candidate.key,
+                    currentFileBytes: candidate.file.size,
+                    currentFileUploadedBytes: 0,
+                    uploadedBytes: uploadedBytesBeforeCurrent,
+                  }
+                : current,
           );
 
           try {
-            const uploaded = await uploadObject(selectedBucket, candidate.file, candidate.key);
+            const uploaded = await uploadObject(selectedBucket, candidate.file, candidate.key, {
+              onProgress: (currentFileUploadedBytes) => {
+                setUploadProgress((current) =>
+                  current
+                    ? {
+                        ...current,
+                        currentFileUploadedBytes,
+                        uploadedBytes: uploadedBytesBeforeCurrent + currentFileUploadedBytes,
+                      }
+                    : current,
+                );
+              },
+            });
             uploadedItems.push(uploaded);
+            uploadedBytesBeforeCurrent += candidate.file.size;
             setUploadProgress((current) =>
               current
                 ? {
                     ...current,
                     completed: current.completed + 1,
                     succeeded: current.succeeded + 1,
+                    uploadedBytes: uploadedBytesBeforeCurrent,
+                    currentFileUploadedBytes: candidate.file.size,
                   }
                 : current,
             );
@@ -641,12 +668,15 @@ export function BrowserPage() {
               key: candidate.key,
               reason: normalizeApiError(error, 'Upload failed'),
             });
+            uploadedBytesBeforeCurrent += candidate.file.size;
             setUploadProgress((current) =>
               current
                 ? {
                     ...current,
                     completed: current.completed + 1,
                     failed: current.failed + 1,
+                    uploadedBytes: uploadedBytesBeforeCurrent,
+                    currentFileUploadedBytes: candidate.file.size,
                   }
                 : current,
             );
@@ -1417,6 +1447,16 @@ export function BrowserPage() {
 
   const currentPath = selectedBucket ? `${selectedBucket}/${currentPrefix}` : '';
   const selectedFolderObjectCount = selectedFolder ? objects.filter((item) => item.key.startsWith(selectedFolder.prefix)).length : 0;
+  const uploadCurrentPercent = uploadProgress
+    ? Math.min(
+        100,
+        Math.max(
+          uploadProgress.phase === 'done' ? 100 : uploadProgress.currentFileBytes > 0 ? (uploadProgress.currentFileUploadedBytes / uploadProgress.currentFileBytes) * 100 : 0,
+          uploadProgress.phase === 'uploading' ? 2 : 0,
+        ),
+      )
+    : 0;
+  const uploadTotalPercent = uploadProgress ? Math.min(100, uploadProgress.totalBytes > 0 ? (uploadProgress.uploadedBytes / uploadProgress.totalBytes) * 100 : 100) : 0;
   const publicObjectURL = useMemo(() => {
     const baseURL = runtime?.storage.public_base_url?.trim();
     if (!selectedBucketIsPublic || !baseURL || !selectedBucket || !selectedObject) {
@@ -1773,9 +1813,18 @@ export function BrowserPage() {
                     ) : null}
                   </div>
                 </div>
-                <Progress percent={Math.round((uploadProgress.completed / uploadProgress.total) * 100)} showInfo={false} size="small" />
+                <div className="upload-progress-track" aria-hidden="true">
+                  <div
+                    className="upload-progress-fill upload-progress-fill-current"
+                    style={{ width: `${uploadCurrentPercent}%` }}
+                  />
+                  <div
+                    className="upload-progress-fill upload-progress-fill-total"
+                    style={{ width: `${uploadTotalPercent}%` }}
+                  />
+                </div>
                 <div className="row-note">
-                  {uploadProgress.succeeded} uploaded
+                  {uploadProgress.succeeded} uploaded · current {Math.round(uploadCurrentPercent)}% · total {Math.round(uploadTotalPercent)}%
                   {uploadProgress.failed > 0 ? ` · ${uploadProgress.failed} failed` : ''}
                 </div>
                 {uploadProgress.failures.length > 0 ? (
