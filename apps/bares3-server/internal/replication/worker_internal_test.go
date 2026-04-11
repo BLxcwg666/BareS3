@@ -12,12 +12,6 @@ import (
 func TestWorkerHTTPClientAllowsSlowStreamingBody(t *testing.T) {
 	t.Parallel()
 
-	previousHeaderTimeout := replicationResponseHeaderTimeout
-	replicationResponseHeaderTimeout = 20 * time.Millisecond
-	t.Cleanup(func() {
-		replicationResponseHeaderTimeout = previousHeaderTimeout
-	})
-
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		if flusher, ok := w.(http.Flusher); ok {
@@ -28,7 +22,13 @@ func TestWorkerHTTPClientAllowsSlowStreamingBody(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := newWorkerHTTPClient()
+	client := newWorkerHTTPClientWithConfig(workerHTTPClientConfig{
+		DialTimeout:           replicationDialTimeout,
+		TLSHandshakeTimeout:   replicationTLSHandshakeTimeout,
+		ResponseHeaderTimeout: 20 * time.Millisecond,
+		ExpectContinueTimeout: replicationExpectContinueTimeout,
+		IdleConnTimeout:       replicationIdleConnTimeout,
+	})
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL, nil)
 	if err != nil {
 		t.Fatalf("NewRequestWithContext failed: %v", err)
@@ -54,12 +54,6 @@ func TestWorkerHTTPClientAllowsSlowStreamingBody(t *testing.T) {
 func TestWorkerHTTPClientTimesOutWaitingForHeaders(t *testing.T) {
 	t.Parallel()
 
-	previousHeaderTimeout := replicationResponseHeaderTimeout
-	replicationResponseHeaderTimeout = 20 * time.Millisecond
-	t.Cleanup(func() {
-		replicationResponseHeaderTimeout = previousHeaderTimeout
-	})
-
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(60 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
@@ -67,7 +61,13 @@ func TestWorkerHTTPClientTimesOutWaitingForHeaders(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := newWorkerHTTPClient()
+	client := newWorkerHTTPClientWithConfig(workerHTTPClientConfig{
+		DialTimeout:           replicationDialTimeout,
+		TLSHandshakeTimeout:   replicationTLSHandshakeTimeout,
+		ResponseHeaderTimeout: 20 * time.Millisecond,
+		ExpectContinueTimeout: replicationExpectContinueTimeout,
+		IdleConnTimeout:       replicationIdleConnTimeout,
+	})
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL, nil)
 	if err != nil {
 		t.Fatalf("NewRequestWithContext failed: %v", err)

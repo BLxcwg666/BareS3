@@ -34,6 +34,14 @@ var (
 	replicationIdleConnTimeout       = 90 * time.Second
 )
 
+type workerHTTPClientConfig struct {
+	DialTimeout           time.Duration
+	TLSHandshakeTimeout   time.Duration
+	ResponseHeaderTimeout time.Duration
+	ExpectContinueTimeout time.Duration
+	IdleConnTimeout       time.Duration
+}
+
 type Worker struct {
 	store       *storage.Store
 	dataDir     string
@@ -85,15 +93,25 @@ func NewWorker(cfg config.Config, store *storage.Store, logger *zap.Logger) *Wor
 }
 
 func newWorkerHTTPClient() *http.Client {
+	return newWorkerHTTPClientWithConfig(workerHTTPClientConfig{
+		DialTimeout:           replicationDialTimeout,
+		TLSHandshakeTimeout:   replicationTLSHandshakeTimeout,
+		ResponseHeaderTimeout: replicationResponseHeaderTimeout,
+		ExpectContinueTimeout: replicationExpectContinueTimeout,
+		IdleConnTimeout:       replicationIdleConnTimeout,
+	})
+}
+
+func newWorkerHTTPClientWithConfig(cfg workerHTTPClientConfig) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DialContext = (&net.Dialer{
-		Timeout:   replicationDialTimeout,
+		Timeout:   cfg.DialTimeout,
 		KeepAlive: 30 * time.Second,
 	}).DialContext
-	transport.TLSHandshakeTimeout = replicationTLSHandshakeTimeout
-	transport.ResponseHeaderTimeout = replicationResponseHeaderTimeout
-	transport.ExpectContinueTimeout = replicationExpectContinueTimeout
-	transport.IdleConnTimeout = replicationIdleConnTimeout
+	transport.TLSHandshakeTimeout = cfg.TLSHandshakeTimeout
+	transport.ResponseHeaderTimeout = cfg.ResponseHeaderTimeout
+	transport.ExpectContinueTimeout = cfg.ExpectContinueTimeout
+	transport.IdleConnTimeout = cfg.IdleConnTimeout
 
 	return &http.Client{Transport: transport}
 }
