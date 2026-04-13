@@ -1,0 +1,4694 @@
+openapi: 3.0.3
+info:
+  title: BareS3 Admin API
+  version: 1.2.2
+  description: |
+    BareS3 管理后台 JSON API 的 OpenAPI 规范
+
+    这份规范只覆盖 admin 服务上的 JSON API，也就是 `/api/v1/*` 以及少量 admin 侧基础接口
+servers:
+  - url: http://127.0.0.1:19080
+    description: 默认本地管理端监听地址
+tags:
+  - name: Health
+  - name: Auth
+  - name: Observability
+  - name: Buckets
+  - name: Objects
+  - name: Browser
+  - name: Settings
+  - name: Credentials
+  - name: ShareLinks
+  - name: Sync
+  - name: Replication
+paths:
+  /healthz:
+    get:
+      tags: [Health]
+      summary: 管理端健康检查
+      operationId: adminHealthz
+      responses:
+        '200':
+          description: 健康
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              examples:
+                adminHealthy:
+                  summary: 管理端健康
+                  value:
+                    status: ok
+                    service: admin
+                    region: us-east-1
+                    version:
+                      product: BareS3
+                      version: 1.2.2
+                      commit: abcdef1
+                      built_at: '2026-04-13T12:00:00Z'
+                      go_version: go1.25.0
+                    time: '2026-04-13T12:34:56Z'
+  /readyz:
+    get:
+      tags: [Health]
+      summary: 管理端就绪检查
+      operationId: adminReadyz
+      responses:
+        '200':
+          description: 就绪
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyResponse'
+              examples:
+                ready:
+                  summary: 服务已就绪
+                  value:
+                    status: ok
+                    service: admin
+                    checks:
+                      storage: ok
+                      auditlog: ok
+                      webui: ok
+                    time: '2026-04-13T12:34:56Z'
+        '503':
+          description: 未就绪
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyResponse'
+              examples:
+                notReady:
+                  summary: 服务未就绪
+                  value:
+                    status: error
+                    service: admin
+                    checks:
+                      storage: ok
+                      webui: missing embedded assets
+                    time: '2026-04-13T12:34:56Z'
+  /metrics:
+    get:
+      tags: [Health]
+      summary: Prometheus 指标
+      operationId: adminMetrics
+      responses:
+        '200':
+          description: 指标文本
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                metricsSample:
+                  summary: Prometheus 指标片段
+                  value: |
+                    # HELP bares3_http_requests_total Total HTTP requests
+                    # TYPE bares3_http_requests_total counter
+                    bares3_http_requests_total{service="admin",method="GET",route="/api/v1/runtime",code="200"} 12
+  /api/v1/health:
+    get:
+      tags: [Health]
+      summary: 管理 API 健康检查
+      operationId: adminApiHealth
+      responses:
+        '200':
+          description: 健康
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              examples:
+                adminApiHealthy:
+                  summary: API 健康检查
+                  value:
+                    status: ok
+                    service: admin
+                    region: us-east-1
+                    version:
+                      product: BareS3
+                      version: 1.2.2
+                      commit: abcdef1
+                      built_at: '2026-04-13T12:00:00Z'
+                      go_version: go1.25.0
+                    time: '2026-04-13T12:34:56Z'
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: 登录后台
+      operationId: loginAdmin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthLoginRequest'
+      responses:
+        '200':
+          description: 登录成功
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: "`bares3_admin_session` 会话 Cookie"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSession'
+        '400':
+          description: 请求体不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidRequestBody:
+                  $ref: '#/components/examples/InvalidRequestBody'
+        '401':
+          description: 用户名或密码错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidCredentials:
+                  $ref: '#/components/examples/InvalidCredentials'
+  /api/v1/auth/me:
+    get:
+      tags: [Auth]
+      summary: 获取当前会话
+      operationId: getCurrentAdminSession
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: 当前会话
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSession'
+              examples:
+                currentSession:
+                  summary: 已登录会话
+                  value:
+                    username: admin
+                    expires_at: '2026-04-20T12:34:56Z'
+        '401':
+          description: 未登录
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                notAuthenticated:
+                  $ref: '#/components/examples/NotAuthenticated'
+  /api/v1/auth/logout:
+    get:
+      tags: [Auth]
+      summary: 登出
+      description: 需要满足同源校验。
+      operationId: logoutAdminGet
+      responses:
+        '204':
+          description: 已登出
+        '403':
+          description: 同源校验失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                sameOriginRejected:
+                  $ref: '#/components/examples/SameOriginRejected'
+    post:
+      tags: [Auth]
+      summary: 登出
+      description: 需要满足同源校验。
+      operationId: logoutAdminPost
+      responses:
+        '204':
+          description: 已登出
+        '403':
+          description: 同源校验失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                sameOriginRejected:
+                  $ref: '#/components/examples/SameOriginRejected'
+  /api/v1/search:
+    get:
+      tags: [Observability]
+      summary: 搜索 bucket 和对象
+      operationId: searchBucketsAndObjects
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: query
+          in: query
+          schema:
+            type: string
+          description: 搜索关键字
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 50
+            default: 12
+      responses:
+        '200':
+          description: 搜索结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResultsResponse'
+              examples:
+                mixedSearchResults:
+                  summary: 同时命中 bucket 和 object
+                  value:
+                    items:
+                      - kind: bucket
+                        bucket: gallery
+                      - kind: object
+                        bucket: gallery
+                        key: notes/readme.txt
+        '400':
+          description: 参数不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidQueryLimit:
+                  $ref: '#/components/examples/InvalidQueryLimit'
+  /api/v1/audit/events:
+    get:
+      tags: [Observability]
+      summary: 获取最近审计事件
+      operationId: listAuditEvents
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 10
+      responses:
+        '200':
+          description: 审计事件
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditEventsResponse'
+              examples:
+                latestAuditEvents:
+                  summary: 最近几条审计事件
+                  value:
+                    items:
+                      - time: '2026-04-13T12:30:00Z'
+                        actor: admin
+                        action: bucket.create
+                        title: Created bucket gallery
+                        detail: Access private
+                        target: gallery
+                        remote: 127.0.0.1
+                        status: success
+                      - time: '2026-04-13T12:31:00Z'
+                        actor: admin
+                        action: object.upload
+                        title: Uploaded notes/readme.txt
+                        detail: Bucket gallery
+                        target: gallery/notes/readme.txt
+                        remote: 127.0.0.1
+                        status: success
+        '400':
+          description: 参数不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidQueryLimit:
+                  $ref: '#/components/examples/InvalidQueryLimit'
+  /api/v1/runtime:
+    get:
+      tags: [Observability]
+      summary: 获取运行时快照
+      operationId: getRuntimeSnapshot
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: 运行时快照
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSnapshot'
+              examples:
+                productionRuntime:
+                  summary: 正式环境运行时快照
+                  value:
+                    app:
+                      name: BareS3
+                      env: production
+                    version:
+                      product: BareS3
+                      version: 1.2.2
+                      commit: abcdef1
+                      built_at: '2026-04-13T12:00:00Z'
+                      go_version: go1.25.0
+                    config:
+                      path: /etc/bares3/config.yml
+                      used: explicit
+                      base: /etc/bares3
+                    paths:
+                      data_dir: /var/lib/bares3/data
+                      log_dir: /var/log/bares3
+                      tmp_dir: /var/lib/bares3/tmp
+                    listen:
+                      admin: 127.0.0.1:19080
+                      s3: 0.0.0.0:9000
+                      file: 0.0.0.0:9001
+                    storage:
+                      region: us-east-1
+                      public_base_url: https://files.example.com
+                      s3_base_url: https://s3.example.com
+                      metadata_layout: hidden-dir
+                      domain_bindings:
+                        - host: cdn.example.com
+                          bucket: public-assets
+                          prefix: assets
+                          index_document: false
+                          spa_fallback: false
+                      max_bytes: 0
+                      used_bytes: 123456
+                      bucket_count: 2
+                      active_link_count: 1
+                    sync:
+                      enabled: true
+  /api/v1/buckets:
+    get:
+      tags: [Buckets]
+      summary: 列出 bucket
+      operationId: listBuckets
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: bucket 列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BucketListResponse'
+              examples:
+                mixedBuckets:
+                  summary: 多个 bucket 的典型列表
+                  value:
+                    items:
+                      - name: gallery
+                        path: /var/lib/bares3/data/gallery
+                        metadata_path: /var/lib/bares3/data/gallery/.bares3
+                        created_at: '2026-04-13T12:00:00Z'
+                        metadata_layout: hidden-dir
+                        access_mode: private
+                        replication_enabled: true
+                        quota_bytes: 0
+                        tags: [prod, images]
+                        note: main image bucket
+                        used_bytes: 123456
+                        object_count: 42
+                      - name: public-assets
+                        path: /var/lib/bares3/data/public-assets
+                        metadata_path: /var/lib/bares3/data/public-assets/.bares3
+                        created_at: '2026-04-13T13:00:00Z'
+                        metadata_layout: hidden-dir
+                        access_mode: public
+                        replication_enabled: false
+                        quota_bytes: 0
+                        tags: [cdn]
+                        note: public static assets
+                        used_bytes: 20480
+                        object_count: 7
+    post:
+      tags: [Buckets]
+      summary: 创建 bucket
+      description: 需要已登录且满足同源校验。
+      operationId: createBucket
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBucketRequest'
+            examples:
+              privateBucket:
+                summary: 私有 bucket
+                value:
+                  name: gallery
+                  access_mode: private
+                  replication_enabled: true
+                  quota_bytes: 0
+              publicBucket:
+                summary: 公开 bucket
+                value:
+                  name: public-assets
+                  access_mode: public
+                  replication_enabled: false
+                  quota_bytes: 0
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BucketInfo'
+              examples:
+                createdBucket:
+                  summary: 创建后的 bucket
+                  value:
+                    name: gallery
+                    path: /var/lib/bares3/data/gallery
+                    metadata_path: /var/lib/bares3/data/gallery/.bares3
+                    created_at: '2026-04-13T12:00:00Z'
+                    metadata_layout: hidden-dir
+                    access_mode: private
+                    replication_enabled: true
+                    quota_bytes: 0
+                    tags: []
+                    note: ''
+                    used_bytes: 0
+                    object_count: 0
+        '400':
+          description: 请求体或 bucket 参数不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidBucketName:
+                  $ref: '#/components/examples/InvalidBucketName'
+                invalidRequestBody:
+                  $ref: '#/components/examples/InvalidRequestBody'
+        '409':
+          description: bucket 已存在或 quota 冲突
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                bucketAlreadyExists:
+                  $ref: '#/components/examples/BucketAlreadyExists'
+                quotaExceeded:
+                  $ref: '#/components/examples/QuotaExceeded'
+  /api/v1/buckets/{bucket}:
+    parameters:
+      - $ref: '#/components/parameters/BucketName'
+    get:
+      tags: [Buckets]
+      summary: 获取单个 bucket
+      operationId: getBucket
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: bucket 信息
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BucketInfo'
+              examples:
+                privateBucket:
+                  summary: 私有 bucket 详情
+                  value:
+                    name: gallery
+                    path: /var/lib/bares3/data/gallery
+                    metadata_path: /var/lib/bares3/data/gallery/.bares3
+                    created_at: '2026-04-13T12:00:00Z'
+                    metadata_layout: hidden-dir
+                    access_mode: private
+                    replication_enabled: true
+                    quota_bytes: 0
+                    tags: [prod, images]
+                    note: main image bucket
+                    used_bytes: 123456
+                    object_count: 42
+        '404':
+          description: bucket 不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                bucketNotFound:
+                  $ref: '#/components/examples/BucketNotFound'
+    put:
+      tags: [Buckets]
+      summary: 更新 bucket
+      operationId: updateBucket
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateBucketRequest'
+            examples:
+              renameAndTag:
+                summary: 重命名并补标签
+                value:
+                  name: gallery-2026
+                  access_mode: private
+                  replication_enabled: true
+                  quota_bytes: 0
+                  tags:
+                    - prod
+                    - images
+                  note: renamed for 2026 rollout
+              switchToPublic:
+                summary: 切成公开 bucket
+                value:
+                  name: public-assets
+                  access_mode: public
+                  replication_enabled: false
+                  quota_bytes: 0
+                  tags:
+                    - cdn
+                  note: public web assets
+      responses:
+        '200':
+          description: 更新后的 bucket
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BucketInfo'
+              examples:
+                updatedBucket:
+                  summary: 更新后的 bucket
+                  value:
+                    name: gallery-2026
+                    path: /var/lib/bares3/data/gallery-2026
+                    metadata_path: /var/lib/bares3/data/gallery-2026/.bares3
+                    created_at: '2026-04-13T12:00:00Z'
+                    metadata_layout: hidden-dir
+                    access_mode: private
+                    replication_enabled: true
+                    quota_bytes: 0
+                    tags: [prod, images]
+                    note: renamed for 2026 rollout
+                    used_bytes: 123456
+                    object_count: 42
+        '400':
+          description: 请求体或参数不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidBucketName:
+                  $ref: '#/components/examples/InvalidBucketName'
+                invalidRequestBody:
+                  $ref: '#/components/examples/InvalidRequestBody'
+        '404':
+          description: bucket 不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                bucketNotFound:
+                  $ref: '#/components/examples/BucketNotFound'
+        '409':
+          description: 冲突
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                bucketAlreadyExists:
+                  $ref: '#/components/examples/BucketAlreadyExists'
+                quotaExceeded:
+                  $ref: '#/components/examples/QuotaExceeded'
+    delete:
+      tags: [Buckets]
+      summary: 删除 bucket
+      operationId: deleteBucket
+      security:
+        - cookieAuth: []
+      responses:
+        '204':
+          description: 删除成功
+        '404':
+          description: bucket 不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                bucketNotFound:
+                  $ref: '#/components/examples/BucketNotFound'
+        '409':
+          description: bucket 非空等冲突
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                bucketNotEmpty:
+                  $ref: '#/components/examples/BucketNotEmpty'
+  /api/v1/buckets/{bucket}/history:
+    parameters:
+      - $ref: '#/components/parameters/BucketName'
+    get:
+      tags: [Buckets]
+      summary: 获取 bucket 使用量历史
+      operationId: listBucketHistory
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 24
+      responses:
+        '200':
+          description: 历史数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BucketHistoryResponse'
+              examples:
+                hourlyUsage:
+                  summary: 按小时的 bucket 使用量
+                  value:
+                    items:
+                      - recorded_at: '2026-04-13T10:00:00Z'
+                        used_bytes: 120000
+                        object_count: 40
+                        quota_bytes: 0
+                      - recorded_at: '2026-04-13T11:00:00Z'
+                        used_bytes: 123456
+                        object_count: 42
+                        quota_bytes: 0
+        '400':
+          description: 参数不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidQueryLimit:
+                  $ref: '#/components/examples/InvalidQueryLimit'
+        '404':
+          description: bucket 不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                bucketNotFound:
+                  $ref: '#/components/examples/BucketNotFound'
+  /api/v1/buckets/{bucket}/access:
+    parameters:
+      - $ref: '#/components/parameters/BucketName'
+    get:
+      tags: [Buckets]
+      summary: 获取 bucket 访问配置
+      operationId: getBucketAccess
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: 访问配置
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BucketAccessConfig'
+              examples:
+                customAccess:
+                  summary: 自定义访问规则
+                  value:
+                    mode: custom
+                    policy:
+                      default_action: authenticated
+                      rules:
+                        - prefix: images/
+                          action: public
+                          note: static assets
+                        - prefix: secret/
+                          action: deny
+        '404':
+          description: bucket 不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                bucketNotFound:
+                  $ref: '#/components/examples/BucketNotFound'
+    put:
+      tags: [Buckets]
+      summary: 更新 bucket 访问配置
+      operationId: updateBucketAccess
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateBucketAccessRequest'
+            examples:
+              makeEverythingPublic:
+                summary: 整桶公开
+                value:
+                  mode: public
+                  policy:
+                    default_action: public
+                    rules: []
+              customPrefixRules:
+                summary: 前缀级规则
+                value:
+                  mode: custom
+                  policy:
+                    default_action: authenticated
+                    rules:
+                      - prefix: images/
+                        action: public
+                        note: static assets
+                      - prefix: secret/
+                        action: deny
+      responses:
+        '200':
+          description: 更新后的访问配置
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BucketAccessConfig'
+              examples:
+                updatedCustomAccess:
+                  summary: 更新后的访问配置
+                  value:
+                    mode: custom
+                    policy:
+                      default_action: authenticated
+                      rules:
+                        - prefix: images/
+                          action: public
+                          note: static assets
+                        - prefix: secret/
+                          action: deny
+        '400':
+          description: 请求体或访问规则不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidBucketAccess:
+                  $ref: '#/components/examples/InvalidBucketAccess'
+                invalidRequestBody:
+                  $ref: '#/components/examples/InvalidRequestBody'
+        '404':
+          description: bucket 不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                bucketNotFound:
+                  $ref: '#/components/examples/BucketNotFound'
+  /api/v1/buckets/{bucket}/objects:
+    parameters:
+      - $ref: '#/components/parameters/BucketName'
+    get:
+      tags: [Objects]
+      summary: 分页列出对象
+      operationId: listObjectsPage
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: prefix
+          in: query
+          schema:
+            type: string
+        - name: query
+          in: query
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - name: delimiter
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 分页结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectListResponse'
+              examples:
+                objectPage:
+                  summary: 同时返回对象和 prefixes
+                  value:
+                    items:
+                      - bucket: gallery
+                        key: notes/readme.txt
+                        path: /var/lib/bares3/data/gallery/notes/readme.txt
+                        metadata_path: /var/lib/bares3/data/gallery/.bares3
+                        size: 1024
+                        etag: 6b1c01703b68cf9b35ab049385900b5f
+                        checksum_sha256: 0a1b2c3d4e5f
+                        revision: 12
+                        origin_node_id: node-a
+                        last_change_id: chg_01JQTEST
+                        content_type: text/plain; charset=utf-8
+                        cache_control: public, max-age=3600
+                        content_disposition: inline
+                        user_metadata:
+                          author: xcnya
+                        last_modified: '2026-04-13T12:00:00Z'
+                    prefixes:
+                      - notes/
+                      - uploads/
+                    total_count: 1
+                    has_more: false
+                    next_cursor: notes/readme.txt
+        '400':
+          description: 参数不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidQueryLimit:
+                  $ref: '#/components/examples/InvalidQueryLimit'
+        '404':
+          description: bucket 不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                bucketNotFound:
+                  $ref: '#/components/examples/BucketNotFound'
+    post:
+      tags: [Objects]
+      summary: 上传单个对象
+      description: |
+        走 `multipart/form-data`。
+
+        自定义元数据需要使用 `meta.<name>` 这种表单字段名，OpenAPI 里无法完整表达动态字段，所以这里只展示固定字段。
+      operationId: uploadObject
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                key:
+                  type: string
+                content_type:
+                  type: string
+                cache_control:
+                  type: string
+                content_disposition:
+                  type: string
+      responses:
+        '201':
+          description: 上传成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectInfo'
+              examples:
+                uploadedObject:
+                  summary: 刚上传完成的对象
+                  value:
+                    bucket: gallery
+                    key: notes/readme.txt
+                    path: /var/lib/bares3/data/gallery/notes/readme.txt
+                    metadata_path: /var/lib/bares3/data/gallery/.bares3
+                    size: 1024
+                    etag: 6b1c01703b68cf9b35ab049385900b5f
+                    checksum_sha256: 0a1b2c3d4e5f
+                    revision: 1
+                    origin_node_id: node-a
+                    last_change_id: chg_01JQUPLOAD
+                    content_type: text/plain; charset=utf-8
+                    cache_control: public, max-age=3600
+                    content_disposition: inline
+                    user_metadata:
+                      author: xcnya
+                    last_modified: '2026-04-13T12:15:00Z'
+        '400':
+          description: 表单不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidMultipartForm:
+                  $ref: '#/components/examples/InvalidMultipartForm'
+                invalidObjectKey:
+                  $ref: '#/components/examples/InvalidObjectKey'
+        '404':
+          description: bucket 不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                bucketNotFound:
+                  $ref: '#/components/examples/BucketNotFound'
+        '409':
+          description: quota 冲突等
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                quotaExceeded:
+                  $ref: '#/components/examples/QuotaExceeded'
+  /api/v1/buckets/{bucket}/objects/{key}:
+    parameters:
+      - $ref: '#/components/parameters/BucketName'
+      - $ref: '#/components/parameters/ObjectKey'
+    get:
+      tags: [Objects]
+      summary: 获取对象元信息
+      operationId: statObject
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: 对象信息
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectInfo'
+              examples:
+                objectDetails:
+                  summary: 单对象详情
+                  value:
+                    bucket: gallery
+                    key: notes/readme.txt
+                    path: /var/lib/bares3/data/gallery/notes/readme.txt
+                    metadata_path: /var/lib/bares3/data/gallery/.bares3
+                    size: 1024
+                    etag: 6b1c01703b68cf9b35ab049385900b5f
+                    checksum_sha256: 0a1b2c3d4e5f
+                    revision: 12
+                    origin_node_id: node-a
+                    last_change_id: chg_01JQTEST
+                    content_type: text/plain; charset=utf-8
+                    cache_control: public, max-age=3600
+                    content_disposition: inline
+                    user_metadata:
+                      author: xcnya
+                    last_modified: '2026-04-13T12:00:00Z'
+        '404':
+          description: bucket 或对象不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                objectNotFound:
+                  $ref: '#/components/examples/ObjectNotFound'
+                bucketNotFound:
+                  $ref: '#/components/examples/BucketNotFound'
+    delete:
+      tags: [Objects]
+      summary: 删除对象
+      operationId: deleteObject
+      security:
+        - cookieAuth: []
+      responses:
+        '204':
+          description: 删除成功
+        '404':
+          description: bucket 或对象不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                objectNotFound:
+                  $ref: '#/components/examples/ObjectNotFound'
+                bucketNotFound:
+                  $ref: '#/components/examples/BucketNotFound'
+  /api/v1/buckets/{bucket}/preview/{key}:
+    parameters:
+      - $ref: '#/components/parameters/BucketName'
+      - $ref: '#/components/parameters/ObjectKey'
+    get:
+      tags: [Objects]
+      summary: 预览对象内容
+      operationId: previewObject
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: 文件流
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: bucket 或对象不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                objectNotFound:
+                  $ref: '#/components/examples/ObjectNotFound'
+                bucketNotFound:
+                  $ref: '#/components/examples/BucketNotFound'
+        '503':
+          description: 对象正在同步中
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                objectSyncing:
+                  $ref: '#/components/examples/ObjectSyncing'
+  /api/v1/buckets/{bucket}/metadata/{key}:
+    parameters:
+      - $ref: '#/components/parameters/BucketName'
+      - $ref: '#/components/parameters/ObjectKey'
+    put:
+      tags: [Objects]
+      summary: 更新对象元数据
+      operationId: updateObjectMetadata
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateObjectMetadataRequest'
+            examples:
+              replaceHeaders:
+                summary: 全量改元数据
+                value:
+                  content_type: text/plain; charset=utf-8
+                  content_disposition: inline
+                  cache_control: public, max-age=3600
+                  user_metadata:
+                    author: xcnya
+                    source: console
+              cacheOnly:
+                summary: 只改缓存头
+                value:
+                  cache_control: public, max-age=86400
+      responses:
+        '200':
+          description: 更新后的对象信息
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectInfo'
+              examples:
+                updatedObject:
+                  summary: 更新后的对象
+                  value:
+                    bucket: gallery
+                    key: notes/readme.txt
+                    path: /var/lib/bares3/data/gallery/notes/readme.txt
+                    metadata_path: /var/lib/bares3/data/gallery/.bares3
+                    size: 1024
+                    etag: 6b1c01703b68cf9b35ab049385900b5f
+                    checksum_sha256: 0a1b2c3d4e5f
+                    revision: 13
+                    origin_node_id: node-a
+                    last_change_id: chg_01JQTEST2
+                    content_type: text/plain; charset=utf-8
+                    cache_control: public, max-age=86400
+                    content_disposition: inline
+                    user_metadata:
+                      author: xcnya
+                      source: console
+                    last_modified: '2026-04-13T12:20:00Z'
+        '400':
+          description: 请求体不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidRequestBody:
+                  $ref: '#/components/examples/InvalidRequestBody'
+                invalidObjectKey:
+                  $ref: '#/components/examples/InvalidObjectKey'
+        '404':
+          description: bucket 或对象不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                objectNotFound:
+                  $ref: '#/components/examples/ObjectNotFound'
+                bucketNotFound:
+                  $ref: '#/components/examples/BucketNotFound'
+  /api/v1/buckets/{bucket}/uploads:
+    parameters:
+      - $ref: '#/components/parameters/BucketName'
+    post:
+      tags: [Objects]
+      summary: 初始化 multipart 上传
+      operationId: initiateMultipartUpload
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InitiateMultipartUploadRequest'
+            examples:
+              basicMultipart:
+                summary: 基础 multipart 初始化
+                value:
+                  key: archive/big.txt
+                  content_type: text/plain
+                  cache_control: public, max-age=3600
+                  content_disposition: attachment
+                  user_metadata:
+                    author: xcnya
+              videoMultipart:
+                summary: 视频文件 multipart 初始化
+                value:
+                  key: videos/demo.mp4
+                  content_type: video/mp4
+                  cache_control: public, max-age=31536000, immutable
+                  content_disposition: inline
+      responses:
+        '201':
+          description: 初始化成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MultipartUploadInfo'
+              examples:
+                uploadSession:
+                  summary: 创建出的上传会话
+                  value:
+                    upload_id: upload_01JQTEST
+                    bucket: gallery
+                    key: archive/big.txt
+                    content_type: text/plain
+                    cache_control: public, max-age=3600
+                    content_disposition: attachment
+                    user_metadata:
+                      author: xcnya
+                    created_at: '2026-04-13T12:10:00Z'
+        '400':
+          description: 请求体不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidRequestBody:
+                  $ref: '#/components/examples/InvalidRequestBody'
+                invalidObjectKey:
+                  $ref: '#/components/examples/InvalidObjectKey'
+        '404':
+          description: bucket 不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                bucketNotFound:
+                  $ref: '#/components/examples/BucketNotFound'
+  /api/v1/buckets/{bucket}/uploads/{uploadID}/parts/{partNumber}:
+    parameters:
+      - $ref: '#/components/parameters/BucketName'
+      - $ref: '#/components/parameters/UploadId'
+      - $ref: '#/components/parameters/PartNumber'
+      - name: key
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 对象 key
+    put:
+      tags: [Objects]
+      summary: 上传 multipart part
+      operationId: uploadMultipartPart
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: 分片上传成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MultipartPartInfo'
+              examples:
+                uploadedPart:
+                  summary: 分片上传成功
+                  value:
+                    part_number: 1
+                    etag: 3c6e0b8a9c15224a8228b9a98ca1531d
+                    size: 5242880
+                    last_modified: '2026-04-13T12:12:00Z'
+        '400':
+          description: part 参数不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidPartNumber:
+                  $ref: '#/components/examples/InvalidPartNumber'
+        '404':
+          description: bucket 或 upload 不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                uploadNotFound:
+                  $ref: '#/components/examples/UploadNotFound'
+                bucketNotFound:
+                  $ref: '#/components/examples/BucketNotFound'
+  /api/v1/buckets/{bucket}/uploads/{uploadID}/complete:
+    parameters:
+      - $ref: '#/components/parameters/BucketName'
+      - $ref: '#/components/parameters/UploadId'
+    post:
+      tags: [Objects]
+      summary: 完成 multipart 上传
+      operationId: completeMultipartUpload
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompleteMultipartUploadRequest'
+      responses:
+        '201':
+          description: 完成成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectInfo'
+              examples:
+                completedMultipartObject:
+                  summary: multipart 合并后的最终对象
+                  value:
+                    bucket: gallery
+                    key: archive/big.txt
+                    path: /var/lib/bares3/data/gallery/archive/big.txt
+                    metadata_path: /var/lib/bares3/data/gallery/.bares3
+                    size: 10485760
+                    etag: 9e107d9d372bb6826bd81d3542a419d6
+                    checksum_sha256: 0123456789abcdef
+                    revision: 8
+                    origin_node_id: node-a
+                    last_change_id: chg_01JQMPDONE
+                    content_type: text/plain
+                    cache_control: public, max-age=3600
+                    content_disposition: attachment
+                    user_metadata:
+                      author: xcnya
+                    last_modified: '2026-04-13T12:20:00Z'
+        '400':
+          description: 请求体不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidRequestBody:
+                  $ref: '#/components/examples/InvalidRequestBody'
+        '404':
+          description: bucket 或 upload 不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                uploadNotFound:
+                  $ref: '#/components/examples/UploadNotFound'
+                bucketNotFound:
+                  $ref: '#/components/examples/BucketNotFound'
+  /api/v1/buckets/{bucket}/uploads/{uploadID}:
+    parameters:
+      - $ref: '#/components/parameters/BucketName'
+      - $ref: '#/components/parameters/UploadId'
+      - name: key
+        in: query
+        required: false
+        schema:
+          type: string
+    delete:
+      tags: [Objects]
+      summary: 中止 multipart 上传
+      operationId: abortMultipartUpload
+      security:
+        - cookieAuth: []
+      responses:
+        '204':
+          description: 中止成功
+        '404':
+          description: bucket 或 upload 不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                uploadNotFound:
+                  $ref: '#/components/examples/UploadNotFound'
+                bucketNotFound:
+                  $ref: '#/components/examples/BucketNotFound'
+  /api/v1/browser/delete:
+    post:
+      tags: [Browser]
+      summary: 删除整个前缀
+      operationId: deletePrefix
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BrowserDeleteRequest'
+      responses:
+        '200':
+          description: 删除结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrowserDeleteResponse'
+              examples:
+                deletedPrefix:
+                  summary: 删除整个前缀后的结果
+                  value:
+                    deleted_count: 12
+        '400':
+          description: 请求体不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidRequestBody:
+                  $ref: '#/components/examples/InvalidRequestBody'
+  /api/v1/browser/move:
+    post:
+      tags: [Browser]
+      summary: 移动对象或前缀
+      operationId: moveObjectOrPrefix
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BrowserMoveRequest'
+            examples:
+              moveObject:
+                summary: 移动单个对象
+                value:
+                  kind: object
+                  source_bucket: gallery
+                  source_key: notes/readme.txt
+                  destination_bucket: archive
+                  destination_key: docs/readme.txt
+              movePrefix:
+                summary: 移动整个前缀
+                value:
+                  kind: prefix
+                  source_bucket: gallery
+                  source_prefix: notes/
+                  destination_bucket: archive
+                  destination_prefix: docs/
+      responses:
+        '200':
+          description: 移动结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MoveResult'
+              examples:
+                movedObject:
+                  summary: 单对象移动结果
+                  value:
+                    kind: object
+                    source_bucket: gallery
+                    source_key: notes/readme.txt
+                    destination_bucket: archive
+                    destination_key: docs/readme.txt
+                    moved_count: 1
+                movedPrefix:
+                  summary: 前缀移动结果
+                  value:
+                    kind: prefix
+                    source_bucket: gallery
+                    source_prefix: notes/
+                    destination_bucket: archive
+                    destination_prefix: docs/
+                    moved_count: 12
+        '400':
+          description: 请求体或移动目标不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidMove:
+                  $ref: '#/components/examples/InvalidMove'
+                invalidRequestBody:
+                  $ref: '#/components/examples/InvalidRequestBody'
+        '404':
+          description: 来源不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                objectNotFound:
+                  $ref: '#/components/examples/ObjectNotFound'
+                bucketNotFound:
+                  $ref: '#/components/examples/BucketNotFound'
+        '409':
+          description: 冲突
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                quotaExceeded:
+                  $ref: '#/components/examples/QuotaExceeded'
+  /api/v1/settings/storage:
+    get:
+      tags: [Settings]
+      summary: 获取实例存储设置
+      operationId: getStorageSettings
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: 存储设置
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StorageSettings'
+              examples:
+                unlimited:
+                  summary: 不限制实例容量
+                  value:
+                    max_bytes: 0
+    put:
+      tags: [Settings]
+      summary: 更新实例存储设置
+      operationId: updateStorageSettings
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateStorageSettingsRequest'
+      responses:
+        '200':
+          description: 更新后的存储设置
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StorageSettings'
+              examples:
+                updatedStorageLimit:
+                  summary: 更新后的实例容量限制
+                  value:
+                    max_bytes: 1099511627776
+        '400':
+          description: 参数不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                quotaExceeded:
+                  $ref: '#/components/examples/QuotaExceeded'
+  /api/v1/settings/system:
+    get:
+      tags: [Settings]
+      summary: 获取系统运行时设置
+      operationId: getSystemSettings
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: 系统设置
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemSettings'
+              examples:
+                productionSystemSettings:
+                  summary: 当前正式环境设置
+                  value:
+                    public_base_url: https://files.example.com
+                    s3_base_url: https://s3.example.com
+                    region: us-east-1
+                    metadata_layout: hidden-dir
+                    tmp_dir: /var/lib/bares3/tmp
+    put:
+      tags: [Settings]
+      summary: 更新系统运行时设置
+      description: "会把 `tmp_dir` 回写到 `config.yml`。"
+      operationId: updateSystemSettings
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSystemSettingsRequest'
+            examples:
+              localDevelopment:
+                summary: 本地开发环境
+                value:
+                  public_base_url: http://127.0.0.1:9001
+                  s3_base_url: http://127.0.0.1:9000
+                  region: us-east-1
+                  metadata_layout: hidden-dir
+                  tmp_dir: ./data/.bares3/tmp
+              production:
+                summary: 正式环境
+                value:
+                  public_base_url: https://files.example.com
+                  s3_base_url: https://s3.example.com
+                  region: us-east-1
+                  metadata_layout: hidden-dir
+                  tmp_dir: /var/lib/bares3/tmp
+      responses:
+        '200':
+          description: 更新后的系统设置
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemSettings'
+              examples:
+                updatedProductionSystemSettings:
+                  summary: 更新后的系统设置
+                  value:
+                    public_base_url: https://files.example.com
+                    s3_base_url: https://s3.example.com
+                    region: us-east-1
+                    metadata_layout: hidden-dir
+                    tmp_dir: /var/lib/bares3/tmp
+        '400':
+          description: 参数不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidRequestBody:
+                  $ref: '#/components/examples/InvalidRequestBody'
+  /api/v1/settings/domains:
+    get:
+      tags: [Settings]
+      summary: 获取公共域名绑定
+      operationId: getDomainBindings
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: 域名绑定
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainBindingsResponse'
+              examples:
+                currentBindings:
+                  summary: 当前域名绑定列表
+                  value:
+                    items:
+                      - host: app.example.com
+                        bucket: public-assets
+                        prefix: site
+                        index_document: true
+                        spa_fallback: true
+                      - host: cdn.example.com
+                        bucket: public-assets
+                        prefix: assets
+                        index_document: false
+                        spa_fallback: false
+    put:
+      tags: [Settings]
+      summary: 更新公共域名绑定
+      operationId: updateDomainBindings
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateDomainsRequest'
+            examples:
+              staticSite:
+                summary: 静态站域名绑定
+                value:
+                  items:
+                    - host: app.example.com
+                      bucket: public-assets
+                      prefix: site
+                      index_document: true
+                      spa_fallback: true
+              assetCdn:
+                summary: 资源 CDN 域名绑定
+                value:
+                  items:
+                    - host: cdn.example.com
+                      bucket: public-assets
+                      prefix: assets
+                      index_document: false
+                      spa_fallback: false
+      responses:
+        '200':
+          description: 更新后的域名绑定
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainBindingsResponse'
+              examples:
+                updatedBindings:
+                  summary: 更新后的域名绑定列表
+                  value:
+                    items:
+                      - host: app.example.com
+                        bucket: public-assets
+                        prefix: site
+                        index_document: true
+                        spa_fallback: true
+        '400':
+          description: 域名绑定不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidDomainBindings:
+                  $ref: '#/components/examples/InvalidDomainBindings'
+  /api/v1/settings/s3/credentials:
+    get:
+      tags: [Credentials]
+      summary: 列出 S3 凭据
+      operationId: listS3Credentials
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: 凭据列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CredentialListResponse'
+              examples:
+                credentialList:
+                  summary: 当前 S3 凭据列表
+                  value:
+                    items:
+                      - access_key_id: B3AEXAMPLEKEY
+                        label: my-app
+                        source: console
+                        permission: read_write
+                        buckets: [gallery]
+                        created_at: '2026-04-13T12:20:00Z'
+                        last_used_at: '2026-04-13T12:25:00Z'
+                        revoked_at: null
+                        status: active
+                      - access_key_id: B3READONLYKEY
+                        label: analytics-exporter
+                        source: console
+                        permission: read_only
+                        buckets: [public-assets]
+                        created_at: '2026-04-13T13:20:00Z'
+                        last_used_at: null
+                        revoked_at: null
+                        status: active
+    post:
+      tags: [Credentials]
+      summary: 创建 S3 凭据
+      operationId: createS3Credential
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CredentialCreateRequest'
+            examples:
+              scopedReadWrite:
+                summary: 指定 bucket 的读写 key
+                value:
+                  label: my-app
+                  permission: read_write
+                  buckets:
+                    - gallery
+              readOnlyScoped:
+                summary: 指定 bucket 的只读 key
+                value:
+                  label: analytics-exporter
+                  permission: read_only
+                  buckets:
+                    - public-assets
+      responses:
+        '201':
+          description: "创建成功。注意只有这次会返回 `secret_access_key`。"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatedCredential'
+              examples:
+                createdCredential:
+                  summary: 新创建的 S3 凭据
+                  value:
+                    access_key_id: B3AEXAMPLEKEY
+                    secret_access_key: bareS3SecretExampleValue
+                    label: my-app
+                    source: console
+                    permission: read_write
+                    buckets:
+                      - gallery
+                    created_at: '2026-04-13T12:20:00Z'
+                    last_used_at: null
+                    revoked_at: null
+                    status: active
+        '400':
+          description: 请求体不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidPermission:
+                  $ref: '#/components/examples/InvalidPermission'
+                invalidRequestBody:
+                  $ref: '#/components/examples/InvalidRequestBody'
+  /api/v1/settings/s3/credentials/{accessKeyID}:
+    parameters:
+      - $ref: '#/components/parameters/AccessKeyId'
+    put:
+      tags: [Credentials]
+      summary: 更新 S3 凭据
+      operationId: updateS3Credential
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CredentialUpdateRequest'
+      responses:
+        '200':
+          description: 更新后的凭据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicCredential'
+              examples:
+                updatedCredential:
+                  summary: 更新后的凭据
+                  value:
+                    access_key_id: B3AEXAMPLEKEY
+                    label: my-app-updated
+                    source: console
+                    permission: read_only
+                    buckets:
+                      - gallery
+                    created_at: '2026-04-13T12:20:00Z'
+                    last_used_at: '2026-04-13T12:25:00Z'
+                    revoked_at: null
+                    status: active
+        '400':
+          description: 请求体不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidPermission:
+                  $ref: '#/components/examples/InvalidPermission'
+                invalidRequestBody:
+                  $ref: '#/components/examples/InvalidRequestBody'
+        '404':
+          description: 凭据不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                credentialNotFound:
+                  $ref: '#/components/examples/CredentialNotFound'
+    delete:
+      tags: [Credentials]
+      summary: 吊销 S3 凭据
+      operationId: revokeS3Credential
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: 已吊销的凭据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicCredential'
+              examples:
+                revokedCredential:
+                  summary: 已吊销的凭据
+                  value:
+                    access_key_id: B3AEXAMPLEKEY
+                    label: my-app
+                    source: console
+                    permission: read_write
+                    buckets:
+                      - gallery
+                    created_at: '2026-04-13T12:20:00Z'
+                    last_used_at: '2026-04-13T12:25:00Z'
+                    revoked_at: '2026-04-13T13:00:00Z'
+                    status: revoked
+        '404':
+          description: 凭据不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                credentialNotFound:
+                  $ref: '#/components/examples/CredentialNotFound'
+  /api/v1/settings/s3/credentials/{accessKeyID}/remove:
+    parameters:
+      - $ref: '#/components/parameters/AccessKeyId'
+    delete:
+      tags: [Credentials]
+      summary: 删除已吊销的 S3 凭据
+      operationId: deleteS3Credential
+      security:
+        - cookieAuth: []
+      responses:
+        '204':
+          description: 删除成功
+        '404':
+          description: 凭据不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                credentialNotFound:
+                  $ref: '#/components/examples/CredentialNotFound'
+        '409':
+          description: 凭据仍处于 active 状态，不能删除
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                credentialActive:
+                  $ref: '#/components/examples/CredentialActiveConflict'
+  /api/v1/share-links:
+    get:
+      tags: [ShareLinks]
+      summary: 列出分享链接
+      operationId: listShareLinks
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: 分享链接列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShareLinkListResponse'
+              examples:
+                activeAndExpired:
+                  summary: 混合状态的分享链接列表
+                  value:
+                    items:
+                      - id: sl_01JQTEST
+                        bucket: gallery
+                        key: notes/readme.txt
+                        filename: readme.txt
+                        content_type: text/plain; charset=utf-8
+                        size: 1024
+                        created_by: admin
+                        created_at: '2026-04-13T12:30:00Z'
+                        expires_at: '2026-04-14T12:30:00Z'
+                        revoked_at: null
+                        status: active
+                        url: https://files.example.com/s/sl_01JQTEST
+                        download_url: https://files.example.com/dl/sl_01JQTEST
+                      - id: sl_01JQOLD
+                        bucket: public-assets
+                        key: releases/app.zip
+                        filename: app.zip
+                        content_type: application/zip
+                        size: 52428800
+                        created_by: admin
+                        created_at: '2026-04-10T12:30:00Z'
+                        expires_at: '2026-04-10T13:30:00Z'
+                        revoked_at: null
+                        status: expired
+                        url: https://files.example.com/s/sl_01JQOLD
+                        download_url: https://files.example.com/dl/sl_01JQOLD
+    post:
+      tags: [ShareLinks]
+      summary: 创建分享链接
+      operationId: createShareLink
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateShareLinkRequest'
+            examples:
+              oneDay:
+                summary: 一天有效期
+                value:
+                  bucket: gallery
+                  key: notes/readme.txt
+                  expires_seconds: 86400
+              oneHour:
+                summary: 一小时有效期
+                value:
+                  bucket: public-assets
+                  key: releases/app.zip
+                  expires_seconds: 3600
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShareLinkInfo'
+              examples:
+                createdShareLink:
+                  summary: 刚创建的分享链接
+                  value:
+                    id: sl_01JQTEST
+                    bucket: gallery
+                    key: notes/readme.txt
+                    filename: readme.txt
+                    content_type: text/plain; charset=utf-8
+                    size: 1024
+                    created_by: admin
+                    created_at: '2026-04-13T12:30:00Z'
+                    expires_at: '2026-04-14T12:30:00Z'
+                    revoked_at: null
+                    status: active
+                    url: https://files.example.com/s/sl_01JQTEST
+                    download_url: https://files.example.com/dl/sl_01JQTEST
+        '400':
+          description: 请求体不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidRequestBody:
+                  $ref: '#/components/examples/InvalidRequestBody'
+        '404':
+          description: 对象不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                objectNotFound:
+                  $ref: '#/components/examples/ObjectNotFound'
+  /api/v1/share-links/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ShareLinkId'
+    delete:
+      tags: [ShareLinks]
+      summary: 吊销分享链接
+      operationId: revokeShareLink
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: 已吊销的分享链接
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShareLinkInfo'
+              examples:
+                revokedShareLink:
+                  summary: 已吊销的分享链接
+                  value:
+                    id: sl_01JQTEST
+                    bucket: gallery
+                    key: notes/readme.txt
+                    filename: readme.txt
+                    content_type: text/plain; charset=utf-8
+                    size: 1024
+                    created_by: admin
+                    created_at: '2026-04-13T12:30:00Z'
+                    expires_at: '2026-04-14T12:30:00Z'
+                    revoked_at: '2026-04-13T13:10:00Z'
+                    status: revoked
+                    url: https://files.example.com/s/sl_01JQTEST
+                    download_url: https://files.example.com/dl/sl_01JQTEST
+        '400':
+          description: 分享链接 ID 或状态不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                shareLinkInvalidId:
+                  $ref: '#/components/examples/ShareLinkInvalidId'
+        '404':
+          description: 分享链接不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                shareLinkNotFound:
+                  $ref: '#/components/examples/ShareLinkNotFound'
+  /api/v1/share-links/{id}/remove:
+    parameters:
+      - $ref: '#/components/parameters/ShareLinkId'
+    delete:
+      tags: [ShareLinks]
+      summary: 删除已吊销或已过期的分享链接
+      operationId: deleteShareLink
+      security:
+        - cookieAuth: []
+      responses:
+        '204':
+          description: 删除成功
+        '400':
+          description: 状态不允许删除
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                shareLinkNotRevoked:
+                  $ref: '#/components/examples/ShareLinkNotRevoked'
+        '404':
+          description: 分享链接不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                shareLinkNotFound:
+                  $ref: '#/components/examples/ShareLinkNotFound'
+  /api/v1/presign/s3:
+    post:
+      tags: [ShareLinks]
+      summary: 生成 S3 预签名 URL
+      operationId: createPresignedS3Url
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PresignRequest'
+            examples:
+              presignGet:
+                summary: 生成下载 URL
+                value:
+                  method: GET
+                  bucket: gallery
+                  key: notes/readme.txt
+                  expires_seconds: 900
+              presignPut:
+                summary: 生成上传 URL
+                value:
+                  method: PUT
+                  bucket: uploads
+                  key: incoming/demo.bin
+                  expires_seconds: 600
+      responses:
+        '200':
+          description: 预签名结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PresignResult'
+              examples:
+                presignedGet:
+                  summary: 下载预签名结果
+                  value:
+                    url: https://s3.example.com/gallery/notes/readme.txt?X-Amz-Algorithm=AWS4-HMAC-SHA256
+                    expires_at: '2026-04-13T12:45:00Z'
+                    method: GET
+                presignedPut:
+                  summary: 上传预签名结果
+                  value:
+                    url: https://s3.example.com/uploads/incoming/demo.bin?X-Amz-Algorithm=AWS4-HMAC-SHA256
+                    expires_at: '2026-04-13T12:40:00Z'
+                    method: PUT
+        '400':
+          description: 请求体或签名参数不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidRequestBody:
+                  $ref: '#/components/examples/InvalidRequestBody'
+                invalidObjectKey:
+                  $ref: '#/components/examples/InvalidObjectKey'
+        '409':
+          description: 没有可用 S3 凭据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                noActiveCredential:
+                  $ref: '#/components/examples/NoActiveCredential'
+  /api/v1/settings/sync:
+    get:
+      tags: [Sync]
+      summary: 获取同步设置与状态汇总
+      operationId: getSyncSettings
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: 同步设置
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncSettingsResponse'
+              examples:
+                syncOverview:
+                  summary: 当前同步汇总
+                  value:
+                    enabled: true
+                    leader_cursor: 128
+                    reconcile_counts:
+                      pending: 1
+                      verifying: 0
+                      downloading: 0
+                      ready: 42
+                      error: 0
+                      conflict: 1
+                    reconcile_summary:
+                      baseline_node_id: node-a
+                      last_error: checksum mismatch
+                    conflict_items:
+                      - bucket: gallery
+                        key: notes/readme.txt
+                        source: remote_01
+                        baseline_node_id: node-a
+                        last_error: checksum mismatch
+                        updated_at: '2026-04-13T12:40:00Z'
+    put:
+      tags: [Sync]
+      summary: 更新同步总开关
+      operationId: updateSyncSettings
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSyncSettingsRequest'
+            examples:
+              enableSync:
+                summary: 开启同步
+                value:
+                  enabled: true
+              disableSync:
+                summary: 关闭同步
+                value:
+                  enabled: false
+      responses:
+        '200':
+          description: 更新后的同步设置
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncSettingsEnabledOnly'
+              examples:
+                syncEnabled:
+                  summary: 已开启同步
+                  value:
+                    enabled: true
+                syncDisabled:
+                  summary: 已关闭同步
+                  value:
+                    enabled: false
+        '400':
+          description: 请求体不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidRequestBody:
+                  $ref: '#/components/examples/InvalidRequestBody'
+  /api/v1/settings/sync/conflicts/resolve:
+    post:
+      tags: [Sync]
+      summary: 重新拉取冲突对象
+      operationId: resolveSyncConflict
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveConflictRequest'
+      responses:
+        '200':
+          description: 已触发重拉
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusOkResponse'
+              examples:
+                triggered:
+                  summary: 已触发冲突对象重拉
+                  value:
+                    status: ok
+        '400':
+          description: 请求体不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidRequestBody:
+                  $ref: '#/components/examples/InvalidRequestBody'
+        '404':
+          description: 对象或同步状态不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                syncConflictNotFound:
+                  $ref: '#/components/examples/SyncConflictNotFound'
+                objectNotFound:
+                  $ref: '#/components/examples/ObjectNotFound'
+  /api/v1/replication/tokens:
+    get:
+      tags: [Replication]
+      summary: 列出同步令牌
+      operationId: listReplicationTokens
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: 同步令牌列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplicationTokenListResponse'
+              examples:
+                tokenList:
+                  summary: 当前同步令牌列表
+                  value:
+                    items:
+                      - id: token_01JQTEST
+                        token: sync_tok_example
+                        label: node-b
+                        created_by: admin
+                        created_at: '2026-04-13T12:50:00Z'
+                        status: active
+                        revoked_at: null
+    post:
+      tags: [Replication]
+      summary: 创建同步令牌
+      operationId: createReplicationToken
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReplicationTokenRequest'
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplicationToken'
+              examples:
+                createdToken:
+                  summary: 新创建的同步令牌
+                  value:
+                    id: token_01JQTEST
+                    token: sync_tok_example
+                    label: node-b
+                    created_by: admin
+                    created_at: '2026-04-13T12:50:00Z'
+                    status: active
+                    revoked_at: null
+        '400':
+          description: 请求体不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidRequestBody:
+                  $ref: '#/components/examples/InvalidRequestBody'
+  /api/v1/replication/tokens/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ReplicationTokenId'
+    delete:
+      tags: [Replication]
+      summary: 吊销同步令牌
+      operationId: revokeReplicationToken
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: 已吊销的同步令牌
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplicationToken'
+              examples:
+                revokedToken:
+                  summary: 已吊销的同步令牌
+                  value:
+                    id: token_01JQTEST
+                    token: sync_tok_example
+                    label: node-b
+                    created_by: admin
+                    created_at: '2026-04-13T12:50:00Z'
+                    status: revoked
+                    revoked_at: '2026-04-13T13:05:00Z'
+        '404':
+          description: 同步令牌不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                replicationTokenNotFound:
+                  $ref: '#/components/examples/ReplicationTokenNotFound'
+  /api/v1/replication/tokens/{id}/remove:
+    parameters:
+      - $ref: '#/components/parameters/ReplicationTokenId'
+    delete:
+      tags: [Replication]
+      summary: 删除已吊销的同步令牌
+      operationId: deleteReplicationToken
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: 已删除的 token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplicationToken'
+              examples:
+                removedToken:
+                  summary: 删除前返回的 token 对象
+                  value:
+                    id: token_01JQTEST
+                    token: sync_tok_example
+                    label: node-b
+                    created_by: admin
+                    created_at: '2026-04-13T12:50:00Z'
+                    status: revoked
+                    revoked_at: '2026-04-13T13:05:00Z'
+        '404':
+          description: 同步令牌不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                replicationTokenNotFound:
+                  $ref: '#/components/examples/ReplicationTokenNotFound'
+        '409':
+          description: 同步令牌仍处于 active 状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                replicationTokenActive:
+                  $ref: '#/components/examples/ReplicationTokenActive'
+  /api/v1/replication/remotes:
+    get:
+      tags: [Replication]
+      summary: 列出同步远端
+      operationId: listReplicationRemotes
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: 同步远端列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemoteListResponse'
+              examples:
+                remoteList:
+                  summary: 当前同步远端列表
+                  value:
+                    items:
+                      - id: remote_01JQTEST
+                        display_name: node-b
+                        endpoint: https://admin-b.example.com
+                        enabled: true
+                        follow_changes: true
+                        status: syncing
+                        connection_status: connected
+                        bootstrap_mode: full
+                        cursor: 128
+                        last_error: ''
+                        last_sync_started_at: '2026-04-13T12:55:00Z'
+                        last_heartbeat_at: '2026-04-13T12:56:00Z'
+                        last_sync_at: '2026-04-13T12:56:10Z'
+                        peer_cursor: 128
+                        peer_used_bytes: 123456
+                        peer_bucket_count: 2
+                        peer_object_count: 42
+                        objects_total: 42
+                        objects_completed: 42
+                        bytes_total: 123456
+                        bytes_completed: 123456
+                        download_rate_bps: 0
+                        upload_rate_bps: 0
+                        created_at: '2026-04-13T12:54:00Z'
+                        updated_at: '2026-04-13T12:56:10Z'
+                        sync_counts:
+                          pending: 0
+                          verifying: 0
+                          downloading: 0
+                          ready: 42
+                          error: 0
+                          conflict: 0
+    post:
+      tags: [Replication]
+      summary: 创建同步远端
+      operationId: createReplicationRemote
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRemoteRequest'
+            examples:
+              fullBootstrap:
+                summary: 从完整快照开始
+                value:
+                  display_name: node-b
+                  endpoint: https://admin-b.example.com
+                  token: sync_tok_example
+                  enabled: true
+                  follow_changes: true
+                  bootstrap_mode: full
+              fromNow:
+                summary: 只跟后续增量
+                value:
+                  display_name: node-c
+                  endpoint: https://admin-c.example.com
+                  token: sync_tok_example_2
+                  enabled: true
+                  follow_changes: true
+                  bootstrap_mode: from_now
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemoteView'
+              examples:
+                createdRemote:
+                  summary: 新创建的同步远端
+                  value:
+                    id: remote_01JQTEST
+                    display_name: node-b
+                    endpoint: https://admin-b.example.com
+                    enabled: true
+                    follow_changes: true
+                    status: pending
+                    connection_status: disconnected
+                    bootstrap_mode: full
+                    cursor: 0
+                    last_error: ''
+                    last_sync_started_at: null
+                    last_heartbeat_at: null
+                    last_sync_at: null
+                    peer_cursor: 0
+                    peer_used_bytes: 0
+                    peer_bucket_count: 0
+                    peer_object_count: 0
+                    objects_total: 0
+                    objects_completed: 0
+                    bytes_total: 0
+                    bytes_completed: 0
+                    download_rate_bps: 0
+                    upload_rate_bps: 0
+                    created_at: '2026-04-13T12:54:00Z'
+                    updated_at: '2026-04-13T12:54:00Z'
+                    sync_counts:
+                      pending: 0
+                      verifying: 0
+                      downloading: 0
+                      ready: 0
+                      error: 0
+                      conflict: 0
+        '400':
+          description: 请求体不合法或远端探测失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidRequestBody:
+                  $ref: '#/components/examples/InvalidRequestBody'
+                remoteProbeFailed:
+                  $ref: '#/components/examples/RemoteProbeFailed'
+  /api/v1/replication/remotes/{id}:
+    parameters:
+      - $ref: '#/components/parameters/RemoteId'
+    patch:
+      tags: [Replication]
+      summary: 部分更新同步远端
+      operationId: updateReplicationRemote
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRemoteRequest'
+            examples:
+              pauseFollowChanges:
+                summary: 暂停跟随后续变化
+                value:
+                  follow_changes: false
+                  enabled: true
+              rotateTokenAndResume:
+                summary: 轮换 token 并启用
+                value:
+                  token: sync_tok_rotated
+                  enabled: true
+                  follow_changes: true
+      responses:
+        '200':
+          description: 更新后的同步远端
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemoteView'
+              examples:
+                updatedRemote:
+                  summary: 更新后的同步远端
+                  value:
+                    id: remote_01JQTEST
+                    display_name: node-b-updated
+                    endpoint: https://admin-b.example.com
+                    enabled: true
+                    follow_changes: false
+                    status: idle
+                    connection_status: connected
+                    bootstrap_mode: full
+                    cursor: 128
+                    last_error: ''
+                    last_sync_started_at: '2026-04-13T12:55:00Z'
+                    last_heartbeat_at: '2026-04-13T13:00:00Z'
+                    last_sync_at: '2026-04-13T12:56:10Z'
+                    peer_cursor: 128
+                    peer_used_bytes: 123456
+                    peer_bucket_count: 2
+                    peer_object_count: 42
+                    objects_total: 42
+                    objects_completed: 42
+                    bytes_total: 123456
+                    bytes_completed: 123456
+                    download_rate_bps: 0
+                    upload_rate_bps: 0
+                    created_at: '2026-04-13T12:54:00Z'
+                    updated_at: '2026-04-13T13:00:00Z'
+                    sync_counts:
+                      pending: 0
+                      verifying: 0
+                      downloading: 0
+                      ready: 42
+                      error: 0
+                      conflict: 0
+        '400':
+          description: 请求体不合法或远端探测失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidRequestBody:
+                  $ref: '#/components/examples/InvalidRequestBody'
+                remoteProbeFailed:
+                  $ref: '#/components/examples/RemoteProbeFailed'
+        '404':
+          description: 同步远端不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                remoteNotFound:
+                  $ref: '#/components/examples/RemoteNotFound'
+    delete:
+      tags: [Replication]
+      summary: 删除同步远端
+      operationId: deleteReplicationRemote
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: 被删除的同步远端
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemoteView'
+              examples:
+                deletedRemote:
+                  summary: 删除前返回的同步远端
+                  value:
+                    id: remote_01JQTEST
+                    display_name: node-b
+                    endpoint: https://admin-b.example.com
+                    enabled: false
+                    follow_changes: false
+                    status: idle
+                    connection_status: disconnected
+                    bootstrap_mode: full
+                    cursor: 128
+                    last_error: ''
+                    last_sync_started_at: '2026-04-13T12:55:00Z'
+                    last_heartbeat_at: '2026-04-13T13:00:00Z'
+                    last_sync_at: '2026-04-13T12:56:10Z'
+                    peer_cursor: 128
+                    peer_used_bytes: 123456
+                    peer_bucket_count: 2
+                    peer_object_count: 42
+                    objects_total: 42
+                    objects_completed: 42
+                    bytes_total: 123456
+                    bytes_completed: 123456
+                    download_rate_bps: 0
+                    upload_rate_bps: 0
+                    created_at: '2026-04-13T12:54:00Z'
+                    updated_at: '2026-04-13T13:00:00Z'
+                    sync_counts:
+                      pending: 0
+                      verifying: 0
+                      downloading: 0
+                      ready: 42
+                      error: 0
+                      conflict: 0
+        '404':
+          description: 同步远端不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                remoteNotFound:
+                  $ref: '#/components/examples/RemoteNotFound'
+  /api/v1/replication/stream:
+    get:
+      tags: [Replication]
+      summary: 同步后台快照流
+      description: |
+        这是一个 WebSocket 接口。
+
+        OpenAPI 对 WebSocket 支持比较烂，所以这里只保留路径和快照消息结构说明。
+        成功升级后，服务端会周期性推送 `snapshot` 快照消息。
+      operationId: replicationAdminStream
+      security:
+        - cookieAuth: []
+      responses:
+        '101':
+          description: WebSocket 升级成功
+        '200':
+          description: 文档用途的占位响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplicationStreamSnapshot'
+              examples:
+                snapshotMessage:
+                  summary: WebSocket 快照消息
+                  value:
+                    type: snapshot
+                    settings:
+                      enabled: true
+                      updated_at: '2026-04-13T12:58:00Z'
+                    remotes:
+                      - id: remote_01JQTEST
+                        display_name: node-b
+                        endpoint: https://admin-b.example.com
+                        enabled: true
+                        follow_changes: true
+                        status: syncing
+                        connection_status: connected
+                        bootstrap_mode: full
+                        cursor: 128
+                        last_error: ''
+                        last_sync_started_at: '2026-04-13T12:55:00Z'
+                        last_heartbeat_at: '2026-04-13T12:56:00Z'
+                        last_sync_at: '2026-04-13T12:56:10Z'
+                        peer_cursor: 128
+                        peer_used_bytes: 123456
+                        peer_bucket_count: 2
+                        peer_object_count: 42
+                        objects_total: 42
+                        objects_completed: 42
+                        bytes_total: 123456
+                        bytes_completed: 123456
+                        download_rate_bps: 0
+                        upload_rate_bps: 0
+                        created_at: '2026-04-13T12:54:00Z'
+                        updated_at: '2026-04-13T12:56:10Z'
+                        sync_counts:
+                          pending: 0
+                          verifying: 0
+                          downloading: 0
+                          ready: 42
+                          error: 0
+                          conflict: 0
+                    at: '2026-04-13T12:58:10Z'
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: bares3_admin_session
+  parameters:
+    BucketName:
+      name: bucket
+      in: path
+      required: true
+      schema:
+        type: string
+      description: bucket 名称
+    ObjectKey:
+      name: key
+      in: path
+      required: true
+      schema:
+        type: string
+      description: |
+        对象 key。
+
+        这个路径参数在实际路由里是 wildcard remainder，也就是说可以包含 `/`。
+        生成客户端时要注意路径拼接和 URL 编码。
+    UploadId:
+      name: uploadID
+      in: path
+      required: true
+      schema:
+        type: string
+    PartNumber:
+      name: partNumber
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+    AccessKeyId:
+      name: accessKeyID
+      in: path
+      required: true
+      schema:
+        type: string
+    ShareLinkId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    ReplicationTokenId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    RemoteId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+  examples:
+    InvalidRequestBody:
+      summary: 请求体不是合法 JSON
+      value:
+        status: error
+        message: invalid request body
+    InvalidCredentials:
+      summary: 用户名或密码错误
+      value:
+        status: error
+        message: invalid credentials
+    NotAuthenticated:
+      summary: 当前未登录
+      value:
+        status: error
+        message: not authenticated
+    SameOriginRejected:
+      summary: 同源校验失败
+      value:
+        status: error
+        message: request origin does not match admin host
+    InvalidBucketName:
+      summary: bucket 名称不合法
+      value:
+        status: error
+        message: invalid bucket name
+    BucketAlreadyExists:
+      summary: bucket 已存在
+      value:
+        status: error
+        message: bucket already exists
+    BucketNotFound:
+      summary: bucket 不存在
+      value:
+        status: error
+        message: bucket not found
+    BucketNotEmpty:
+      summary: bucket 非空
+      value:
+        status: error
+        message: bucket not empty
+    InvalidBucketAccess:
+      summary: bucket 访问规则不合法
+      value:
+        status: error
+        message: 'invalid bucket access: action must be public, authenticated, or deny'
+    InvalidObjectKey:
+      summary: object key 不合法
+      value:
+        status: error
+        message: invalid object key
+    ObjectNotFound:
+      summary: 对象不存在
+      value:
+        status: error
+        message: object not found
+    ObjectSyncing:
+      summary: 对象仍在同步中
+      value:
+        status: error
+        message: object syncing
+    QuotaExceeded:
+      summary: quota 超限
+      value:
+        status: error
+        message: bucket quota exceeded
+    InvalidMultipartForm:
+      summary: multipart 表单不合法
+      value:
+        status: error
+        message: invalid multipart form
+    UploadNotFound:
+      summary: multipart upload 不存在
+      value:
+        status: error
+        message: multipart upload not found
+    InvalidPartNumber:
+      summary: part 编号不合法
+      value:
+        status: error
+        message: invalid multipart part number
+    InvalidMove:
+      summary: 移动参数不合法
+      value:
+        status: error
+        message: invalid move
+    InvalidDomainBindings:
+      summary: 域名绑定不合法
+      value:
+        status: error
+        message: settings.domain_bindings[1].host duplicates settings.domain_bindings[0].host
+    InvalidPermission:
+      summary: S3 权限值不合法
+      value:
+        status: error
+        message: invalid permission
+    CredentialNotFound:
+      summary: S3 凭据不存在
+      value:
+        status: error
+        message: credential not found
+    CredentialActiveConflict:
+      summary: 凭据仍处于 active 状态
+      value:
+        status: error
+        message: credential is still active
+    NoActiveCredential:
+      summary: 没有可用的活动凭据
+      value:
+        status: error
+        message: no active credential available for requested operation
+    ShareLinkNotFound:
+      summary: 分享链接不存在
+      value:
+        status: error
+        message: share link not found
+    ShareLinkInvalidId:
+      summary: 分享链接 ID 不合法
+      value:
+        status: error
+        message: invalid share link id
+    ShareLinkNotRevoked:
+      summary: 分享链接未先吊销
+      value:
+        status: error
+        message: share link must be revoked before removal
+    SyncConflictNotFound:
+      summary: 未找到需要重拉的冲突对象
+      value:
+        status: error
+        message: object sync status not found
+    ReplicationTokenNotFound:
+      summary: 同步令牌不存在
+      value:
+        status: error
+        message: token not found
+    ReplicationTokenActive:
+      summary: 同步令牌仍处于 active 状态
+      value:
+        status: error
+        message: token is still active
+    RemoteNotFound:
+      summary: 同步远端不存在
+      value:
+        status: error
+        message: remote not found
+    RemoteProbeFailed:
+      summary: 远端探测失败
+      value:
+        status: error
+        message: invalid sync credentials
+    InvalidQueryLimit:
+      summary: 查询参数不合法
+      value:
+        status: error
+        message: limit must be between 0 and 50
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [status, message]
+      properties:
+        status:
+          type: string
+          example: error
+        message:
+          type: string
+      example:
+        status: error
+        message: bucket not found
+    StatusOkResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          example: ok
+      example:
+        status: ok
+    BuildInfo:
+      type: object
+      required: [product, version, commit, built_at, go_version]
+      properties:
+        product:
+          type: string
+        version:
+          type: string
+        commit:
+          type: string
+        built_at:
+          type: string
+        go_version:
+          type: string
+      example:
+        product: BareS3
+        version: 1.2.2
+        commit: abcdef1
+        built_at: '2026-04-13T12:00:00Z'
+        go_version: go1.25.0
+    HealthResponse:
+      type: object
+      required: [status, service, version, time]
+      properties:
+        status:
+          type: string
+        service:
+          type: string
+        version:
+          $ref: '#/components/schemas/BuildInfo'
+        time:
+          type: string
+          format: date-time
+        region:
+          type: string
+      example:
+        status: ok
+        service: admin
+        region: us-east-1
+        version:
+          product: BareS3
+          version: 1.2.2
+          commit: abcdef1
+          built_at: '2026-04-13T12:00:00Z'
+          go_version: go1.25.0
+        time: '2026-04-13T12:34:56Z'
+    ReadyResponse:
+      type: object
+      required: [status, service, checks, time]
+      properties:
+        status:
+          type: string
+          enum: [ok, error]
+        service:
+          type: string
+        checks:
+          type: object
+          additionalProperties:
+            type: string
+        time:
+          type: string
+          format: date-time
+      example:
+        status: ok
+        service: admin
+        checks:
+          storage: ok
+          auditlog: ok
+          webui: ok
+        time: '2026-04-13T12:34:56Z'
+    AuthLoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          format: password
+      example:
+        username: admin
+        password: your-password
+    AuthSession:
+      type: object
+      required: [username, expires_at]
+      properties:
+        username:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+      example:
+        username: admin
+        expires_at: '2026-04-20T12:34:56Z'
+    SearchResultItem:
+      type: object
+      required: [kind, bucket]
+      properties:
+        kind:
+          type: string
+          enum: [bucket, object]
+        bucket:
+          type: string
+        key:
+          type: string
+    SearchResultsResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchResultItem'
+      example:
+        items:
+          - kind: bucket
+            bucket: gallery
+          - kind: object
+            bucket: gallery
+            key: notes/readme.txt
+    AuditEntry:
+      type: object
+      required: [time, actor, action, title]
+      properties:
+        time:
+          type: string
+          format: date-time
+        actor:
+          type: string
+        action:
+          type: string
+        title:
+          type: string
+        detail:
+          type: string
+        target:
+          type: string
+        remote:
+          type: string
+        status:
+          type: string
+    AuditEventsResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEntry'
+      example:
+        items:
+          - time: '2026-04-13T12:30:00Z'
+            actor: admin
+            action: bucket.create
+            title: Created bucket gallery
+            detail: Access private
+            target: gallery
+            remote: 127.0.0.1
+            status: success
+    RuntimeSnapshot:
+      type: object
+      required: [app, version, config, paths, listen, storage, sync]
+      properties:
+        app:
+          type: object
+          required: [name, env]
+          properties:
+            name:
+              type: string
+            env:
+              type: string
+        version:
+          $ref: '#/components/schemas/BuildInfo'
+        config:
+          type: object
+          required: [path, used, base]
+          properties:
+            path:
+              type: string
+            used:
+              type: string
+            base:
+              type: string
+        paths:
+          type: object
+          required: [data_dir, log_dir, tmp_dir]
+          properties:
+            data_dir:
+              type: string
+            log_dir:
+              type: string
+            tmp_dir:
+              type: string
+        listen:
+          type: object
+          required: [admin, s3, file]
+          properties:
+            admin:
+              type: string
+            s3:
+              type: string
+            file:
+              type: string
+        storage:
+          type: object
+          required:
+            [region, public_base_url, s3_base_url, metadata_layout, domain_bindings, max_bytes, used_bytes, bucket_count, active_link_count]
+          properties:
+            region:
+              type: string
+            public_base_url:
+              type: string
+            s3_base_url:
+              type: string
+            metadata_layout:
+              type: string
+            domain_bindings:
+              type: array
+              items:
+                $ref: '#/components/schemas/DomainBinding'
+            max_bytes:
+              type: integer
+              format: int64
+            used_bytes:
+              type: integer
+              format: int64
+            bucket_count:
+              type: integer
+            active_link_count:
+              type: integer
+        sync:
+          type: object
+          required: [enabled]
+          properties:
+            enabled:
+              type: boolean
+      example:
+        app:
+          name: BareS3
+          env: production
+        version:
+          product: BareS3
+          version: 1.2.2
+          commit: abcdef1
+          built_at: '2026-04-13T12:00:00Z'
+          go_version: go1.25.0
+        config:
+          path: /etc/bares3/config.yml
+          used: explicit
+          base: /etc/bares3
+        paths:
+          data_dir: /var/lib/bares3/data
+          log_dir: /var/log/bares3
+          tmp_dir: /var/lib/bares3/tmp
+        listen:
+          admin: 127.0.0.1:19080
+          s3: 0.0.0.0:9000
+          file: 0.0.0.0:9001
+        storage:
+          region: us-east-1
+          public_base_url: https://files.example.com
+          s3_base_url: https://s3.example.com
+          metadata_layout: hidden-dir
+          domain_bindings:
+            - host: cdn.example.com
+              bucket: gallery
+              prefix: site
+              index_document: true
+              spa_fallback: true
+          max_bytes: 0
+          used_bytes: 123456
+          bucket_count: 2
+          active_link_count: 1
+        sync:
+          enabled: true
+    BucketInfo:
+      type: object
+      required:
+        [name, path, metadata_path, created_at, metadata_layout, access_mode, replication_enabled, used_bytes, object_count]
+      properties:
+        name:
+          type: string
+        path:
+          type: string
+        metadata_path:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        metadata_layout:
+          type: string
+        access_mode:
+          type: string
+          enum: [private, public, custom]
+        replication_enabled:
+          type: boolean
+        quota_bytes:
+          type: integer
+          format: int64
+        tags:
+          type: array
+          items:
+            type: string
+        note:
+          type: string
+        used_bytes:
+          type: integer
+          format: int64
+        object_count:
+          type: integer
+      example:
+        name: gallery
+        path: /var/lib/bares3/data/gallery
+        metadata_path: /var/lib/bares3/data/gallery/.bares3
+        created_at: '2026-04-13T12:00:00Z'
+        metadata_layout: hidden-dir
+        access_mode: private
+        replication_enabled: true
+        quota_bytes: 0
+        tags:
+          - prod
+        note: main image bucket
+        used_bytes: 123456
+        object_count: 42
+    BucketListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/BucketInfo'
+      example:
+        items:
+          - name: gallery
+            path: /var/lib/bares3/data/gallery
+            metadata_path: /var/lib/bares3/data/gallery/.bares3
+            created_at: '2026-04-13T12:00:00Z'
+            metadata_layout: hidden-dir
+            access_mode: private
+            replication_enabled: true
+            quota_bytes: 0
+            tags: [prod]
+            note: main image bucket
+            used_bytes: 123456
+            object_count: 42
+    CreateBucketRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        access_mode:
+          type: string
+          enum: [private, public, custom]
+        replication_enabled:
+          type: boolean
+        quota_bytes:
+          type: integer
+          format: int64
+      example:
+        name: gallery
+        access_mode: private
+        replication_enabled: true
+        quota_bytes: 0
+    UpdateBucketRequest:
+      type: object
+      required: [name, access_mode, replication_enabled, quota_bytes]
+      properties:
+        name:
+          type: string
+        access_mode:
+          type: string
+          enum: [private, public, custom]
+        replication_enabled:
+          type: boolean
+        quota_bytes:
+          type: integer
+          format: int64
+        tags:
+          type: array
+          items:
+            type: string
+        note:
+          type: string
+      example:
+        name: gallery
+        access_mode: custom
+        replication_enabled: true
+        quota_bytes: 0
+        tags:
+          - prod
+          - images
+        note: main image bucket
+    BucketAccessRule:
+      type: object
+      required: [prefix, action]
+      properties:
+        prefix:
+          type: string
+        action:
+          type: string
+          enum: [public, authenticated, deny]
+        note:
+          type: string
+    BucketAccessPolicy:
+      type: object
+      required: [default_action, rules]
+      properties:
+        default_action:
+          type: string
+          enum: [public, authenticated, deny]
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/BucketAccessRule'
+    BucketAccessConfig:
+      type: object
+      required: [mode, policy]
+      properties:
+        mode:
+          type: string
+          enum: [private, public, custom]
+        policy:
+          $ref: '#/components/schemas/BucketAccessPolicy'
+      example:
+        mode: custom
+        policy:
+          default_action: authenticated
+          rules:
+            - prefix: images/
+              action: public
+              note: static assets
+            - prefix: secret/
+              action: deny
+    UpdateBucketAccessRequest:
+      type: object
+      required: [mode, policy]
+      properties:
+        mode:
+          type: string
+          enum: [private, public, custom]
+        policy:
+          $ref: '#/components/schemas/BucketAccessPolicy'
+      example:
+        mode: custom
+        policy:
+          default_action: authenticated
+          rules:
+            - prefix: images/
+              action: public
+              note: static assets
+            - prefix: secret/
+              action: deny
+    BucketUsageSample:
+      type: object
+      required: [recorded_at, used_bytes, object_count]
+      properties:
+        recorded_at:
+          type: string
+          format: date-time
+        used_bytes:
+          type: integer
+          format: int64
+        object_count:
+          type: integer
+        quota_bytes:
+          type: integer
+          format: int64
+    BucketHistoryResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/BucketUsageSample'
+      example:
+        items:
+          - recorded_at: '2026-04-13T10:00:00Z'
+            used_bytes: 120000
+            object_count: 40
+            quota_bytes: 0
+          - recorded_at: '2026-04-13T11:00:00Z'
+            used_bytes: 123456
+            object_count: 42
+            quota_bytes: 0
+    SyncObjectStatus:
+      type: object
+      required: [bucket, key, status, updated_at]
+      properties:
+        bucket:
+          type: string
+        key:
+          type: string
+        status:
+          type: string
+          enum: [pending, verifying, downloading, ready, error, conflict]
+        expected_checksum_sha256:
+          type: string
+        last_error:
+          type: string
+        source:
+          type: string
+        baseline_node_id:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+    ObjectInfo:
+      type: object
+      required:
+        [bucket, key, path, metadata_path, size, etag, content_type, last_modified]
+      properties:
+        bucket:
+          type: string
+        key:
+          type: string
+        path:
+          type: string
+        metadata_path:
+          type: string
+        size:
+          type: integer
+          format: int64
+        etag:
+          type: string
+        checksum_sha256:
+          type: string
+        revision:
+          type: integer
+          format: int64
+        origin_node_id:
+          type: string
+        last_change_id:
+          type: string
+        content_type:
+          type: string
+        cache_control:
+          type: string
+        content_disposition:
+          type: string
+        user_metadata:
+          type: object
+          additionalProperties:
+            type: string
+        last_modified:
+          type: string
+          format: date-time
+        sync_status:
+          $ref: '#/components/schemas/SyncObjectStatus'
+      example:
+        bucket: gallery
+        key: notes/readme.txt
+        path: /var/lib/bares3/data/gallery/notes/readme.txt
+        metadata_path: /var/lib/bares3/data/gallery/.bares3
+        size: 1024
+        etag: 6b1c01703b68cf9b35ab049385900b5f
+        checksum_sha256: 0a1b2c3d4e5f
+        revision: 12
+        origin_node_id: node-a
+        last_change_id: chg_01JQTEST
+        content_type: text/plain; charset=utf-8
+        cache_control: public, max-age=3600
+        content_disposition: inline
+        user_metadata:
+          author: xcnya
+        last_modified: '2026-04-13T12:00:00Z'
+        sync_status:
+          bucket: gallery
+          key: notes/readme.txt
+          status: ready
+          expected_checksum_sha256: 0a1b2c3d4e5f
+          source: remote_01
+          baseline_node_id: node-a
+          updated_at: '2026-04-13T12:01:00Z'
+    ObjectListResponse:
+      type: object
+      required: [items, prefixes, total_count, has_more]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ObjectInfo'
+        prefixes:
+          type: array
+          items:
+            type: string
+        total_count:
+          type: integer
+        has_more:
+          type: boolean
+        next_cursor:
+          type: string
+      example:
+        items:
+          - bucket: gallery
+            key: notes/readme.txt
+            path: /var/lib/bares3/data/gallery/notes/readme.txt
+            metadata_path: /var/lib/bares3/data/gallery/.bares3
+            size: 1024
+            etag: 6b1c01703b68cf9b35ab049385900b5f
+            checksum_sha256: 0a1b2c3d4e5f
+            revision: 12
+            origin_node_id: node-a
+            last_change_id: chg_01JQTEST
+            content_type: text/plain; charset=utf-8
+            cache_control: public, max-age=3600
+            content_disposition: inline
+            user_metadata:
+              author: xcnya
+            last_modified: '2026-04-13T12:00:00Z'
+        prefixes:
+          - notes/
+        total_count: 1
+        has_more: false
+        next_cursor: notes/readme.txt
+    UpdateObjectMetadataRequest:
+      type: object
+      properties:
+        content_type:
+          type: string
+        content_disposition:
+          type: string
+        cache_control:
+          type: string
+        user_metadata:
+          type: object
+          additionalProperties:
+            type: string
+      example:
+        content_type: text/plain; charset=utf-8
+        content_disposition: inline
+        cache_control: public, max-age=3600
+        user_metadata:
+          author: xcnya
+    InitiateMultipartUploadRequest:
+      type: object
+      required: [key]
+      properties:
+        key:
+          type: string
+        content_type:
+          type: string
+        cache_control:
+          type: string
+        content_disposition:
+          type: string
+        user_metadata:
+          type: object
+          additionalProperties:
+            type: string
+      example:
+        key: archive/big.txt
+        content_type: text/plain
+        cache_control: public, max-age=3600
+        content_disposition: attachment
+        user_metadata:
+          author: xcnya
+    MultipartUploadInfo:
+      type: object
+      required: [upload_id, bucket, key, created_at]
+      properties:
+        upload_id:
+          type: string
+        bucket:
+          type: string
+        key:
+          type: string
+        content_type:
+          type: string
+        cache_control:
+          type: string
+        content_disposition:
+          type: string
+        user_metadata:
+          type: object
+          additionalProperties:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+      example:
+        upload_id: upload_01JQTEST
+        bucket: gallery
+        key: archive/big.txt
+        content_type: text/plain
+        cache_control: public, max-age=3600
+        content_disposition: attachment
+        user_metadata:
+          author: xcnya
+        created_at: '2026-04-13T12:10:00Z'
+    MultipartPartInfo:
+      type: object
+      required: [part_number, etag, size, last_modified]
+      properties:
+        part_number:
+          type: integer
+        etag:
+          type: string
+        size:
+          type: integer
+          format: int64
+        last_modified:
+          type: string
+          format: date-time
+      example:
+        part_number: 1
+        etag: 3c6e0b8a9c15224a8228b9a98ca1531d
+        size: 5242880
+        last_modified: '2026-04-13T12:12:00Z'
+    CompleteMultipartUploadPart:
+      type: object
+      required: [part_number, etag]
+      properties:
+        part_number:
+          type: integer
+        etag:
+          type: string
+    CompleteMultipartUploadRequest:
+      type: object
+      required: [key, parts]
+      properties:
+        key:
+          type: string
+        parts:
+          type: array
+          items:
+            $ref: '#/components/schemas/CompleteMultipartUploadPart'
+      example:
+        key: archive/big.txt
+        parts:
+          - part_number: 1
+            etag: 3c6e0b8a9c15224a8228b9a98ca1531d
+          - part_number: 2
+            etag: 7c4a8d09ca3762af61e59520943dc264
+    BrowserDeleteRequest:
+      type: object
+      required: [kind, bucket, prefix]
+      properties:
+        kind:
+          type: string
+          enum: [prefix]
+        bucket:
+          type: string
+        prefix:
+          type: string
+      example:
+        kind: prefix
+        bucket: gallery
+        prefix: notes/
+    BrowserDeleteResponse:
+      type: object
+      required: [deleted_count]
+      properties:
+        deleted_count:
+          type: integer
+      example:
+        deleted_count: 12
+    BrowserMoveRequest:
+      type: object
+      required: [kind, source_bucket, destination_bucket]
+      properties:
+        kind:
+          type: string
+          enum: [object, prefix]
+        source_bucket:
+          type: string
+        source_key:
+          type: string
+        source_prefix:
+          type: string
+        destination_bucket:
+          type: string
+        destination_key:
+          type: string
+        destination_prefix:
+          type: string
+      example:
+        kind: object
+        source_bucket: gallery
+        source_key: notes/readme.txt
+        destination_bucket: archive
+        destination_key: docs/readme.txt
+    MoveResult:
+      type: object
+      required: [kind, source_bucket, destination_bucket, moved_count]
+      properties:
+        kind:
+          type: string
+          enum: [object, prefix]
+        source_bucket:
+          type: string
+        source_key:
+          type: string
+        source_prefix:
+          type: string
+        destination_bucket:
+          type: string
+        destination_key:
+          type: string
+        destination_prefix:
+          type: string
+        moved_count:
+          type: integer
+      example:
+        kind: object
+        source_bucket: gallery
+        source_key: notes/readme.txt
+        destination_bucket: archive
+        destination_key: docs/readme.txt
+        moved_count: 1
+    StorageSettings:
+      type: object
+      required: [max_bytes]
+      properties:
+        max_bytes:
+          type: integer
+          format: int64
+      example:
+        max_bytes: 0
+    UpdateStorageSettingsRequest:
+      type: object
+      required: [max_bytes]
+      properties:
+        max_bytes:
+          type: integer
+          format: int64
+      example:
+        max_bytes: 0
+    SystemSettings:
+      type: object
+      required: [public_base_url, s3_base_url, region, metadata_layout, tmp_dir]
+      properties:
+        public_base_url:
+          type: string
+        s3_base_url:
+          type: string
+        region:
+          type: string
+        metadata_layout:
+          type: string
+          enum: [hidden-dir]
+        tmp_dir:
+          type: string
+      example:
+        public_base_url: https://files.example.com
+        s3_base_url: https://s3.example.com
+        region: us-east-1
+        metadata_layout: hidden-dir
+        tmp_dir: /var/lib/bares3/tmp
+    UpdateSystemSettingsRequest:
+      type: object
+      required: [public_base_url, s3_base_url, region, metadata_layout, tmp_dir]
+      properties:
+        public_base_url:
+          type: string
+        s3_base_url:
+          type: string
+        region:
+          type: string
+        metadata_layout:
+          type: string
+          enum: [hidden-dir]
+        tmp_dir:
+          type: string
+      example:
+        public_base_url: https://files.example.com
+        s3_base_url: https://s3.example.com
+        region: us-east-1
+        metadata_layout: hidden-dir
+        tmp_dir: /var/lib/bares3/tmp
+    DomainBinding:
+      type: object
+      required: [host, bucket, index_document, spa_fallback]
+      properties:
+        host:
+          type: string
+        bucket:
+          type: string
+        prefix:
+          type: string
+        index_document:
+          type: boolean
+          default: true
+        spa_fallback:
+          type: boolean
+      example:
+        host: cdn.example.com
+        bucket: gallery
+        prefix: site
+        index_document: true
+        spa_fallback: true
+    DomainBindingsResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/DomainBinding'
+      example:
+        items:
+          - host: cdn.example.com
+            bucket: gallery
+            prefix: site
+            index_document: true
+            spa_fallback: true
+    UpdateDomainsRequest:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/DomainBinding'
+      example:
+        items:
+          - host: cdn.example.com
+            bucket: gallery
+            prefix: site
+            index_document: true
+            spa_fallback: true
+    PublicCredential:
+      type: object
+      required: [access_key_id, permission, buckets, created_at, status]
+      properties:
+        access_key_id:
+          type: string
+        label:
+          type: string
+        source:
+          type: string
+        permission:
+          type: string
+          enum: [read_write, read_only]
+        buckets:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          type: string
+      example:
+        access_key_id: B3AEXAMPLEKEY
+        label: my-app
+        source: console
+        permission: read_write
+        buckets:
+          - gallery
+        created_at: '2026-04-13T12:20:00Z'
+        last_used_at: '2026-04-13T12:25:00Z'
+        revoked_at: null
+        status: active
+    CreatedCredential:
+      allOf:
+        - $ref: '#/components/schemas/PublicCredential'
+        - type: object
+          required: [secret_access_key]
+          properties:
+            secret_access_key:
+              type: string
+          example:
+            access_key_id: B3AEXAMPLEKEY
+            secret_access_key: bareS3SecretExampleValue
+            label: my-app
+            source: console
+            permission: read_write
+            buckets:
+              - gallery
+            created_at: '2026-04-13T12:20:00Z'
+            last_used_at: null
+            revoked_at: null
+            status: active
+    CredentialListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublicCredential'
+      example:
+        items:
+          - access_key_id: B3AEXAMPLEKEY
+            label: my-app
+            source: console
+            permission: read_write
+            buckets: [gallery]
+            created_at: '2026-04-13T12:20:00Z'
+            last_used_at: '2026-04-13T12:25:00Z'
+            revoked_at: null
+            status: active
+    CredentialCreateRequest:
+      type: object
+      required: [permission, buckets]
+      properties:
+        label:
+          type: string
+        permission:
+          type: string
+          enum: [read_write, read_only]
+        buckets:
+          type: array
+          items:
+            type: string
+      example:
+        label: my-app
+        permission: read_write
+        buckets:
+          - gallery
+    CredentialUpdateRequest:
+      type: object
+      required: [permission, buckets]
+      properties:
+        label:
+          type: string
+        permission:
+          type: string
+          enum: [read_write, read_only]
+        buckets:
+          type: array
+          items:
+            type: string
+      example:
+        label: my-app-updated
+        permission: read_only
+        buckets:
+          - gallery
+    ShareLinkInfo:
+      type: object
+      required: [id, bucket, key, filename, size, created_at, expires_at, status, url, download_url]
+      properties:
+        id:
+          type: string
+        bucket:
+          type: string
+        key:
+          type: string
+        filename:
+          type: string
+        content_type:
+          type: string
+        size:
+          type: integer
+          format: int64
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          type: string
+        url:
+          type: string
+        download_url:
+          type: string
+      example:
+        id: sl_01JQTEST
+        bucket: gallery
+        key: notes/readme.txt
+        filename: readme.txt
+        content_type: text/plain; charset=utf-8
+        size: 1024
+        created_by: admin
+        created_at: '2026-04-13T12:30:00Z'
+        expires_at: '2026-04-14T12:30:00Z'
+        revoked_at: null
+        status: active
+        url: https://files.example.com/s/sl_01JQTEST
+        download_url: https://files.example.com/dl/sl_01JQTEST
+    ShareLinkListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ShareLinkInfo'
+      example:
+        items:
+          - id: sl_01JQTEST
+            bucket: gallery
+            key: notes/readme.txt
+            filename: readme.txt
+            content_type: text/plain; charset=utf-8
+            size: 1024
+            created_by: admin
+            created_at: '2026-04-13T12:30:00Z'
+            expires_at: '2026-04-14T12:30:00Z'
+            revoked_at: null
+            status: active
+            url: https://files.example.com/s/sl_01JQTEST
+            download_url: https://files.example.com/dl/sl_01JQTEST
+    CreateShareLinkRequest:
+      type: object
+      required: [bucket, key]
+      properties:
+        bucket:
+          type: string
+        key:
+          type: string
+        expires_seconds:
+          type: integer
+      example:
+        bucket: gallery
+        key: notes/readme.txt
+        expires_seconds: 86400
+    PresignRequest:
+      type: object
+      required: [method, bucket, key, expires_seconds]
+      properties:
+        method:
+          type: string
+          enum: [GET, PUT, DELETE, POST, get, put, delete, post, HEAD, head]
+        bucket:
+          type: string
+        key:
+          type: string
+        expires_seconds:
+          type: integer
+      example:
+        method: GET
+        bucket: gallery
+        key: notes/readme.txt
+        expires_seconds: 900
+    PresignResult:
+      type: object
+      required: [url, expires_at, method]
+      properties:
+        url:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        method:
+          type: string
+      example:
+        url: https://s3.example.com/gallery/notes/readme.txt?X-Amz-Algorithm=AWS4-HMAC-SHA256
+        expires_at: '2026-04-13T12:45:00Z'
+        method: GET
+    SyncStatusCounts:
+      type: object
+      required: [pending, verifying, downloading, ready, error, conflict]
+      properties:
+        pending:
+          type: integer
+        verifying:
+          type: integer
+        downloading:
+          type: integer
+        ready:
+          type: integer
+        error:
+          type: integer
+        conflict:
+          type: integer
+    SyncStatusSummary:
+      type: object
+      properties:
+        baseline_node_id:
+          type: string
+        last_error:
+          type: string
+    SyncConflictItem:
+      type: object
+      required: [bucket, key, updated_at]
+      properties:
+        bucket:
+          type: string
+        key:
+          type: string
+        source:
+          type: string
+        baseline_node_id:
+          type: string
+        last_error:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+    SyncSettingsResponse:
+      type: object
+      required: [enabled, leader_cursor, reconcile_counts, reconcile_summary, conflict_items]
+      properties:
+        enabled:
+          type: boolean
+        leader_cursor:
+          type: integer
+          format: int64
+        reconcile_counts:
+          $ref: '#/components/schemas/SyncStatusCounts'
+        reconcile_summary:
+          $ref: '#/components/schemas/SyncStatusSummary'
+        conflict_items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SyncConflictItem'
+      example:
+        enabled: true
+        leader_cursor: 128
+        reconcile_counts:
+          pending: 1
+          verifying: 0
+          downloading: 0
+          ready: 42
+          error: 0
+          conflict: 1
+        reconcile_summary:
+          baseline_node_id: node-a
+          last_error: checksum mismatch
+        conflict_items:
+          - bucket: gallery
+            key: notes/readme.txt
+            source: remote_01
+            baseline_node_id: node-a
+            last_error: checksum mismatch
+            updated_at: '2026-04-13T12:40:00Z'
+    UpdateSyncSettingsRequest:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+      example:
+        enabled: true
+    SyncSettingsEnabledOnly:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+      example:
+        enabled: true
+    ResolveConflictRequest:
+      type: object
+      required: [bucket, key]
+      properties:
+        bucket:
+          type: string
+        key:
+          type: string
+      example:
+        bucket: gallery
+        key: notes/readme.txt
+    ReplicationToken:
+      type: object
+      required: [id, token, created_at, status]
+      properties:
+        id:
+          type: string
+        token:
+          type: string
+        label:
+          type: string
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [active, revoked]
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+      example:
+        id: token_01JQTEST
+        token: sync_tok_example
+        label: node-b
+        created_by: admin
+        created_at: '2026-04-13T12:50:00Z'
+        status: active
+        revoked_at: null
+    ReplicationTokenListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReplicationToken'
+      example:
+        items:
+          - id: token_01JQTEST
+            token: sync_tok_example
+            label: node-b
+            created_by: admin
+            created_at: '2026-04-13T12:50:00Z'
+            status: active
+            revoked_at: null
+    CreateReplicationTokenRequest:
+      type: object
+      properties:
+        label:
+          type: string
+      example:
+        label: node-b
+    Remote:
+      type: object
+      required:
+        [id, display_name, endpoint, enabled, follow_changes, status, connection_status, bootstrap_mode, cursor, peer_cursor, peer_used_bytes, peer_bucket_count, peer_object_count, objects_total, objects_completed, bytes_total, bytes_completed, download_rate_bps, upload_rate_bps, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        display_name:
+          type: string
+        endpoint:
+          type: string
+        enabled:
+          type: boolean
+        follow_changes:
+          type: boolean
+        status:
+          type: string
+          enum: [pending, syncing, idle, error]
+        connection_status:
+          type: string
+          enum: [disconnected, connecting, connected]
+        bootstrap_mode:
+          type: string
+          enum: [full, from_now]
+        cursor:
+          type: integer
+          format: int64
+        last_error:
+          type: string
+        last_sync_started_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_heartbeat_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_sync_at:
+          type: string
+          format: date-time
+          nullable: true
+        peer_cursor:
+          type: integer
+          format: int64
+        peer_used_bytes:
+          type: integer
+          format: int64
+        peer_bucket_count:
+          type: integer
+        peer_object_count:
+          type: integer
+        objects_total:
+          type: integer
+          format: int64
+        objects_completed:
+          type: integer
+          format: int64
+        bytes_total:
+          type: integer
+          format: int64
+        bytes_completed:
+          type: integer
+          format: int64
+        download_rate_bps:
+          type: integer
+          format: int64
+        upload_rate_bps:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      example:
+        id: remote_01JQTEST
+        display_name: node-b
+        endpoint: https://admin-b.example.com
+        enabled: true
+        follow_changes: true
+        status: syncing
+        connection_status: connected
+        bootstrap_mode: full
+        cursor: 128
+        last_error: ''
+        last_sync_started_at: '2026-04-13T12:55:00Z'
+        last_heartbeat_at: '2026-04-13T12:56:00Z'
+        last_sync_at: '2026-04-13T12:56:10Z'
+        peer_cursor: 128
+        peer_used_bytes: 123456
+        peer_bucket_count: 2
+        peer_object_count: 42
+        objects_total: 42
+        objects_completed: 42
+        bytes_total: 123456
+        bytes_completed: 123456
+        download_rate_bps: 0
+        upload_rate_bps: 0
+        created_at: '2026-04-13T12:54:00Z'
+        updated_at: '2026-04-13T12:56:10Z'
+    RemoteView:
+      allOf:
+        - $ref: '#/components/schemas/Remote'
+        - type: object
+          required: [sync_counts]
+          properties:
+            sync_counts:
+              $ref: '#/components/schemas/SyncStatusCounts'
+          example:
+            id: remote_01JQTEST
+            display_name: node-b
+            endpoint: https://admin-b.example.com
+            enabled: true
+            follow_changes: true
+            status: syncing
+            connection_status: connected
+            bootstrap_mode: full
+            cursor: 128
+            last_error: ''
+            last_sync_started_at: '2026-04-13T12:55:00Z'
+            last_heartbeat_at: '2026-04-13T12:56:00Z'
+            last_sync_at: '2026-04-13T12:56:10Z'
+            peer_cursor: 128
+            peer_used_bytes: 123456
+            peer_bucket_count: 2
+            peer_object_count: 42
+            objects_total: 42
+            objects_completed: 42
+            bytes_total: 123456
+            bytes_completed: 123456
+            download_rate_bps: 0
+            upload_rate_bps: 0
+            created_at: '2026-04-13T12:54:00Z'
+            updated_at: '2026-04-13T12:56:10Z'
+            sync_counts:
+              pending: 0
+              verifying: 0
+              downloading: 0
+              ready: 42
+              error: 0
+              conflict: 0
+    RemoteListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RemoteView'
+      example:
+        items:
+          - id: remote_01JQTEST
+            display_name: node-b
+            endpoint: https://admin-b.example.com
+            enabled: true
+            follow_changes: true
+            status: syncing
+            connection_status: connected
+            bootstrap_mode: full
+            cursor: 128
+            last_error: ''
+            last_sync_started_at: '2026-04-13T12:55:00Z'
+            last_heartbeat_at: '2026-04-13T12:56:00Z'
+            last_sync_at: '2026-04-13T12:56:10Z'
+            peer_cursor: 128
+            peer_used_bytes: 123456
+            peer_bucket_count: 2
+            peer_object_count: 42
+            objects_total: 42
+            objects_completed: 42
+            bytes_total: 123456
+            bytes_completed: 123456
+            download_rate_bps: 0
+            upload_rate_bps: 0
+            created_at: '2026-04-13T12:54:00Z'
+            updated_at: '2026-04-13T12:56:10Z'
+            sync_counts:
+              pending: 0
+              verifying: 0
+              downloading: 0
+              ready: 42
+              error: 0
+              conflict: 0
+    CreateRemoteRequest:
+      type: object
+      required: [display_name, endpoint, token, bootstrap_mode]
+      properties:
+        display_name:
+          type: string
+        endpoint:
+          type: string
+        token:
+          type: string
+        enabled:
+          type: boolean
+        follow_changes:
+          type: boolean
+        bootstrap_mode:
+          type: string
+          enum: [full, from_now]
+      example:
+        display_name: node-b
+        endpoint: https://admin-b.example.com
+        token: sync_tok_example
+        enabled: true
+        follow_changes: true
+        bootstrap_mode: full
+    UpdateRemoteRequest:
+      type: object
+      properties:
+        display_name:
+          type: string
+        endpoint:
+          type: string
+        token:
+          type: string
+        bootstrap_mode:
+          type: string
+          enum: [full, from_now]
+        enabled:
+          type: boolean
+        follow_changes:
+          type: boolean
+      example:
+        display_name: node-b-updated
+        follow_changes: false
+        enabled: true
+    ReplicationStreamSnapshot:
+      type: object
+      required: [type, settings, remotes, at]
+      properties:
+        type:
+          type: string
+          example: snapshot
+        settings:
+          type: object
+          required: [enabled, updated_at]
+          properties:
+            enabled:
+              type: boolean
+            updated_at:
+              type: string
+              format: date-time
+        remotes:
+          type: array
+          items:
+            $ref: '#/components/schemas/RemoteView'
+        at:
+          type: string
+          format: date-time
+      example:
+        type: snapshot
+        settings:
+          enabled: true
+          updated_at: '2026-04-13T12:58:00Z'
+        remotes:
+          - id: remote_01JQTEST
+            display_name: node-b
+            endpoint: https://admin-b.example.com
+            enabled: true
+            follow_changes: true
+            status: syncing
+            connection_status: connected
+            bootstrap_mode: full
+            cursor: 128
+            last_error: ''
+            last_sync_started_at: '2026-04-13T12:55:00Z'
+            last_heartbeat_at: '2026-04-13T12:56:00Z'
+            last_sync_at: '2026-04-13T12:56:10Z'
+            peer_cursor: 128
+            peer_used_bytes: 123456
+            peer_bucket_count: 2
+            peer_object_count: 42
+            objects_total: 42
+            objects_completed: 42
+            bytes_total: 123456
+            bytes_completed: 123456
+            download_rate_bps: 0
+            upload_rate_bps: 0
+            created_at: '2026-04-13T12:54:00Z'
+            updated_at: '2026-04-13T12:56:10Z'
+            sync_counts:
+              pending: 0
+              verifying: 0
+              downloading: 0
+              ready: 42
+              error: 0
+              conflict: 0
+        at: '2026-04-13T12:58:10Z'

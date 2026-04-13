@@ -1,8 +1,13 @@
 <div align="center">
-  <h1>BareS3</h1>
-  <p>A lightweight, straightforward, and sufficient S3 object storage service.</p>
+
+# BareS3
+A lightweight, file-first, and sufficient S3 object storage service.
+
+[文档](./docs/README.md)
+[API](./docs/api.md)
 </div>
 
+---
 
 ## 特点
 
