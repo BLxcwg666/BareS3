@@ -1,0 +1,749 @@
+openapi: 3.0.3
+info:
+  title: BareS3 Internal Sync API
+  version: 1.2.2
+  description: |
+    BareS3 内部同步接口的 OpenAPI 规范。
+
+    这份规范覆盖 admin 服务下挂载的 `/internal/sync/*` 接口，主要给节点间复制使用
+    和浏览器基本上没什么关系，但是希望能帮到你
+servers:
+  - url: http://127.0.0.1:19080
+    description: 默认本地管理端监听地址
+tags:
+  - name: InternalSync
+paths:
+  /internal/sync/status:
+    get:
+      tags: [InternalSync]
+      summary: 获取源节点同步状态
+      operationId: getInternalSyncStatus
+      security:
+        - syncTokenAuth: []
+      responses:
+        '200':
+          description: 源节点当前同步状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceStatus'
+              examples:
+                sourceStatus:
+                  summary: 当前源节点状态
+                  value:
+                    cursor: 128
+                    used_bytes: 123456
+                    bucket_count: 2
+                    object_count: 42
+        '401':
+          description: 同步凭据无效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidSyncCredentials:
+                  $ref: '#/components/examples/InvalidSyncCredentials'
+        '500':
+          description: 构建源节点状态失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                sourceStatusFailed:
+                  summary: 构建状态失败
+                  value:
+                    status: error
+                    message: build sync source status failed
+  /internal/sync/manifest:
+    get:
+      tags: [InternalSync]
+      summary: 获取同步清单
+      operationId: getInternalSyncManifest
+      security:
+        - syncTokenAuth: []
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            format: int64
+          description: |
+            增量同步起点。
+
+            省略或传 `0` 时，通常返回完整清单。
+      responses:
+        '200':
+          description: 同步清单
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Manifest'
+              examples:
+                fullManifest:
+                  summary: 完整清单
+                  value:
+                    generated_at: '2026-04-13T12:00:00Z'
+                    full: true
+                    cursor: 128
+                    domains_changed: true
+                    domains:
+                      - host: cdn.example.com
+                        bucket: public-assets
+                        prefix: assets
+                        index_document: false
+                        spa_fallback: false
+                    share_links_changed: true
+                    share_links:
+                      - id: sl_01JQTEST
+                        bucket: gallery
+                        key: notes/readme.txt
+                        filename: readme.txt
+                        content_type: text/plain; charset=utf-8
+                        size: 1024
+                        created_by: admin
+                        created_at: '2026-04-13T11:50:00Z'
+                        expires_at: '2026-04-14T11:50:00Z'
+                    buckets:
+                      - name: gallery
+                        created_at: '2026-04-13T10:00:00Z'
+                        metadata_layout: hidden-dir
+                        access_mode: private
+                        access_policy:
+                          default_action: authenticated
+                          rules: []
+                        replication_enabled: true
+                        quota_bytes: 0
+                        tags: [prod, images]
+                        note: main image bucket
+                    objects:
+                      - bucket: gallery
+                        key: notes/readme.txt
+                        size: 1024
+                        etag: 6b1c01703b68cf9b35ab049385900b5f
+                        checksum_sha256: 0a1b2c3d4e5f
+                        revision: 12
+                        origin_node_id: node-a
+                        last_change_id: chg_01JQTEST
+                        content_type: text/plain; charset=utf-8
+                        cache_control: public, max-age=3600
+                        content_disposition: inline
+                        user_metadata:
+                          author: xcnya
+                        last_modified: '2026-04-13T11:59:00Z'
+                incrementalManifest:
+                  summary: 增量清单
+                  value:
+                    generated_at: '2026-04-13T12:05:00Z'
+                    full: false
+                    has_more: false
+                    cursor: 132
+                    buckets:
+                      - name: gallery
+                        created_at: '2026-04-13T10:00:00Z'
+                        metadata_layout: hidden-dir
+                        access_mode: private
+                        access_policy:
+                          default_action: authenticated
+                          rules: []
+                        replication_enabled: true
+                        quota_bytes: 0
+                    objects:
+                      - bucket: gallery
+                        key: notes/updated.txt
+                        size: 2048
+                        etag: 7c4a8d09ca3762af61e59520943dc264
+                        checksum_sha256: abcdef0123456789
+                        revision: 13
+                        origin_node_id: node-a
+                        last_change_id: chg_01JQNEXT
+                        content_type: text/plain; charset=utf-8
+                        last_modified: '2026-04-13T12:04:00Z'
+                    deleted_objects:
+                      - bucket: gallery
+                        key: notes/old.txt
+                emptyIncrementalManifest:
+                  summary: 没有新增变更的增量清单
+                  value:
+                    generated_at: '2026-04-13T12:10:00Z'
+                    full: false
+                    cursor: 132
+        '400':
+          description: cursor 参数不合法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidCursor:
+                  $ref: '#/components/examples/InvalidCursor'
+        '401':
+          description: 同步凭据无效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidSyncCredentials:
+                  $ref: '#/components/examples/InvalidSyncCredentials'
+        '500':
+          description: 构建同步清单失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                buildManifestFailed:
+                  summary: 构建清单失败
+                  value:
+                    status: error
+                    message: build sync manifest failed
+  /internal/sync/object:
+    get:
+      tags: [InternalSync]
+      summary: 拉取对象原始内容
+      operationId: getInternalSyncObject
+      security:
+        - syncTokenAuth: []
+      parameters:
+        - name: bucket
+          in: query
+          required: true
+          schema:
+            type: string
+          description: bucket 名称
+        - name: key
+          in: query
+          required: true
+          schema:
+            type: string
+          description: 对象 key
+      responses:
+        '200':
+          description: 对象二进制流
+          headers:
+            Content-Length:
+              schema:
+                type: string
+              description: 对象大小
+            X-BareS3-ETag:
+              schema:
+                type: string
+              description: 对象 ETag
+            X-BareS3-Checksum-SHA256:
+              schema:
+                type: string
+              description: 对象 SHA-256 校验和
+            X-BareS3-Revision:
+              schema:
+                type: string
+              description: 对象修订号
+            X-BareS3-Origin-Node-ID:
+              schema:
+                type: string
+              description: 源节点 ID
+            X-BareS3-Last-Change-ID:
+              schema:
+                type: string
+              description: 最后变更 ID
+            Last-Modified:
+              schema:
+                type: string
+              description: 最后修改时间
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+              examples:
+                objectBinary:
+                  summary: 对象二进制流
+                  value: <binary object stream>
+        '400':
+          description: bucket 或 key 缺失
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingBucketOrKey:
+                  $ref: '#/components/examples/MissingBucketOrKey'
+        '401':
+          description: 同步凭据无效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidSyncCredentials:
+                  $ref: '#/components/examples/InvalidSyncCredentials'
+        '404':
+          description: bucket 或对象不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                bucketNotFound:
+                  $ref: '#/components/examples/BucketNotFound'
+                objectNotFound:
+                  $ref: '#/components/examples/ObjectNotFound'
+        '500':
+          description: 打开对象失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                openObjectFailed:
+                  summary: 打开对象失败
+                  value:
+                    status: error
+                    message: failed to open object file
+  /internal/sync/stream:
+    get:
+      tags: [InternalSync]
+      summary: 获取同步提示流
+      description: |
+        这是一个 WebSocket 接口。
+
+        成功升级后，服务端会先发送一条 `hello`，后续在有事件时发送 `hint`，并定期发送 `heartbeat`。
+      operationId: getInternalSyncStream
+      security:
+        - syncTokenAuth: []
+      responses:
+        '101':
+          description: WebSocket 升级成功
+        '200':
+          description: 文档用途的占位响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamMessage'
+              examples:
+                hello:
+                  summary: 初始 hello 消息
+                  value:
+                    type: hello
+                    cursor: 128
+                    source:
+                      cursor: 128
+                      used_bytes: 123456
+                      bucket_count: 2
+                      object_count: 42
+                    at: '2026-04-13T12:00:00Z'
+                hint:
+                  summary: 变更提示消息
+                  value:
+                    type: hint
+                    cursor: 129
+                    kind: object_upsert
+                    bucket: gallery
+                    key: notes/readme.txt
+                    at: '2026-04-13T12:00:05Z'
+                heartbeat:
+                  summary: 心跳消息
+                  value:
+                    type: heartbeat
+                    cursor: 129
+                    source:
+                      cursor: 129
+                      used_bytes: 123456
+                      bucket_count: 2
+                      object_count: 42
+                    at: '2026-04-13T12:00:10Z'
+        '401':
+          description: 同步凭据无效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidSyncCredentials:
+                  $ref: '#/components/examples/InvalidSyncCredentials'
+components:
+  securitySchemes:
+    syncTokenAuth:
+      type: apiKey
+      in: header
+      name: X-BareS3-Sync-Token
+      description: 节点间同步用的访问令牌
+  examples:
+    InvalidSyncCredentials:
+      summary: 同步凭据无效
+      value:
+        status: error
+        message: invalid sync credentials
+    InvalidCursor:
+      summary: cursor 参数不合法
+      value:
+        status: error
+        message: cursor must be a non-negative integer
+    MissingBucketOrKey:
+      summary: 缺少 bucket 或 key
+      value:
+        status: error
+        message: bucket and key are required
+    BucketNotFound:
+      summary: bucket 不存在
+      value:
+        status: error
+        message: bucket not found
+    ObjectNotFound:
+      summary: 对象不存在
+      value:
+        status: error
+        message: object not found
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [status, message]
+      properties:
+        status:
+          type: string
+          example: error
+        message:
+          type: string
+      example:
+        status: error
+        message: invalid sync credentials
+    SourceStatus:
+      type: object
+      required: [cursor, used_bytes, bucket_count, object_count]
+      properties:
+        cursor:
+          type: integer
+          format: int64
+        used_bytes:
+          type: integer
+          format: int64
+        bucket_count:
+          type: integer
+        object_count:
+          type: integer
+      example:
+        cursor: 128
+        used_bytes: 123456
+        bucket_count: 2
+        object_count: 42
+    PublicDomainBinding:
+      type: object
+      required: [host, bucket, index_document, spa_fallback]
+      properties:
+        host:
+          type: string
+        bucket:
+          type: string
+        prefix:
+          type: string
+        index_document:
+          type: boolean
+        spa_fallback:
+          type: boolean
+      example:
+        host: cdn.example.com
+        bucket: public-assets
+        prefix: assets
+        index_document: false
+        spa_fallback: false
+    ShareLink:
+      type: object
+      required: [id, bucket, key, filename, size, created_at, expires_at]
+      properties:
+        id:
+          type: string
+        bucket:
+          type: string
+        key:
+          type: string
+        filename:
+          type: string
+        content_type:
+          type: string
+        size:
+          type: integer
+          format: int64
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+      example:
+        id: sl_01JQTEST
+        bucket: gallery
+        key: notes/readme.txt
+        filename: readme.txt
+        content_type: text/plain; charset=utf-8
+        size: 1024
+        created_by: admin
+        created_at: '2026-04-13T11:50:00Z'
+        expires_at: '2026-04-14T11:50:00Z'
+        revoked_at: null
+    BucketAccessRule:
+      type: object
+      required: [prefix, action]
+      properties:
+        prefix:
+          type: string
+        action:
+          type: string
+          enum: [public, authenticated, deny]
+        note:
+          type: string
+      example:
+        prefix: images/
+        action: public
+        note: static assets
+    BucketAccessPolicy:
+      type: object
+      required: [default_action, rules]
+      properties:
+        default_action:
+          type: string
+          enum: [public, authenticated, deny]
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/BucketAccessRule'
+      example:
+        default_action: authenticated
+        rules:
+          - prefix: images/
+            action: public
+            note: static assets
+          - prefix: secret/
+            action: deny
+    BucketManifest:
+      type: object
+      required:
+        [name, created_at, metadata_layout, access_mode, access_policy, replication_enabled, quota_bytes]
+      properties:
+        name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        metadata_layout:
+          type: string
+        access_mode:
+          type: string
+          enum: [private, public, custom]
+        access_policy:
+          $ref: '#/components/schemas/BucketAccessPolicy'
+        replication_enabled:
+          type: boolean
+        quota_bytes:
+          type: integer
+          format: int64
+        tags:
+          type: array
+          items:
+            type: string
+        note:
+          type: string
+      example:
+        name: gallery
+        created_at: '2026-04-13T10:00:00Z'
+        metadata_layout: hidden-dir
+        access_mode: private
+        access_policy:
+          default_action: authenticated
+          rules: []
+        replication_enabled: true
+        quota_bytes: 0
+        tags:
+          - prod
+          - images
+        note: main image bucket
+    ObjectManifest:
+      type: object
+      required:
+        [bucket, key, size, etag, checksum_sha256, revision, content_type, last_modified]
+      properties:
+        bucket:
+          type: string
+        key:
+          type: string
+        size:
+          type: integer
+          format: int64
+        etag:
+          type: string
+        checksum_sha256:
+          type: string
+        revision:
+          type: integer
+          format: int64
+        origin_node_id:
+          type: string
+        last_change_id:
+          type: string
+        content_type:
+          type: string
+        cache_control:
+          type: string
+        content_disposition:
+          type: string
+        user_metadata:
+          type: object
+          additionalProperties:
+            type: string
+        last_modified:
+          type: string
+          format: date-time
+      example:
+        bucket: gallery
+        key: notes/readme.txt
+        size: 1024
+        etag: 6b1c01703b68cf9b35ab049385900b5f
+        checksum_sha256: 0a1b2c3d4e5f
+        revision: 12
+        origin_node_id: node-a
+        last_change_id: chg_01JQTEST
+        content_type: text/plain; charset=utf-8
+        cache_control: public, max-age=3600
+        content_disposition: inline
+        user_metadata:
+          author: xcnya
+        last_modified: '2026-04-13T11:59:00Z'
+    DeletedObjectManifest:
+      type: object
+      required: [bucket, key]
+      properties:
+        bucket:
+          type: string
+        key:
+          type: string
+      example:
+        bucket: gallery
+        key: notes/old.txt
+    Manifest:
+      type: object
+      required: [generated_at, full, cursor]
+      properties:
+        generated_at:
+          type: string
+          format: date-time
+        full:
+          type: boolean
+        has_more:
+          type: boolean
+        cursor:
+          type: integer
+          format: int64
+        domains_changed:
+          type: boolean
+        domains:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublicDomainBinding'
+        share_links_changed:
+          type: boolean
+        share_links:
+          type: array
+          items:
+            $ref: '#/components/schemas/ShareLink'
+        buckets:
+          type: array
+          items:
+            $ref: '#/components/schemas/BucketManifest'
+        objects:
+          type: array
+          items:
+            $ref: '#/components/schemas/ObjectManifest'
+        deleted_buckets:
+          type: array
+          items:
+            type: string
+        deleted_objects:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeletedObjectManifest'
+      example:
+        generated_at: '2026-04-13T12:00:00Z'
+        full: true
+        cursor: 128
+        domains_changed: true
+        domains:
+          - host: cdn.example.com
+            bucket: public-assets
+            prefix: assets
+            index_document: false
+            spa_fallback: false
+        share_links_changed: true
+        share_links:
+          - id: sl_01JQTEST
+            bucket: gallery
+            key: notes/readme.txt
+            filename: readme.txt
+            content_type: text/plain; charset=utf-8
+            size: 1024
+            created_by: admin
+            created_at: '2026-04-13T11:50:00Z'
+            expires_at: '2026-04-14T11:50:00Z'
+        buckets:
+          - name: gallery
+            created_at: '2026-04-13T10:00:00Z'
+            metadata_layout: hidden-dir
+            access_mode: private
+            access_policy:
+              default_action: authenticated
+              rules: []
+            replication_enabled: true
+            quota_bytes: 0
+            tags: [prod, images]
+            note: main image bucket
+        objects:
+          - bucket: gallery
+            key: notes/readme.txt
+            size: 1024
+            etag: 6b1c01703b68cf9b35ab049385900b5f
+            checksum_sha256: 0a1b2c3d4e5f
+            revision: 12
+            origin_node_id: node-a
+            last_change_id: chg_01JQTEST
+            content_type: text/plain; charset=utf-8
+            cache_control: public, max-age=3600
+            content_disposition: inline
+            user_metadata:
+              author: xcnya
+            last_modified: '2026-04-13T11:59:00Z'
+    StreamMessage:
+      type: object
+      required: [type, at]
+      properties:
+        type:
+          type: string
+          enum: [hello, hint, heartbeat]
+        cursor:
+          type: integer
+          format: int64
+        kind:
+          type: string
+          enum: [bucket_upsert, bucket_delete, object_upsert, object_delete, domain_update, sharelinks_update]
+        bucket:
+          type: string
+        key:
+          type: string
+        source:
+          $ref: '#/components/schemas/SourceStatus'
+        at:
+          type: string
+          format: date-time
+      example:
+        type: hint
+        cursor: 129
+        kind: object_upsert
+        bucket: gallery
+        key: notes/readme.txt
+        at: '2026-04-13T12:00:05Z'
