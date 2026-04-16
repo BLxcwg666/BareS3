@@ -48,7 +48,7 @@ func newHandler(cfg config.Config, store *storage.Store, shareLinks *sharelink.S
 			if err == nil {
 				domainBindings, domainErr := store.PublicDomainBindings(r.Context())
 				if domainErr == nil {
-					if binding, ok := matchPublicDomainBinding(domainBindings, r.Host); ok && !isReservedFileServicePath(r.URL.Path) {
+					if binding, ok := matchPublicDomainBinding(domainBindings, r.Host); ok {
 						serveBoundDomainObject(w, r, store, binding)
 						return
 					}
@@ -287,15 +287,6 @@ func normalizeRequestHost(host string) string {
 		host = parsedHost
 	}
 	return strings.TrimSuffix(host, ".")
-}
-
-func isReservedFileServicePath(requestPath string) bool {
-	switch requestPath {
-	case "/healthz", "/readyz":
-		return true
-	default:
-		return strings.HasPrefix(requestPath, "/pub/") || strings.HasPrefix(requestPath, "/dl/") || strings.HasPrefix(requestPath, "/s/")
-	}
 }
 
 func boundDomainObjectKey(binding storage.PublicDomainBinding, requestPath string) string {

@@ -376,6 +376,125 @@ func TestServeBoundPublicDomainMissingPathReturnsS3StyleXML(t *testing.T) {
 	assertS3XMLError(t, recorder, http.StatusNotFound, "NoSuchKey", cfg.Settings.Region, "gallery")
 }
 
+func TestServeBoundPublicDomainIgnoresGlobalFileRoutes(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+
+	store := newStorageStoreForTest(t, cfg)
+	ctx := context.Background()
+	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket(gallery) failed: %v", err)
+	}
+	if _, err := store.CreateBucket(ctx, "other", 0); err != nil {
+		t.Fatalf("CreateBucket(other) failed: %v", err)
+	}
+	if _, err := store.UpdateBucket(ctx, storage.UpdateBucketInput{Name: "gallery", AccessMode: storage.BucketAccessPublic, QuotaBytes: 0}); err != nil {
+		t.Fatalf("UpdateBucket(gallery) failed: %v", err)
+	}
+	if _, err := store.UpdateBucket(ctx, storage.UpdateBucketInput{Name: "other", AccessMode: storage.BucketAccessPublic, QuotaBytes: 0}); err != nil {
+		t.Fatalf("UpdateBucket(other) failed: %v", err)
+	}
+	if _, err := store.SetPublicDomainBindings(ctx, []storage.PublicDomainBinding{{Host: "cdn.example.com", Bucket: "gallery", Prefix: "site", IndexDocument: false}}); err != nil {
+		t.Fatalf("SetPublicDomainBindings failed: %v", err)
+	}
+	if _, err := store.PutObject(ctx, storage.PutObjectInput{Bucket: "gallery", Key: "site/pub/other/shared.txt", Body: bytes.NewBufferString("bound pub object"), ContentType: "text/plain"}); err != nil {
+		t.Fatalf("PutObject(bound pub) failed: %v", err)
+	}
+	if _, err := store.PutObject(ctx, storage.PutObjectInput{Bucket: "other", Key: "shared.txt", Body: bytes.NewBufferString("global pub route"), ContentType: "text/plain"}); err != nil {
+		t.Fatalf("PutObject(global pub) failed: %v", err)
+	}
+
+	links := newShareLinksForTest(t, cfg.Paths.DataDir)
+	if _, err := store.PutObject(ctx, storage.PutObjectInput{Bucket: "other", Key: "notes/readme.txt", Body: bytes.NewBufferString("shared target"), ContentType: "text/plain"}); err != nil {
+		t.Fatalf("PutObject(shared target) failed: %v", err)
+	}
+	link, err := links.Create(ctx, sharelink.CreateInput{Bucket: "other", Key: "notes/readme.txt", Filename: "readme.txt", Expires: time.Hour})
+	if err != nil {
+		t.Fatalf("Create share link failed: %v", err)
+	}
+	if _, err := store.PutObject(ctx, storage.PutObjectInput{Bucket: "gallery", Key: "site/s/" + link.ID, Body: bytes.NewBufferString("bound share object"), ContentType: "text/plain"}); err != nil {
+		t.Fatalf("PutObject(bound share) failed: %v", err)
+	}
+	if _, err := store.PutObject(ctx, storage.PutObjectInput{Bucket: "gallery", Key: "site/dl/" + link.ID, Body: bytes.NewBufferString("bound download object"), ContentType: "text/plain"}); err != nil {
+		t.Fatalf("PutObject(bound download) failed: %v", err)
+	}
+
+	handler := newHandler(cfg, store, links, zap.NewNop())
+
+	pubRequest := httptest.NewRequest(http.MethodGet, "http://cdn.example.com/pub/other/shared.txt", nil)
+	pubRequest.Host = "cdn.example.com"
+	pubRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(pubRecorder, pubRequest)
+	if pubRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected bound /pub status: %d body=%s", pubRecorder.Code, pubRecorder.Body.String())
+	}
+	if body := strings.TrimSpace(pubRecorder.Body.String()); body != "bound pub object" {
+		t.Fatalf("unexpected bound /pub body: %q", body)
+	}
+
+	shareRequest := httptest.NewRequest(http.MethodGet, "http://cdn.example.com/s/"+link.ID, nil)
+	shareRequest.Host = "cdn.example.com"
+	shareRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(shareRecorder, shareRequest)
+	if shareRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected bound /s status: %d body=%s", shareRecorder.Code, shareRecorder.Body.String())
+	}
+	if body := strings.TrimSpace(shareRecorder.Body.String()); body != "bound share object" {
+		t.Fatalf("unexpected bound /s body: %q", body)
+	}
+
+	downloadRequest := httptest.NewRequest(http.MethodGet, "http://cdn.example.com/dl/"+link.ID, nil)
+	downloadRequest.Host = "cdn.example.com"
+	downloadRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(downloadRecorder, downloadRequest)
+	if downloadRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected bound /dl status: %d body=%s", downloadRecorder.Code, downloadRecorder.Body.String())
+	}
+	if body := strings.TrimSpace(downloadRecorder.Body.String()); body != "bound download object" {
+		t.Fatalf("unexpected bound /dl body: %q", body)
+	}
+	if disposition := downloadRecorder.Header().Get("Content-Disposition"); strings.Contains(disposition, "attachment") {
+		t.Fatalf("expected bound /dl not to force attachment, got %q", disposition)
+	}
+}
+
+func TestServeBoundPublicDomainIgnoresHealthRoute(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Paths.DataDir = filepath.Join(root, "data")
+	cfg.Paths.LogDir = filepath.Join(root, "logs")
+	cfg.Paths.TmpDir = filepath.Join(root, "tmp")
+	cfg.Settings.PublicBaseURL = "http://127.0.0.1:9001"
+
+	store := newStorageStoreForTest(t, cfg)
+	ctx := context.Background()
+	if _, err := store.CreateBucket(ctx, "gallery", 0); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+	if _, err := store.UpdateBucket(ctx, storage.UpdateBucketInput{Name: "gallery", AccessMode: storage.BucketAccessPublic, QuotaBytes: 0}); err != nil {
+		t.Fatalf("UpdateBucket failed: %v", err)
+	}
+	if _, err := store.SetPublicDomainBindings(ctx, []storage.PublicDomainBinding{{Host: "cdn.example.com", Bucket: "gallery", Prefix: "site", IndexDocument: false}}); err != nil {
+		t.Fatalf("SetPublicDomainBindings failed: %v", err)
+	}
+
+	handler := newHandler(cfg, store, newShareLinksForTest(t, cfg.Paths.DataDir), zap.NewNop())
+	request := httptest.NewRequest(http.MethodGet, "http://cdn.example.com/healthz", nil)
+	request.Host = "cdn.example.com"
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	assertS3XMLError(t, recorder, http.StatusNotFound, "NoSuchKey", cfg.Settings.Region, "gallery")
+}
+
 func assertS3XMLError(t *testing.T, recorder *httptest.ResponseRecorder, wantStatus int, wantCode, wantRegion, wantBucket string) {
 	t.Helper()
 
